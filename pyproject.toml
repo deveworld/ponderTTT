@@ -1,0 +1,65 @@
+[project]
+name = "ponderttt"
+version = "0.1.0"
+description = "Adaptive Inner-Loop Iteration Mechanisms for Efficient Test-Time Training in LLMs"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    {name = "PonderTTT Team"}
+]
+license = {text = "MIT"}
+keywords = ["test-time-training", "adaptive-computation", "llm", "efficiency"]
+
+dependencies = [
+    # Core dependencies
+    "torch>=2.1.0",
+    "numpy>=1.24.0",
+    # Utilities
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "scipy>=1.11.0",
+    "tqdm>=4.66.0",
+    "transformers>=4.57.1",
+    "datasets>=4.4.0",
+    "accelerate>=1.10.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.12.0",
+    "ruff>=0.1.0",
+]
+
+full = [
+    "transformers>=4.36.0",
+    "datasets>=2.14.0",
+    "accelerate>=0.25.0",
+    "wandb>=0.16.0",
+    "rouge-score>=0.1.2",
+    "sacrebleu>=2.3.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ponderttt"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+no_implicit_optional = true
+show_error_codes = true

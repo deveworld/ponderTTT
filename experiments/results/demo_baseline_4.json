@@ -1,0 +1,18 @@
+{
+  "config": "baseline",
+  "ttt_iterations": 4,
+  "num_params": 44122112,
+  "train_losses": [
+    4.75,
+    4.52,
+    4.42
+  ],
+  "val_perplexities": [
+    116.8,
+    98.3,
+    95.2
+  ],
+  "test_loss": 4.55,
+  "test_perplexity": 94.6,
+  "flops_per_token": 31500000000.0
+}
