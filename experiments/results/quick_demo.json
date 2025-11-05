@@ -1,0 +1,22 @@
+[
+  {
+    "config": "baseline",
+    "ttt_iterations": 2,
+    "test_loss": 10.82523775100708,
+    "test_perplexity": 50273.6953125
+  },
+  {
+    "config": "adaptive",
+    "test_loss": 10.835411930084229,
+    "test_perplexity": 50787.828125,
+    "ttt_stats": {
+      "avg_iterations": 2.25234375,
+      "flops_reduction": -0.126171875,
+      "allocation_distribution": {
+        "1": 0.325,
+        "2": 0.386328125,
+        "4": 0.288671875
+      }
+    }
+  }
+]
