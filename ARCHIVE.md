@@ -16,6 +16,15 @@ PonderTTT는 Test-Time Training (TTT) 아키텍처에 **적응형 계산 할당*
 
 **접근법**: 강화학습(REINFORCE)을 사용하여 토큰별 최적 반복 횟수를 학습한다.
 
+**⚠️ 주요 우려사항**:
+1. 🔴 **Policy overhead**: BiLSTM (14.2M params) 비용이 절감분 상쇄 가능 → Net gain 불확실
+2. 🔴 **비현실적 기대**: 15-30% 절감은 과도함 → 0-5% 또는 negative 예상
+3. ⚠️ **WikiText-2 너무 작음**: 2M tokens → WikiText-103 (100M) 필요
+4. ⚠️ **REINFORCE 불안정**: High variance → Training 어려움
+5. ⚠️ **Null hypothesis 가능성**: 가설 자체가 틀릴 수 있음 → Negative result도 학술적 기여
+
+**현실적 목표**: Interpretability 확보 (성공), Efficiency gain은 보너스 (불확실)
+
 ---
 
 ## 1. 연구 동기 (Motivation)
@@ -283,11 +292,13 @@ difficulty(x_t) = ||∇_W L(x_t)||
 
 **Hypothesis**: 학습된 adaptive policy가 uniform baseline보다 우수
 
-**성공 조건**:
+**성공 조건** (보수적 설정):
 1. **Quality maintenance**: Perplexity가 Uniform-K4 대비 1% 이내
-2. **Efficiency gain**: FLOPs가 15% 이상 절감
+2. **Efficiency gain**: Net FLOPs (policy overhead 포함) 가 5% 이상 절감
 3. **Statistical significance**: p < 0.05 (Bonferroni corrected)
 4. **Difficulty correlation**: Optimal K와 difficulty metric 간 r > 0.3
+
+**⚠️ 주의**: Policy overhead로 인해 net gain이 0%일 가능성도 고려해야 함
 
 ### 3.4 Oracle Analysis
 
@@ -430,19 +441,25 @@ difficulty(x_t) = ||∇_W L(x_t)||
 - Oracle analysis for upper bound
 - Statistical validation
 
-### 6.2 실용적 가치
+### 6.2 실용적 가치 (현실적 평가)
 
-**Efficiency gain**:
-- 동일 성능에서 15-30% FLOPs 절감 (예상)
-- Edge device에서 유용
+**⚠️ 중요**: 아래 기대치는 낙관적이며, null result 가능성도 고려해야 함
 
-**Quality improvement**:
-- 동일 FLOPs에서 1-3% perplexity 개선 (예상)
-- Large model scaling에 유리
+**Efficiency gain (불확실)**:
+- 이상적 시나리오: 5-10% net FLOPs 절감
+- 현실적 시나리오: Policy overhead가 절감분 상쇄 (0% gain)
+- 최악 시나리오: Net negative (policy 비용 > 절감분)
+- **Policy overhead**: BiLSTM (14.2M params) 실행 비용 무시 불가
 
-**Interpretability**:
-- 어떤 토큰이 어려운지 policy가 학습
-- Model debugging에 도움
+**Quality improvement (불확실)**:
+- 이상적 시나리오: Marginal improvement (< 1% perplexity)
+- 현실적 시나리오: Uniform K=4와 통계적으로 차이 없음
+- **Null hypothesis 가능성**: 모든 토큰이 실제로 비슷한 계산 필요할 수 있음
+
+**Interpretability (확실)**:
+- 어떤 토큰이 어려운지 policy가 학습 (성공 여부와 무관)
+- Model debugging 및 분석에 도움
+- 이것만으로도 연구 가치 있음
 
 ---
 
@@ -450,9 +467,10 @@ difficulty(x_t) = ||∇_W L(x_t)||
 
 ### 7.1 현재 한계
 
-**Dataset scale**:
-- WikiText-2는 상대적으로 작음
-- Large-scale validation 필요
+**Dataset scale** (⚠️ Major):
+- WikiText-2는 너무 작음 (2M tokens only)
+- Policy 학습에 충분한 데이터인가 불확실
+- WikiText-103 (100M tokens) 최소 필요
 
 **Model size**:
 - 60M parameters는 작은 편
@@ -462,11 +480,79 @@ difficulty(x_t) = ||∇_W L(x_t)||
 - Language modeling only
 - Other domains (vision, speech) 검증 필요
 
-**Policy overhead**:
-- HaltingPolicyNetwork의 추가 비용
-- Amortization 필요성
+**Policy overhead** (🔴 Critical):
+- HaltingPolicyNetwork: 14.2M parameters (전체 모델의 23.6%)
+- 매 토큰마다 BiLSTM forward pass 필요
+- Overhead가 절감분을 상쇄할 가능성 높음
+- **Net gain이 negative일 수 있음**
 
-### 7.2 향후 연구 방향
+### 7.2 주요 우려사항 및 리스크
+
+**🔴 Critical Risks** (프로젝트 실패 가능성):
+
+**1. Policy overhead > Savings**
+- **문제**: BiLSTM 실행 비용이 K 절감으로 얻는 이득보다 클 수 있음
+- **분석**:
+  - Policy forward: ~14M params × 토큰당
+  - TTT iteration savings: K 감소분 × TTT params
+  - Net gain = Savings - Overhead (음수 가능)
+- **완화**:
+  - Lightweight policy (MLP-only, no LSTM)
+  - Amortized policy (mini-batch level)
+  - Oracle 분석으로 upper bound 먼저 확인
+
+**2. 비현실적 기대치**
+- **문제**: 15-30% 절감은 과도하게 낙관적
+- **현실**:
+  - Policy overhead 고려 시 0-5% 또는 negative
+  - Null result 가능성 높음
+- **대응**:
+  - 보수적 목표 설정 (5% net gain)
+  - Negative result도 학술적 기여로 인정
+
+**⚠️ Major Concerns** (연구 난이도):
+
+**3. WikiText-2 너무 작음**
+- **문제**: 2M tokens로 policy 학습 어려움
+- **증상**: Overfitting, 불안정한 training
+- **해결**: WikiText-103 (100M tokens) 필수
+
+**4. REINFORCE 불안정**
+- **문제**: High variance gradients
+- **증상**:
+  - Training이 수렴하지 않음
+  - Policy가 degenerate solution 학습 (항상 K=1 또는 K=8)
+  - Reward signal 너무 sparse
+- **완화**:
+  - Strong baseline (value network)
+  - Entropy regularization
+  - Curriculum learning (easy → hard)
+  - PPO 고려
+
+**5. Null Hypothesis 가능성**
+- **문제**: 핵심 가설이 틀릴 수 있음
+- **가설**: "토큰별로 다른 계산 필요"
+- **반례**: 실제로 모든 토큰이 비슷한 K 필요할 수 있음
+- **Oracle 분석 결과가 uniform distribution이면?**
+  - 이것도 중요한 negative result
+  - "Adaptive allocation은 효과 없다" 증명
+  - 학술적 기여 여전히 존재
+
+**연구 성공/실패 시나리오**:
+
+| 시나리오 | Net Gain | 학술적 가치 | 실용적 가치 |
+|---------|----------|------------|------------|
+| Best case | +5~10% | 높음 | 높음 |
+| Good case | +1~5% | 높음 | 중간 |
+| Null result | 0% | 중간 | 낮음 |
+| Negative | < 0% | 낮음 | 없음 |
+
+**Null result 대비 전략**:
+- Oracle analysis를 먼저 수행 (upper bound 확인)
+- Heuristic baselines로 feasibility 검증
+- Interpretability에 집중 (efficiency 못 얻어도 분석 도구로 가치)
+
+### 7.3 향후 연구 방향
 
 **Direction 1: Scaling**
 - WikiText-103, C4, The Pile
@@ -523,6 +609,7 @@ difficulty(x_t) = ||∇_W L(x_t)||
 - Pro: Unbiased gradients, flexible
 - Pro: Natural for discrete actions (K ∈ {1,2,4,8})
 - Con: High variance (mitigate with baseline)
+- ⚠️ **주의**: Training 불안정성 예상, PPO 고려 필요
 
 ### 8.3 Why Temporal Credit?
 
@@ -647,25 +734,43 @@ difficulty(x_t) = ||∇_W L(x_t)||
 
 ### 11.2 필수 검증 실험
 
-**실험 1**: Convergence analysis
+**실험 0** (🔴 최우선): **Policy overhead 측정**
+- Policy forward pass FLOPs 정확히 측정
+- TTT iteration FLOPs 측정
+- Net gain 계산: Savings - Overhead
+- **이것이 negative면 프로젝트 중단 고려**
+
+**실험 1**: **Oracle analysis** (Upper bound)
+- 각 토큰에 대해 K ∈ {1,2,4,8} 모두 시도
+- Best K 분포 확인
+- Oracle이 uniform distribution이면 null hypothesis 확인됨
+- **Learned policy보다 먼저 수행**
+
+**실험 2**: Convergence analysis
 - Measure K-step iterative vs analytical gap
 - Find minimum K for <1% gap
 - Validate that K=4 or K=8 is sufficient
 
-**실험 2**: Gamma ablation
+**실험 3**: Gamma ablation
 - Compare γ ∈ {0.0, 0.5, 0.9, 0.99}
 - Measure sequential dependency strength
 - Justify γ=0.99 choice
 
-**실험 3**: Difficulty correlation
+**실험 4**: Difficulty correlation
 - Compute oracle K for each token
 - Measure correlation with entropy, loss, gradient
 - Validate difficulty metrics
 
-**실험 4**: Scaling
+**실험 5**: Scaling
 - WikiText-2 → WikiText-103
 - 60M → 250M+ parameters
 - Verify findings hold at scale
+
+**실험 순서** (중요):
+1. Oracle analysis (feasibility 확인)
+2. Policy overhead 측정 (net gain 가능성 확인)
+3. Heuristic baselines (간단한 방법으로 baseline 확립)
+4. Learned policy (마지막에 시도)
 
 ### 11.3 문서화 원칙
 
@@ -697,13 +802,22 @@ PonderTTT는 **"모든 토큰이 동일한 계산을 필요로 하지 않는다"
 2. **REINFORCE learning**: Policy gradient with baseline
 3. **Temporal credit**: Monte Carlo returns (γ=0.99)
 
-### 기대 효과
+### 기대 효과 (현실적 평가)
 
-**Efficiency**: 15-30% FLOPs reduction at same quality
+**⚠️ 중요한 면책**: 아래는 이상적 시나리오이며, null result 가능성 높음
 
-**Quality**: 1-3% perplexity improvement at same FLOPs
+**Efficiency (불확실)**:
+- 이상적: 5-10% net FLOPs reduction
+- 현실적: 0% (policy overhead = savings)
+- 최악: Negative (overhead > savings)
 
-**Interpretability**: Learned difficulty assessment
+**Quality (불확실)**:
+- 이상적: Marginal perplexity improvement (< 1%)
+- 현실적: No significant difference from Uniform K=4
+
+**Interpretability (확실)**:
+- Learned difficulty assessment (성공 여부와 무관)
+- 이것만으로도 연구 가치 있음
 
 ### 후속 작업 필요
 
@@ -718,4 +832,6 @@ PonderTTT는 **"모든 토큰이 동일한 계산을 필요로 하지 않는다"
 **이 문서는 PonderTTT의 핵심 아이디어와 방법론을 기록합니다.**
 **코드 재작성 시 이 아이디어를 기반으로 하되, 발견된 문제들을 해결한 새로운 구현을 목표로 합니다.**
 
-**마지막 업데이트**: 2025-11-09
+**⚠️ 중요**: 이 연구는 높은 실패 가능성을 가지고 있습니다. Null/negative result도 학술적으로 가치 있는 기여임을 인정하고 시작해야 합니다.
+
+**마지막 업데이트**: 2025-11-09 (주요 우려사항 반영)
