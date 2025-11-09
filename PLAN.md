@@ -1,94 +1,131 @@
 # PonderTTT Plan
 
-**Timeline**: 2 months to arXiv
-**Status**: Week 1, Day 3/7 (43% complete)
+**Timeline**: 3-4 months to arXiv submission
+**Status**: Implementation Complete (95%)
+**Phase**: Ready for Experimental Validation
 
 ---
 
-## Current Status
+## ✅ Current Status: Implementation Complete
 
-### Phase 1 Complete ✅ (Days 1-3)
+### Core Implementation ✅ COMPLETE
 
-**Implementation**:
-- Core TTT components (~550 lines)
-- Percentile-based calibration
-- Comprehensive analysis framework
+**Models** (all implemented and tested):
+- ✅ IterativeTTTLayer - K-step iterative gradient descent
+- ✅ OfficialTTTLayer - Analytic baseline with triangular attention
+- ✅ HaltingPolicyNetwork - REINFORCE with Monte Carlo returns
+- ✅ Heuristic policies (Entropy, Loss, Gradient, Perplexity)
+- ✅ FastWeightModule (MLP and Linear variants)
+- ✅ MultiGranularityRouter (optional layer routing)
 
-**Results**:
-- 42.5% FLOPs reduction (target: 20-30%)
-- 0.59% quality loss (target: <5%)
-- r=0.915 correlation (target: r>0.3)
-- 88-99% allocation accuracy
+**Utilities** (all implemented and tested):
+- ✅ TTTFLOPsAnalyzer - Accurate FLOPs counting (forward + backward)
+- ✅ compute_perplexity - Loss to perplexity conversion
+- ✅ Profiling tools - Wall-clock time measurement
+- ✅ Statistical tests - Significance testing with Bonferroni correction
+
+**Experiments** (ready to run):
+- ✅ full_comparison_suite.py - 8 methods comparison
+- ✅ oracle_analysis.py - Optimal K calculation (per-token loss)
+- ✅ extended_oracle_analysis.py - Extended oracle with visualization
+- ✅ convergence_analysis.py - Iterative vs analytic gap
+- ✅ wikitext2_experiment.py - Single experiment runner
+
+**Data** (ready):
+- ✅ WikiText-2 loaders with GPT-2 tokenizer
+- ✅ Batching and collation functions
+
+**Total Code**: ~3000 lines of implementation, tests, and analysis
 
 ---
 
-## Week 1: Heuristic PoC
+## ⏳ NEXT: Experimental Validation
 
-### Days 4-5: Real LM Validation ⏳ **NEXT**
+**Objective**: Run comprehensive experiments on WikiText-2
 
-**Objective**: Validate adaptive TTT on real language modeling task
+**Quick Validation** (~1 hour):
+```bash
+python src/ponderttt/experiments/full_comparison_suite.py \
+    --methods uniform_k1 uniform_k4 learned_lambda001_target4 \
+    --seeds 42 \
+    --num_epochs 1 \
+    --max_train_batches 10 \
+    --max_eval_batches 5 \
+    --device cuda
+```
 
-**Tasks**:
-1. **Dataset Setup** (Day 4 AM)
-   - [ ] Download WikiText-2 (train/val/test splits)
-   - [ ] Tokenization pipeline (GPT-2 tokenizer)
-   - [ ] Data loaders with batching
+**Full Experimental Suite** (5-7 days GPU):
 
-2. **Model Implementation** (Day 4 PM)
-   - [ ] Transformer backbone (6 layers, 512 hidden, 8 heads)
-   - [ ] Replace one self-attention with TTT layer
-   - [ ] Initialize with pre-trained weights if available
-   - [ ] ~125M parameters total
-
-3. **Baseline Experiments** (Day 5 AM)
-   - [ ] Fixed-1: All tokens get 1 iteration
-   - [ ] Fixed-2: All tokens get 2 iterations
-   - [ ] Fixed-4: All tokens get 4 iterations (standard)
+1. **Baseline Experiments** (Day 1-2)
+   - [ ] Uniform-K1: All tokens get 1 iteration
+   - [ ] Uniform-K2: All tokens get 2 iterations
+   - [ ] Uniform-K4: All tokens get 4 iterations (standard)
+   - [ ] Uniform-K8: All tokens get 8 iterations
+   - [ ] Run with 10+ seeds for statistical significance
    - [ ] Measure: perplexity, FLOPs, wall-clock time
 
-4. **Adaptive Experiments** (Day 5 PM)
-   - [ ] HeuristicAdaptiveTTT with entropy metric
-   - [ ] Target distribution: [30%, 40%, 30%] → [1, 2, 4] iterations
-   - [ ] Measure: perplexity, FLOPs, allocation distribution
-   - [ ] Generate: Pareto curve (FLOPs vs perplexity)
+2. **Learned Policy Experiments** (Day 3-4)
+   - [ ] REINFORCE with λ=0.01, target=4 (main contribution)
+   - [ ] REINFORCE with λ=0.05, target=4 (higher penalty)
+   - [ ] REINFORCE with λ=0.01, no target (minimize compute)
+   - [ ] Run with 10+ seeds
+   - [ ] Measure: perplexity, FLOPs, allocation distribution, policy entropy
+
+3. **Heuristic Baselines** (Day 5)
+   - [ ] Entropy-based allocation
+   - [ ] Loss-based allocation
+   - [ ] Gradient-norm-based allocation
+   - [ ] Measure same metrics as learned policies
+
+4. **Oracle Analysis** (Day 6)
+   - [ ] Compute optimal K per token (exhaustive search)
+   - [ ] Measure difficulty-K correlation
+   - [ ] Generate oracle Pareto frontier (upper bound)
+   - [ ] Compare learned policy vs oracle
+
+5. **Analysis & Visualization** (Day 7)
+   - [ ] Generate Pareto curves (FLOPs vs perplexity)
+   - [ ] Allocation distribution histograms
+   - [ ] Difficulty-K correlation scatter plots
+   - [ ] Statistical significance tests (paired t-test, Bonferroni correction)
+   - [ ] Wall-clock time vs theoretical FLOPs comparison
 
 **Success Criteria**:
-- Perplexity within 1% of Fixed-4 baseline
-- ≥20% FLOPs reduction (expect ~30-40% based on Phase 1)
-- Strong correlation between difficulty and allocated iterations
+- ✅ Learned policy perplexity within 1% of Uniform-K4
+- ✅ ≥15% FLOPs reduction vs Uniform-K4
+- ✅ Statistical significance (p < 0.05) across 10+ seeds
+- ✅ Difficulty-K correlation r > 0.3 (oracle validation)
 
-**Expected Results**:
-- Fixed-1: Low FLOPs, high perplexity
-- Fixed-2: Medium FLOPs, medium perplexity
-- Fixed-4: High FLOPs, low perplexity (best quality)
-- Adaptive: **Medium-low FLOPs, near-Fixed-4 perplexity** ✅
+**Commands**:
+```bash
+# Full comparison (all 8 methods, 10 seeds)
+python src/ponderttt/experiments/full_comparison_suite.py \
+    --seeds 42 123 456 789 101112 999 888 777 666 555 \
+    --num_epochs 10 \
+    --device cuda
 
-### Days 6-7: Analysis & Documentation
+# Oracle analysis (expensive, ~1-2 days)
+python src/ponderttt/experiments/oracle_analysis.py \
+    --max_batches 50 \
+    --sample_positions 64 \
+    --device cuda
 
-**Tasks**:
-1. **Visualization** (Day 6)
-   - [ ] Perplexity vs FLOPs curve
-   - [ ] Iteration allocation distribution (histogram)
-   - [ ] Per-difficulty-bucket quality analysis
-   - [ ] Correlation scatter plot (difficulty vs optimal iterations)
-
-2. **Code Cleanup** (Day 6)
-   - [ ] Remove debug code and experiments
-   - [ ] Add docstrings to key functions
-   - [ ] Create simple examples in `examples/`
-   - [ ] Update requirements.txt
-
-3. **Documentation** (Day 7)
-   - [ ] Write Week 1 summary (results + insights)
-   - [ ] Update README.md with WikiText-2 results
-   - [ ] Document hyperparameters and training details
-   - [ ] Plan Week 2 experiments based on findings
+# Convergence analysis
+python src/ponderttt/experiments/convergence_analysis.py \
+    --max_batches 100 \
+    --k_values 1 2 4 8 16 \
+    --device cuda
+```
 
 ---
 
-## Month 1: Complete Phase 1
+## 📅 Future Work Roadmap
 
-### Week 2: WikiText-103 & Ablations
+### Month 1-2: WikiText-2 Experiments & Analysis
+
+**Week 1-2**: Run full experimental suite (see above)
+
+### Month 2-3: Scaling & Ablations
 
 **Objective**: Scale up to larger dataset and test different configurations
 

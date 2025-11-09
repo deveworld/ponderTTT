@@ -6,14 +6,14 @@ self-attention layers with TTT layers.
 """
 
 import math
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .adaptive_ttt import HeuristicAdaptiveTTT
-from .ttt_linear import TTTLinear
+from .ttt_linear import TTTLayerConfig, TTTLinear, TTTLinearSequential, TTTLinearIndependent
 
 
 class TransformerConfig:
@@ -30,13 +30,21 @@ class TransformerConfig:
         dropout: float = 0.1,
         # TTT-specific
         use_ttt: bool = True,
-        ttt_layer_idx: int = 3,  # Which layer to replace with TTT (0-indexed)
+        ttt_layer_idx: Optional[int] = 3,  # Which layer to replace with TTT (0-indexed)
+        ttt_layer_indices: Optional[List[int]] = None,  # Multiple TTT layers
         ttt_dim: int = 256,
         ttt_iterations: int = 2,
         ttt_lr: float = 0.01,
+        use_sequential_ttt: bool = True,  # Use sequential TTT by default
+        ttt_mini_batch_size: int = 16,
+        ttt_conv_kernel: int = 4,
+        ttt_base_lr: float = 1.0,
+        ttt_share_qk: bool = True,
+        ttt_rope_theta: float = 10000.0,
+        ttt_use_gate: bool = True,
         # Adaptive TTT
         use_adaptive_ttt: bool = False,
-        ttt_difficulty_metric: str = "entropy",
+        ttt_difficulty_metric: str = "loss",
         ttt_buckets: Optional[List[int]] = None,
         ttt_target_distribution: Optional[List[float]] = None,
     ):
@@ -50,16 +58,33 @@ class TransformerConfig:
 
         # TTT config
         self.use_ttt = use_ttt
-        self.ttt_layer_idx = ttt_layer_idx
+
+        # Support both single layer and multiple layers
+        if ttt_layer_indices is not None:
+            self.ttt_layer_indices = ttt_layer_indices
+        elif ttt_layer_idx is not None:
+            self.ttt_layer_indices = [ttt_layer_idx]
+        else:
+            self.ttt_layer_indices = [3]
+
         self.ttt_dim = ttt_dim
         self.ttt_iterations = ttt_iterations
         self.ttt_lr = ttt_lr
+        self.ttt_mini_batch_size = ttt_mini_batch_size
+        self.ttt_conv_kernel = ttt_conv_kernel
+        self.ttt_base_lr = ttt_base_lr
+        self.ttt_share_qk = ttt_share_qk
+        self.ttt_rope_theta = ttt_rope_theta
+        self.ttt_use_gate = ttt_use_gate
 
         # Adaptive TTT
         self.use_adaptive_ttt = use_adaptive_ttt
         self.ttt_difficulty_metric = ttt_difficulty_metric
         self.ttt_buckets = ttt_buckets or [1, 2, 4]
         self.ttt_target_distribution = ttt_target_distribution or [0.3, 0.4, 0.3]
+
+        # TTT variant (Sequential is default)
+        self.use_sequential_ttt = use_sequential_ttt
 
 
 class MultiHeadAttention(nn.Module):
@@ -69,9 +94,9 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         assert hidden_dim % num_heads == 0
 
-        self.hidden_dim = hidden_dim  # type: ignore[unresolved-attribute]
-        self.num_heads = num_heads  # type: ignore[unresolved-attribute]
-        self.head_dim = hidden_dim // num_heads  # type: ignore[unresolved-attribute]
+        self.hidden_dim: int = hidden_dim
+        self.num_heads: int = num_heads
+        self.head_dim: int = hidden_dim // num_heads
 
         self.qkv_proj = nn.Linear(hidden_dim, 3 * hidden_dim)
         self.out_proj = nn.Linear(hidden_dim, hidden_dim)
@@ -109,7 +134,7 @@ class MultiHeadAttention(nn.Module):
         attn_weights = self.dropout(attn_weights)
 
         # Apply attention to values
-        output = torch.matmul(attn_weights, v)  # (batch, heads, seq_len, head_dim)
+        output: torch.Tensor = torch.matmul(attn_weights, v)  # (batch, heads, seq_len, head_dim)
         output = output.permute(0, 2, 1, 3).contiguous()  # (batch, seq_len, heads, head_dim)
         output = output.reshape(batch_size, seq_len, self.hidden_dim)
 
@@ -150,24 +175,38 @@ class TransformerBlock(nn.Module):
         use_adaptive_ttt: bool = False,
     ):
         super().__init__()
-        self.use_ttt = use_ttt  # type: ignore[unresolved-attribute]
-        self.use_adaptive_ttt = use_adaptive_ttt  # type: ignore[unresolved-attribute]
+        self.use_ttt: bool = use_ttt
+        self.use_adaptive_ttt: bool = use_adaptive_ttt
 
         # Layer 1: Self-attention or TTT
+        attention_module: Union[MultiHeadAttention, TTTLinear, TTTLinearSequential, HeuristicAdaptiveTTT]
+        base_ttt: Union[TTTLinear, TTTLinearSequential]
         if use_ttt:
             # Use TTT layer instead of self-attention
             if ttt_config is None:
                 ttt_config = {}
 
-            base_ttt = TTTLinear(
-                hidden_dim=hidden_dim,
-                ttt_dim=ttt_config.get("ttt_dim", 256),
-                num_iterations=ttt_config.get("ttt_iterations", 2),
-                learning_rate=ttt_config.get("ttt_lr", 0.01),
+            # Use Sequential TTT by default
+            use_sequential = ttt_config.get("use_sequential_ttt", True)
+
+            layer_cfg = TTTLayerConfig(
+                hidden_size=hidden_dim,
+                num_attention_heads=num_heads,
+                mini_batch_size=ttt_config.get("mini_batch_size", 16),
+                ttt_base_lr=ttt_config.get("ttt_base_lr", 1.0),
+                conv_kernel=ttt_config.get("conv_kernel", 4),
+                share_qk=ttt_config.get("share_qk", True),
+                rope_theta=ttt_config.get("rope_theta", 10000.0),
+                use_gate=ttt_config.get("use_gate", True),
             )
 
+            if use_sequential:
+                base_ttt = TTTLinearSequential(layer_cfg)
+            else:
+                base_ttt = TTTLinearIndependent(layer_cfg)
+
             if use_adaptive_ttt:
-                self.attention = HeuristicAdaptiveTTT(
+                attention_module = HeuristicAdaptiveTTT(
                     base_ttt=base_ttt,
                     difficulty_metric=ttt_config.get("difficulty_metric", "entropy"),
                     buckets=ttt_config.get("buckets", [1, 2, 4]),
@@ -175,10 +214,12 @@ class TransformerBlock(nn.Module):
                     auto_calibrate=True,
                 )
             else:
-                self.attention = base_ttt  # type: ignore[bad-assignment]
+                attention_module = base_ttt
         else:
             # Standard self-attention
-            self.attention = MultiHeadAttention(hidden_dim, num_heads, dropout)  # type: ignore[bad-assignment]
+            attention_module = MultiHeadAttention(hidden_dim, num_heads, dropout)
+
+        self.attention = attention_module
 
         self.ln1 = nn.LayerNorm(hidden_dim)
 
@@ -212,10 +253,15 @@ class TransformerBlock(nn.Module):
 
         if self.use_ttt:
             if self.use_adaptive_ttt:
-                attn_out, stats = self.attention.forward_adaptive(x, logits=logits)  # type: ignore[call-non-callable]
+                assert isinstance(self.attention, HeuristicAdaptiveTTT)
+                attn_out, stats = self.attention.forward_adaptive(x, logits=logits)
             else:
-                attn_out, stats = self.attention.ttt_forward(x)  # type: ignore[call-non-callable]
+                if isinstance(self.attention, (TTTLinear, TTTLinearSequential)):
+                    attn_out, stats = self.attention.ttt_forward(x)
+                else:
+                    attn_out, stats = self.attention(x), {}
         else:
+            assert isinstance(self.attention, MultiHeadAttention)
             attn_out = self.attention(x, mask)
 
         x = residual + self.dropout(attn_out)
@@ -239,7 +285,7 @@ class TransformerTTT(nn.Module):
 
     def __init__(self, config: TransformerConfig):
         super().__init__()
-        self.config = config  # type: ignore[unresolved-attribute]
+        self.config: TransformerConfig = config
 
         # Token embeddings
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_dim)
@@ -250,18 +296,25 @@ class TransformerTTT(nn.Module):
         self.dropout = nn.Dropout(config.dropout)
 
         # Transformer blocks
-        self.blocks = nn.ModuleList()
+        self.blocks: nn.ModuleList = nn.ModuleList()
         for layer_idx in range(config.num_layers):
             # Decide if this layer should use TTT
-            use_ttt = config.use_ttt and (layer_idx == config.ttt_layer_idx)
+            use_ttt = config.use_ttt and (layer_idx in config.ttt_layer_indices)
 
             ttt_config = {
                 "ttt_dim": config.ttt_dim,
                 "ttt_iterations": config.ttt_iterations,
                 "ttt_lr": config.ttt_lr,
+                "mini_batch_size": config.ttt_mini_batch_size,
+                "conv_kernel": config.ttt_conv_kernel,
+                "ttt_base_lr": config.ttt_base_lr,
+                "share_qk": config.ttt_share_qk,
+                "rope_theta": config.ttt_rope_theta,
+                "use_gate": config.ttt_use_gate,
                 "difficulty_metric": config.ttt_difficulty_metric,
                 "buckets": config.ttt_buckets,
                 "target_distribution": config.ttt_target_distribution,
+                "use_sequential_ttt": config.use_sequential_ttt,
             }
 
             block = TransformerBlock(
@@ -324,14 +377,47 @@ class TransformerTTT(nn.Module):
 
         x = self.dropout(token_emb + pos_emb)
 
+        # Pre-check if any blocks need entropy metric
+        # If so, we'll cache logits computation to avoid redundant LM head calls
+        needs_entropy = any(
+            block.use_ttt and block.use_adaptive_ttt and
+            isinstance(block.attention, HeuristicAdaptiveTTT) and
+            hasattr(block.attention, 'difficulty_metric') and
+            block.attention.difficulty_metric in {'entropy', 'combined'}
+            for block in self.blocks
+        )
+
         # Apply transformer blocks
         all_stats = []
+        cached_logits_state = None  # Cache for (hidden_state, logits) pair
         for block in self.blocks:
-            # For adaptive TTT, compute logits if needed
-            if block.use_ttt and block.use_adaptive_ttt:  # type: ignore[not-callable]
-                # Compute logits from current hidden state for entropy metric
-                block_logits = self.lm_head(self.ln_f(x))
-                x, stats = block(x, logits=block_logits)
+            assert isinstance(block, TransformerBlock)
+            # For adaptive TTT with entropy metric, compute logits from current hidden state
+            logits_for_block = None
+            if block.use_ttt and block.use_adaptive_ttt:
+                # Check if this block uses entropy metric
+                if isinstance(block.attention, HeuristicAdaptiveTTT) and \
+                   hasattr(block.attention, 'difficulty_metric') and \
+                   block.attention.difficulty_metric in {'entropy', 'combined'}:
+                    # Check if we can reuse cached logits
+                    # (only valid if hidden state hasn't changed)
+                    if cached_logits_state is not None:
+                        cached_x, cached_logits = cached_logits_state
+                        # Simple pointer equality check - x should be same object if unchanged
+                        if cached_x is x:
+                            logits_for_block = cached_logits
+
+                    # Compute new logits if not cached
+                    if logits_for_block is None:
+                        with torch.no_grad():
+                            logits_for_block = self.lm_head(self.ln_f(x))
+                            # Cache for potential reuse by next block
+                            # (though typically x changes after each block)
+                            cached_logits_state = (x, logits_for_block)
+
+                x, stats = block(x, logits=logits_for_block)
+                # Invalidate cache since x has changed
+                cached_logits_state = None
             else:
                 x, stats = block(x)
 

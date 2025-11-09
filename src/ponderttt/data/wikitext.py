@@ -7,7 +7,7 @@ Handles tokenization, batching, and data loading for language modeling.
 from typing import Dict, Optional, Tuple
 
 import torch
-from datasets import load_dataset
+from datasets import load_dataset  # type: ignore[import-untyped]
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
 
@@ -22,6 +22,7 @@ class WikiTextDataset(Dataset):
         max_length: Maximum sequence length (default: 512)
         dataset_name: Which WikiText to use ('wikitext-2-raw-v1' or 'wikitext-103-raw-v1')
         cache_dir: Directory to cache dataset
+        drop_last: Whether to drop incomplete sequences at the end (default: True)
     """
 
     def __init__(
@@ -31,10 +32,12 @@ class WikiTextDataset(Dataset):
         max_length: int = 512,
         dataset_name: str = "wikitext-2-raw-v1",
         cache_dir: Optional[str] = None,
+        drop_last: bool = True,
     ):
         self.split = split
         self.max_length = max_length
         self.dataset_name = dataset_name
+        self.drop_last = drop_last
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -46,17 +49,31 @@ class WikiTextDataset(Dataset):
         # Load dataset
         print(f"Loading {dataset_name} {split} split...")
         dataset = load_dataset(
-            "wikitext", dataset_name, split=split, cache_dir=cache_dir, trust_remote_code=True
+            "wikitext", dataset_name, split=split, cache_dir=cache_dir
         )
 
         # Tokenize
         print("Tokenizing dataset...")
-        self.tokenized_data = self._tokenize_dataset(dataset)
+        self.input_ids = self._tokenize_dataset(dataset)
 
-        print(f"Dataset loaded: {len(self.tokenized_data)} sequences")
+        # Calculate number of complete sequences
+        self.num_sequences = len(self.input_ids) // self.max_length
+        if not self.drop_last and len(self.input_ids) % self.max_length != 0:
+            self.num_sequences += 1
 
-    def _tokenize_dataset(self, dataset) -> list:
-        """Tokenize and chunk the dataset into fixed-length sequences."""
+        print(f"Dataset loaded: {self.num_sequences} sequences ({len(self.input_ids)} tokens total)")
+        if self.drop_last:
+            dropped = len(self.input_ids) % self.max_length
+            if dropped > 0:
+                print(f"  (dropped {dropped} trailing tokens due to drop_last=True)")
+
+    def _tokenize_dataset(self, dataset) -> torch.Tensor:
+        """
+        Tokenize dataset into single continuous sequence.
+
+        Returns:
+            Single 1D tensor of all token IDs (no chunking yet)
+        """
         # Concatenate all texts
         all_text = "\n\n".join([item["text"] for item in dataset if item["text"].strip()])
 
@@ -69,27 +86,31 @@ class WikiTextDataset(Dataset):
         )
 
         input_ids = tokenized["input_ids"][0]
-
-        # Chunk into sequences of max_length
-        sequences = []
-        for i in range(0, len(input_ids) - self.max_length, self.max_length):
-            chunk = input_ids[i : i + self.max_length]
-            if len(chunk) == self.max_length:
-                sequences.append(chunk)
-
-        return sequences
+        return input_ids
 
     def __len__(self) -> int:
-        return len(self.tokenized_data)
+        return self.num_sequences
 
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
         """
-        Get a single item.
+        Get a single item by slicing from continuous token stream.
+
+        Args:
+            index: Sequence index
 
         Returns:
             Dictionary with 'input_ids' and 'labels' (shifted for LM)
         """
-        input_ids = self.tokenized_data[index]
+        # Calculate start position for this sequence
+        start_idx = index * self.max_length
+
+        # Check if this is the last (potentially incomplete) sequence
+        if index == self.num_sequences - 1 and not self.drop_last:
+            # Last sequence: take remaining tokens
+            seq_input_ids = self.input_ids[start_idx:]
+        else:
+            # Regular sequence: take exactly max_length tokens
+            seq_input_ids = self.input_ids[start_idx : start_idx + self.max_length]
 
         # For language modeling, labels are shifted input_ids
         # input:  [w1, w2, w3, w4]
@@ -97,8 +118,8 @@ class WikiTextDataset(Dataset):
         # But we'll handle the shift in the model/loss computation
 
         return {
-            "input_ids": input_ids,
-            "labels": input_ids.clone(),  # Model will handle the shift
+            "input_ids": seq_input_ids,
+            "labels": seq_input_ids.clone(),  # Model will handle the shift
         }
 
 
@@ -128,6 +149,7 @@ def get_wikitext_dataloaders(
     batch_size: int = 8,
     num_workers: int = 0,
     cache_dir: Optional[str] = None,
+    drop_last: bool = True,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Create train, validation, and test dataloaders for WikiText.
@@ -139,6 +161,7 @@ def get_wikitext_dataloaders(
         batch_size: Batch size
         num_workers: Number of workers for DataLoader
         cache_dir: Cache directory for datasets
+        drop_last: Whether to drop incomplete sequences at the end (default: True)
 
     Returns:
         Tuple of (train_loader, val_loader, test_loader)
@@ -150,6 +173,7 @@ def get_wikitext_dataloaders(
         max_length=max_length,
         dataset_name=dataset_name,
         cache_dir=cache_dir,
+        drop_last=drop_last,
     )
 
     val_dataset = WikiTextDataset(
@@ -158,6 +182,7 @@ def get_wikitext_dataloaders(
         max_length=max_length,
         dataset_name=dataset_name,
         cache_dir=cache_dir,
+        drop_last=drop_last,
     )
 
     test_dataset = WikiTextDataset(
@@ -166,7 +191,11 @@ def get_wikitext_dataloaders(
         max_length=max_length,
         dataset_name=dataset_name,
         cache_dir=cache_dir,
+        drop_last=drop_last,
     )
+
+    # Use pin_memory only if CUDA is available
+    pin_memory = torch.cuda.is_available()
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -175,7 +204,7 @@ def get_wikitext_dataloaders(
         shuffle=True,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True,
+        pin_memory=pin_memory,
     )
 
     val_loader = DataLoader(
@@ -184,7 +213,7 @@ def get_wikitext_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True,
+        pin_memory=pin_memory,
     )
 
     test_loader = DataLoader(
@@ -193,7 +222,31 @@ def get_wikitext_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True,
+        pin_memory=pin_memory,
     )
 
     return train_loader, val_loader, test_loader
+
+
+def get_wikitext2_dataloaders(
+    batch_size: int = 8,
+    max_length: int = 256,
+    **kwargs
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    """
+    Alias for get_wikitext_dataloaders with wikitext-2 as default.
+
+    Args:
+        batch_size: Batch size
+        max_length: Maximum sequence length
+        **kwargs: Additional arguments passed to get_wikitext_dataloaders
+
+    Returns:
+        Tuple of (train_loader, val_loader, test_loader)
+    """
+    return get_wikitext_dataloaders(
+        dataset_name="wikitext-2-raw-v1",
+        batch_size=batch_size,
+        max_length=max_length,
+        **kwargs
+    )

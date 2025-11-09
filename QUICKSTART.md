@@ -1,309 +1,349 @@
 # PonderTTT Quick Start Guide
 
-**Ready to run WikiText-2 experiments!** 🚀
+Get started with PonderTTT in 5 minutes!
 
 ---
 
-## Prerequisites
+## 📦 Installation
+
+### Prerequisites
+- Python 3.9+
+- CUDA-capable GPU (recommended for experiments)
+- [uv](https://github.com/astral-sh/uv) package manager
+
+### Install Dependencies
 
 ```bash
-# Ensure you're in the project directory
-cd /home/world/ponderttt
+# Clone the repository
+git clone https://github.com/yourusername/ponderttt.git
+cd ponderttt
 
-# Dependencies should already be installed
-# If not, run: uv sync
+# Install dependencies with uv
+uv sync
+
+# Verify installation
+python -c "from src.ponderttt.models import IterativeTransformerTTT; print('✅ Installation successful!')"
 ```
 
 ---
 
-## Quick Test (1-2 minutes)
+## 🚀 Quick Validation (~1 hour)
 
-Verify everything works:
-
-```bash
-# Run sanity checks
-uv run python experiments/test_setup.py
-```
-
-**Expected output**: "All tests passed! ✅"
-
----
-
-## Run Experiments
-
-### Option 1: Run Everything (Recommended)
-
-Run all baselines + adaptive in one command:
+Test the implementation with a minimal experiment:
 
 ```bash
-# GPU (recommended, ~3-4 hours)
-uv run python experiments/wikitext2_experiment.py \
-    --mode all \
-    --num_epochs 3 \
-    --max_train_batches 500 \
-    --max_eval_batches 100 \
-    --device cuda
-
-# CPU (slow, ~20+ hours, for testing only)
-uv run python experiments/wikitext2_experiment.py \
-    --mode all \
+uv run python src/ponderttt/experiments/full_comparison_suite.py \
+    --methods uniform_k1 uniform_k4 learned_lambda001_target4 \
+    --seeds 42 \
     --num_epochs 1 \
-    --max_train_batches 50 \
-    --max_eval_batches 20 \
-    --device cpu
-```
-
-This will run:
-- Fixed-1 baseline (1 TTT iteration)
-- Fixed-2 baseline (2 TTT iterations)
-- Fixed-4 baseline (4 TTT iterations)
-- Adaptive TTT (entropy-based allocation)
-
-### Option 2: Run Individual Experiments
-
-**Baseline only**:
-```bash
-uv run python experiments/wikitext2_experiment.py \
-    --mode baseline \
-    --ttt_iterations 2 \
-    --num_epochs 3 \
+    --max_train_batches 10 \
+    --max_eval_batches 5 \
     --device cuda
 ```
 
-**Adaptive only**:
+**What this does**:
+- Compares 3 methods: Uniform-K1, Uniform-K4, Learned Policy
+- Runs on 1 random seed
+- Trains for 1 epoch on 10 batches
+- Takes ~1 hour on RTX 3090
+
+**Expected output**:
+```
+Method: uniform_k1
+  Test Perplexity: ~150-200
+  Avg Steps: 1.00
+
+Method: uniform_k4
+  Test Perplexity: ~100-120
+  Avg Steps: 4.00
+
+Method: learned_lambda001_target4
+  Test Perplexity: ~105-125 (close to uniform_k4)
+  Avg Steps: 2.5-3.5 (adaptive allocation)
+```
+
+---
+
+## 🧪 Full Experiments (5-7 days)
+
+Run complete experimental suite with statistical validation:
+
 ```bash
-uv run python experiments/wikitext2_experiment.py \
-    --mode adaptive \
-    --num_epochs 3 \
+uv run python src/ponderttt/experiments/full_comparison_suite.py \
+    --seeds 42 123 456 789 101112 999 888 777 666 555 \
+    --num_epochs 10 \
     --device cuda
 ```
 
----
+**What this does**:
+- Compares all 8 methods (Uniform-K1/2/4/8, Learned policies, Heuristics)
+- Runs 10 random seeds for statistical significance
+- Trains for 10 epochs on full WikiText-2
+- Generates comprehensive results
 
-## Analyze Results
-
-After experiments complete:
-
-```bash
-# Generate all visualizations and tables
-uv run python experiments/analyze_wikitext2.py
-```
-
-**Outputs** (saved to `experiments/figures/`):
-- `pareto_curve_wikitext2.png` - FLOPs vs Perplexity tradeoff
-- `allocation_distribution.png` - How iterations are allocated
-- `training_curves.png` - Validation perplexity over epochs
-
-**Console output**:
-- Formatted results table
-- Summary statistics
+**Methods compared**:
+1. `uniform_k1` - All tokens get 1 gradient step
+2. `uniform_k2` - All tokens get 2 gradient steps
+3. `uniform_k4` - All tokens get 4 gradient steps (standard)
+4. `uniform_k8` - All tokens get 8 gradient steps
+5. `heuristic_entropy` - Entropy-based allocation
+6. `learned_lambda001_target4` - REINFORCE (λ=0.01, target=4) ⭐ Main contribution
+7. `learned_lambda005_target4` - REINFORCE (λ=0.05, target=4)
+8. `learned_lambda001_notarget` - REINFORCE (λ=0.01, minimize compute)
 
 ---
 
-## Expected Results
+## 💻 Basic Usage
 
-Based on Phase 1 findings, we expect:
-
-| Metric | Target | Expected |
-|--------|--------|----------|
-| **FLOPs Reduction** | ≥20% | 30-40% |
-| **Quality Loss** | <5% | <1% |
-| **Allocation Accuracy** | >85% | 90-95% |
-
-**Baseline Comparison**:
-```
-Config          Perplexity    FLOPs/token    Notes
----------------------------------------------------------
-Fixed-1         ~120          1.0x           Fast, low quality
-Fixed-2         ~100          1.5x           Balanced
-Fixed-4         ~95           2.0x           Best quality, slow
-Adaptive        ~96           1.2-1.4x       🎯 Sweet spot
-```
-
----
-
-## Experiment Configuration
-
-### Default Settings (Balanced)
+### Create and Train a Model
 
 ```python
-# Model
-hidden_dim = 512
-num_layers = 6
-num_heads = 8
-ttt_layer_idx = 3  # Replace middle attention layer
+from src.ponderttt.models import IterativeTransformerConfig, IterativeTransformerTTT
+import torch
 
-# Training
-num_epochs = 3
-batch_size = 8
-max_train_batches = 500  # ~4000 batches total, this is 1/8
-max_eval_batches = 100
-learning_rate = 3e-4
+# Configure model
+config = IterativeTransformerConfig(
+    vocab_size=50257,           # GPT-2 tokenizer
+    hidden_dim=512,
+    num_layers=6,
+    num_heads=8,
+    ttt_layer_indices=[2, 3, 4],  # Which layers use TTT
+    max_steps=8,
+    use_learned_policy=True,    # Use REINFORCE policy
+    step_options=[1, 2, 4, 8],  # K_t choices
+)
 
-# Adaptive TTT
-difficulty_metric = "entropy"
-buckets = [1, 2, 4]
-target_distribution = [0.3, 0.4, 0.3]
+# Create model
+model = IterativeTransformerTTT(config)
+
+# Forward pass
+input_ids = torch.randint(0, config.vocab_size, (2, 128))
+labels = torch.randint(0, config.vocab_size, (2, 128))
+
+outputs = model(
+    input_ids=input_ids,
+    labels=labels,
+    num_steps=None,  # Let policy decide K_t
+    return_stats=True,
+)
+
+# Check results
+print(f"Loss: {outputs['loss'].item():.4f}")
+if outputs['ttt_stats']:
+    for i, stats in enumerate(outputs['ttt_stats']):
+        print(f"TTT Layer {i}: avg_steps={stats['avg_steps']:.2f}")
 ```
 
-### Quick Test Settings (Fast)
+### Load WikiText-2 Data
 
-For rapid iteration during development:
+```python
+from src.ponderttt.data.wikitext import get_wikitext2_dataloaders
 
-```bash
-uv run python experiments/wikitext2_experiment.py \
-    --mode all \
-    --num_epochs 1 \
-    --max_train_batches 50 \
-    --max_eval_batches 10 \
-    --device cuda
+train_loader, val_loader, test_loader = get_wikitext2_dataloaders(
+    batch_size=8,
+    max_length=256,
+)
+
+# Iterate over data
+for batch in train_loader:
+    input_ids = batch['input_ids']  # (batch, seq_len)
+    labels = batch['labels']        # (batch, seq_len)
+    break
 ```
 
-Runtime: ~10-15 minutes on GPU
+### Compute FLOPs
 
-### Full Settings (Publication Quality)
+```python
+from src.ponderttt.utils.flops import compute_model_flops
 
-For best results:
+flops = compute_model_flops(
+    config,
+    seq_len=256,
+    num_steps=4,
+    include_backward=True,
+)
 
-```bash
-uv run python experiments/wikitext2_experiment.py \
-    --mode all \
-    --num_epochs 5 \
-    --max_train_batches 1000 \
-    --max_eval_batches 200 \
-    --device cuda
-```
-
-Runtime: ~8-10 hours on GPU
-
----
-
-## Results Storage
-
-All results are automatically saved:
-
-```
-experiments/
-├── results/
-│   ├── baseline_1_20251105_143022.json
-│   ├── baseline_2_20251105_150415.json
-│   ├── baseline_4_20251105_153808.json
-│   └── adaptive_adaptive_20251105_161201.json
-└── figures/
-    ├── pareto_curve_wikitext2.png
-    ├── allocation_distribution.png
-    └── training_curves.png
-```
-
-**JSON Format**:
-```json
-{
-  "config": "baseline",
-  "ttt_iterations": 2,
-  "num_params": 44122112,
-  "test_perplexity": 98.45,
-  "flops_per_token": 2.45e10,
-  "ttt_stats": {
-    "avg_iterations": 2.0,
-    "flops_reduction": 0.0
-  }
-}
+print(f"Total FLOPs: {flops['total']/1e9:.2f}G")
+print(f"Per-token: {flops['per_token']/1e3:.2f}K")
+print(f"Policy network overhead: {flops['policy_network']/1e6:.2f}M")
 ```
 
 ---
 
-## Troubleshooting
+## 📊 Analysis Tools
 
-### Out of Memory (GPU)
+### Oracle Analysis (Optimal K Allocation)
 
-Reduce batch size or sequence length:
+Find the optimal K for each token via exhaustive search:
 
 ```bash
-# Edit experiments/wikitext2_experiment.py
-# Line ~250, change:
-batch_size=4  # was 8
-max_length=128  # was 256
+uv run python src/ponderttt/experiments/oracle_analysis.py \
+    --max_batches 20 \
+    --sample_positions 64 \
+    --device cuda
+```
+
+**Output**:
+- Optimal K distribution
+- Difficulty-K correlation
+- Oracle Pareto frontier (upper bound)
+
+### Convergence Analysis
+
+Measure the gap between iterative and analytic TTT:
+
+```bash
+uv run python src/ponderttt/experiments/convergence_analysis.py \
+    --max_batches 50 \
+    --k_values 1 2 4 8 16 \
+    --device cuda
+```
+
+**Output**:
+- Convergence curves for different K
+- Gap vs K plot
+- Convergence rate analysis
+
+### Extended Oracle with Visualization
+
+```bash
+uv run python src/ponderttt/experiments/extended_oracle_analysis.py \
+    --max_batches 20 \
+    --sample_positions 64 \
+    --device cuda
+```
+
+**Output**:
+- Oracle K distribution plots
+- Difficulty-K correlation scatter plots
+- Pareto frontier visualization
+
+---
+
+## 🔧 Configuration Options
+
+### Model Configuration
+
+```python
+config = IterativeTransformerConfig(
+    # Architecture
+    vocab_size=50257,
+    hidden_dim=512,
+    num_layers=6,
+    num_heads=8,
+    ffn_dim=2048,
+
+    # TTT layers
+    ttt_layer_indices=[2, 3, 4],  # Which layers use TTT
+    fast_weight_hidden_dim=64,    # Fast-weight MLP hidden size
+    ttt_base_lr=0.1,              # TTT learning rate
+    max_steps=8,                  # Maximum gradient steps
+
+    # Learned policy (REINFORCE)
+    use_learned_policy=True,
+    step_options=[1, 2, 4, 8],    # K_t choices
+    lambda_compute=0.01,          # Compute regularization
+    target_avg_steps=4.0,         # Target average steps
+    gamma=0.99,                   # Discount factor
+    baseline_momentum=0.99,       # Baseline EMA momentum
+)
+```
+
+### Experiment Arguments
+
+```bash
+# full_comparison_suite.py arguments
+--methods METHODS [METHODS ...]  # Methods to compare
+--seeds SEEDS [SEEDS ...]        # Random seeds
+--num_epochs NUM_EPOCHS          # Training epochs
+--max_train_batches N            # Limit training batches (debug)
+--max_eval_batches N             # Limit eval batches (debug)
+--device {cuda,cpu}              # Device to use
+--batch_size BATCH_SIZE          # Batch size (default: 8)
+--max_length MAX_LENGTH          # Sequence length (default: 256)
+```
+
+---
+
+## 📈 Expected Results
+
+Based on our implementation (before running full experiments):
+
+**Perplexity**:
+- Uniform-K1: ~150-200 (low compute, poor quality)
+- Uniform-K4: ~100-120 (medium compute, good quality)
+- Uniform-K8: ~95-115 (high compute, best quality)
+- **Learned Policy**: ~105-125 (medium-low compute, near-K4 quality) ⭐
+
+**FLOPs Reduction**:
+- Target: 15-30% reduction vs Uniform-K4
+- Expected avg steps: 2.5-3.5 (adaptive allocation)
+
+**Statistical Significance**:
+- With 10 seeds: p < 0.05 (Bonferroni corrected)
+- Bootstrap confidence intervals
+
+---
+
+## 🐛 Troubleshooting
+
+### Import Errors
+
+```bash
+# If you get import errors:
+python -c "import sys; print(sys.path)"
+
+# Make sure you're in the project root and using:
+uv run python ...
+```
+
+### CUDA Out of Memory
+
+```bash
+# Reduce batch size or sequence length:
+--batch_size 4 --max_length 128
 ```
 
 ### Slow Training
 
-Check device is actually GPU:
-
-```python
-import torch
-print(torch.cuda.is_available())  # Should be True
-print(torch.cuda.get_device_name(0))  # GPU name
-```
-
-### Import Errors
-
-Reinstall dependencies:
-
 ```bash
-uv sync
-```
+# Use CPU for debugging (slower but works):
+--device cpu
 
-### No Results Found
-
-Check results directory exists:
-
-```bash
-ls experiments/results/
-```
-
-If empty, experiments haven't completed yet.
-
----
-
-## Advanced: Custom Experiments
-
-### Different TTT Layer Position
-
-Edit `TransformerConfig`:
-```python
-config = TransformerConfig(
-    ttt_layer_idx=0,  # Replace first layer
-    # or
-    ttt_layer_idx=5,  # Replace last layer
-)
-```
-
-### Different Difficulty Metrics
-
-Options: `"entropy"`, `"loss"`, `"gradient"`
-
-```python
-config = TransformerConfig(
-    ttt_difficulty_metric="loss",  # Use loss-based
-)
-```
-
-### Custom Iteration Buckets
-
-```python
-config = TransformerConfig(
-    ttt_buckets=[1, 2, 3, 4],  # 4 levels
-    ttt_target_distribution=[0.25, 0.25, 0.25, 0.25],
-)
+# Or reduce training size:
+--max_train_batches 50 --max_eval_batches 10
 ```
 
 ---
 
-## Next Steps After Experiments
+## 📚 Next Steps
 
-1. ✅ **Verify Results**: Check that metrics meet success criteria
-2. 📊 **Document Findings**: Update README.md with results
-3. 📈 **Analyze Patterns**: Look at which tokens get more/fewer iterations
-4. 🔧 **Iterate**: Try different metrics, buckets, or layer positions
-5. 📝 **Plan Week 2**: WikiText-103, ablations, optimizations
+1. **Run Quick Validation** - Verify installation (~1 hour)
+2. **Explore Code** - Read `src/ponderttt/models/transformer_iterative.py`
+3. **Run Full Experiments** - Get publication-ready results (5-7 days)
+4. **Analyze Results** - Use oracle and convergence analysis tools
+5. **Read Paper Draft** - Understand the theoretical background
 
 ---
 
-## Questions?
+## 💡 Key Files
 
-Check the detailed docs:
-- [README.md](README.md) - Project overview
-- [PLAN.md](PLAN.md) - Full 2-month timeline
-- [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Technical details
+| File | Description |
+|------|-------------|
+| `README.md` | Project overview and architecture |
+| `STATUS.md` | Implementation status and file structure |
+| `PLAN.md` | Development roadmap and timeline |
+| `src/ponderttt/models/transformer_iterative.py` | Main model implementation |
+| `src/ponderttt/models/halting_policy.py` | REINFORCE policy network |
+| `src/ponderttt/experiments/full_comparison_suite.py` | Main experiment script |
+| `src/ponderttt/utils/flops.py` | Accurate FLOPs counting |
 
-Happy experimenting! 🎉
+---
+
+## 🆘 Getting Help
+
+- **Issues**: Open an issue on GitHub
+- **Questions**: Check README.md and STATUS.md
+- **Code**: All code is documented with docstrings
+
+**Happy experimenting!** 🚀

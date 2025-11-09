@@ -7,6 +7,7 @@ Provides various ways to measure token difficulty:
 - Gradient magnitude
 """
 
+import math
 from typing import Dict, Optional
 
 import torch
@@ -57,7 +58,7 @@ class DifficultyMetrics:
         if normalize:
             # Normalize by max possible entropy
             vocab_size = logits.size(-1)
-            max_entropy = torch.log(torch.tensor(vocab_size, dtype=logits.dtype))
+            max_entropy = torch.log(torch.tensor(vocab_size, dtype=logits.dtype, device=logits.device))
             entropy = entropy / max_entropy
 
         return entropy
@@ -100,7 +101,7 @@ class DifficultyMetrics:
             difficulty: Difficulty scores (batch, seq_len)
         """
         # Compute gradient norm per token
-        grad_norm = torch.norm(gradients.flatten(2), dim=-1)
+        grad_norm: torch.Tensor = torch.norm(gradients.flatten(2), dim=-1)
 
         if normalize:
             # Normalize by batch statistics
@@ -237,6 +238,16 @@ class IterationAllocator:
 
         self.calibrated = True
 
+    def calibrate_multi_batch(self, difficulty_batches: list) -> None:
+        """
+        Calibrate thresholds using multiple batches for improved stability.
+
+        Args:
+            difficulty_batches: List of difficulty tensors from multiple batches
+        """
+        all_samples = torch.cat([d.flatten() for d in difficulty_batches], dim=0)
+        self.calibrate(all_samples)
+
     def allocate(
         self, difficulty: torch.Tensor, auto_calibrate: Optional[bool] = None
     ) -> torch.Tensor:
@@ -251,25 +262,54 @@ class IterationAllocator:
         Returns:
             iterations: Number of iterations per token (batch, seq_len)
         """
-        # Check if calibration is needed
         if auto_calibrate is None:
             auto_calibrate = self.auto_calibrate
 
-        if auto_calibrate and not self.calibrated:
+        if auto_calibrate and not self.calibrated and self.thresholds is None:
             self.calibrate(difficulty)
+            self.calibrated = True
 
         if self.thresholds is None:
             raise ValueError(
                 "Thresholds not set. Call calibrate() first or set auto_calibrate=True"
             )
 
-        iterations = torch.ones_like(difficulty, dtype=torch.long) * self.buckets[0]
+        iterations: torch.Tensor = torch.ones_like(difficulty, dtype=torch.long) * self.buckets[0]
 
         for i, threshold in enumerate(self.thresholds):
             mask = difficulty > threshold
             iterations[mask] = self.buckets[i + 1]
 
         return iterations
+
+    def freeze_calibration(self) -> None:
+        """
+        Freeze calibration to prevent further updates.
+
+        Call this after training is complete, before evaluation on test set,
+        to prevent test data leakage.
+        """
+        if not self.calibrated:
+            raise ValueError(
+                "Cannot freeze calibration before it has been performed. "
+                "Call calibrate() with validation data first."
+            )
+        self.auto_calibrate = False
+
+    def get_calibration_status(self) -> dict:
+        """
+        Get current calibration status.
+
+        Returns:
+            Dictionary with calibration information
+        """
+        return {
+            "calibrated": self.calibrated,
+            "auto_calibrate": self.auto_calibrate,
+            "thresholds": self.thresholds,
+            "buckets": self.buckets,
+            "target_distribution": self.target_distribution,
+        }
 
     def get_distribution(self, iterations: torch.Tensor) -> Dict[int, float]:
         """
@@ -289,3 +329,16 @@ class IterationAllocator:
             distribution[bucket] = count / total
 
         return distribution
+
+
+def compute_perplexity(loss: float) -> float:
+    """
+    Convert cross-entropy loss to perplexity.
+
+    Args:
+        loss: Cross-entropy loss (scalar)
+
+    Returns:
+        perplexity: exp(loss)
+    """
+    return math.exp(min(loss, 100))  # Clip for numerical stability
