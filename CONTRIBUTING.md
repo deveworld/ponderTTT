@@ -4,13 +4,18 @@ Thank you for your interest in contributing to PonderTTT!
 
 ## Development Setup
 
-1. Clone the repository:
+1. Install uv (if not already installed):
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+2. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/ponderttt.git
 cd ponderttt
 ```
 
-2. Install dependencies:
+3. Install dependencies:
 ```bash
 make install
 ```
@@ -21,10 +26,16 @@ uv pip install -e .
 uv pip install -e ".[dev]"
 ```
 
-3. Run tests:
+4. Run validation:
 ```bash
-make test
+# Quick validation with synthetic data
+uv run python -m ponderttt.experiments.train_baseline \
+    --model_scale 125m \
+    --action SKIP \
+    --num_chunks 10
 ```
+
+**Note**: This project uses **uv** for package management, not pip.
 
 ## Code Style
 

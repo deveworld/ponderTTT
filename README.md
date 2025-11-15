@@ -32,47 +32,74 @@ JAX/Flax Stack:
 
 ## Installation
 
-### For TPU (Recommended)
+### Prerequisites
+
+This project uses **uv** for dependency management (not pip). Install uv first:
+
+```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### For TPU (Future - Not Yet Tested)
 
 ```bash
 # On TPU VM
-pip install -f https://storage.googleapis.com/jax-releases/libtpu_releases.html \
+uv pip install -f https://storage.googleapis.com/jax-releases/libtpu_releases.html \
     jax[tpu]==0.4.14
 
 # Install other dependencies
-pip install -e .
+uv pip install -e .
 ```
 
-### For GPU
+**Note**: TPU support is implemented but not yet validated on actual hardware.
+
+### For GPU (Recommended for Production)
 
 ```bash
 # Install JAX for GPU
-pip install jax[cuda12_pip] -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+uv pip install jax[cuda12_pip] -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
 # Install other dependencies
-pip install -e .
+uv pip install -e .
 ```
 
-### For CPU (Development)
+**Note**: GPU is required for production experiments. CPU is too slow for real training.
+
+### For CPU (Development/Validation Only)
 
 ```bash
-pip install -e .
+uv pip install -e .
 ```
+
+**Note**: CPU validation confirmed working. Use for development and testing only.
 
 ## Quick Start
 
-### 1. Test Installation (CPU/GPU)
+### 1. Validate Pipeline (CPU/GPU)
 
 ```bash
-python scripts/quick_test.py
+# Run baseline validation with synthetic data
+uv run python -m ponderttt.experiments.train_baseline \
+    --model_scale 125m \
+    --action SKIP \
+    --num_chunks 10
 ```
 
-This verifies:
+This validates:
 - JAX/Flax setup
 - Model initialization
 - TTT layer functionality
 - Policy network
 - Feature extraction
+- Training loop
+
+**Expected Results** (with synthetic data):
+- SKIP baseline: ~11.0 loss (random tokens)
+- UPDATE_1/2/4: ~10.9 loss (marginal improvement)
+- All baselines run without errors
+
+**Important**: Synthetic data has limited semantic structure. Real data (The Stack) needed for meaningful results.
 
 ### 2. Test Distributed Setup (Single Host)
 
@@ -257,29 +284,29 @@ JAX/Flax equivalents to common PyTorch patterns:
 
 ## Roadmap
 
-See [PLAN.md](PLAN.md) for detailed research plan.
+See [PLAN.md](PLAN.md) for detailed research plan and [PROJECT_STATUS.md](PROJECT_STATUS.md) for current status.
 
-### Phase 1 (Current): Foundation
+### Phase 1: Foundation ✅ COMPLETE
 - ✅ JAX/Flax implementation
 - ✅ Data pipeline with multi-host sharding
 - ✅ Core models (TTT, Policy)
 - ✅ Training algorithms (PID-Lagrangian PPO)
 - ✅ Feature extraction
 - ✅ Multi-host distributed training
-- ✅ TPU-ready training scripts
-- ✅ Sharding constraints for multi-host
-- ✅ Parameter sharding with size thresholds
-- ✅ Sharding inspection utilities
-- ✅ TPU setup validation script
-- ⏳ TPU hardware validation
+- ✅ TPU-ready training scripts (not yet tested on hardware)
+- ✅ CPU validation complete
+- ✅ Bug fixes (chunk size, dropout, dynamic slicing, etc.)
+- ✅ Cost calculations validated (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
 
-### Phase 2: Experiments
-- [ ] 125M baseline experiments
+### Phase 2: Real Data & GPU (Current - Blocked)
+- ⏳ **Blocker**: Access to The Stack dataset (gated, requires approval)
+- ⏳ **Blocker**: GPU access for production training (CPU too slow)
+- [ ] 125M baseline experiments with real data
 - [ ] Policy training and evaluation
 - [ ] Ablation studies
 - [ ] 350M scaling
 
-### Phase 3: Publication
+### Phase 3: Publication (Future)
 - [ ] 1B experiments
 - [ ] Statistical analysis
 - [ ] Paper writing
@@ -317,4 +344,26 @@ For questions, open an issue on GitHub.
 ---
 
 **Version**: 0.2.0 (JAX/Flax)
-**Status**: Ready for TPU validation
+**Status**: Pipeline Validated on CPU, Ready for GPU/Real Data
+
+## Current Limitations
+
+### Known Issues
+1. **Synthetic Data Only**: Currently using random tokens for validation. Real data (The Stack) is gated and requires approval.
+2. **GPU Required**: CPU validation confirms pipeline works, but GPU needed for production experiments (CPU too slow).
+3. **TTT Improvement Marginal**: On synthetic data, TTT shows only ~0.1 loss reduction (expected - random tokens have no semantic structure).
+4. **Real Benchmarks Pending**: HumanEval/MBPP evaluation requires real code training data.
+
+### Recent Fixes (v0.2.0)
+1. Fixed chunk_size: 512 for GPT-2 (was 4096, incompatible with model's positional embeddings)
+2. Fixed HuggingFace/Flax model compatibility wrapper
+3. Fixed dropout RNG for training mode
+4. Fixed synthetic data generation (was all 1s, now varied random tokens)
+5. Fixed JAX dynamic slicing in TTT layer
+6. Fixed base model deterministic parameter
+
+### Next Steps
+1. Obtain access to The Stack dataset
+2. Secure GPU resources for training
+3. Run baseline experiments with real code data
+4. Validate TTT improvement on meaningful data
