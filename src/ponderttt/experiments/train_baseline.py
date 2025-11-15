@@ -123,15 +123,34 @@ def main():
     print("Creating data iterator...")
     if args.use_synthetic:
         print("Using synthetic data...")
-        # Create synthetic data generator
+        # Create synthetic data generator with VARIED tokens
         def synthetic_data_iter():
             num_chunks_per_seq = config.model.max_seq_length // config.model.chunk_size
+            batch_idx = 0
             while True:
+                # Generate random tokens from vocabulary (realistic)
+                rng = jax.random.PRNGKey(config.seed + batch_idx)
+                input_ids = jax.random.randint(
+                    rng,
+                    (config.training.batch_size, config.model.max_seq_length),
+                    0,
+                    min(10000, tokenizer.vocab_size),  # Use subset of vocab for faster generation
+                    dtype=jnp.int32
+                )
+
+                # Create chunks from sequence
+                chunks = input_ids.reshape(
+                    config.training.batch_size,
+                    num_chunks_per_seq,
+                    config.model.chunk_size
+                )
+
                 yield {
-                    "input_ids": jnp.ones((config.training.batch_size, config.model.max_seq_length), dtype=jnp.int32),
-                    "attention_mask": jnp.ones((config.training.batch_size, config.model.max_seq_length), dtype=jnp.int32),
-                    "chunks": jnp.ones((config.training.batch_size, num_chunks_per_seq, config.model.chunk_size), dtype=jnp.int32),
+                    "input_ids": input_ids,
+                    "attention_mask": jnp.ones_like(input_ids),
+                    "chunks": chunks,
                 }
+                batch_idx += 1
         data_iter = synthetic_data_iter()
     else:
         data_iter = create_data_iterator(
