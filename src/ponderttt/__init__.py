@@ -1,16 +1,11 @@
 """
-PonderTTT: Learning to Ponder with Variable-Depth Test-Time Training
+PonderTTT: Learning When to Ponder During Test-Time Training
 
-Adaptive inner-loop iteration mechanism for Test-Time Training layers.
+JAX/Flax implementation for TPU optimization.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from .models.adaptive_ttt import AdaptiveTTT, HeuristicAdaptiveTTT
-from .models.ttt_linear import TTTLinear
+from . import data, models, training, utils
 
-__all__ = [
-    "TTTLinear",
-    "AdaptiveTTT",
-    "HeuristicAdaptiveTTT",
-]
+__all__ = ["data", "models", "training", "utils"]
