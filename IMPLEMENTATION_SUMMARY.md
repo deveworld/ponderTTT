@@ -2,9 +2,11 @@
 
 Complete implementation of the PonderTTT framework as described in PLAN.md
 
-## Implementation Status: ✅ Complete (Phase 1)
+## Implementation Status: ✅ Phase 1 Complete, ⏳ Phase 2 Blocked
 
-All core components for Phase 1 have been implemented and are ready for experimentation.
+All core components for Phase 1 have been implemented and validated on CPU with synthetic data. Phase 2 (real data experiments) is blocked on dataset access and GPU resources.
+
+**Last Updated**: 2025-11-16
 
 ## File Structure
 
@@ -312,34 +314,57 @@ python -m ponderttt.experiments.train_policy \
 
 ## Verification ✅
 
-All Python files pass syntax checking:
+### CPU Validation Complete
+All baselines run successfully with synthetic data:
 ```bash
-python -m py_compile src/ponderttt/**/*.py  # ✅ All pass
+uv run python -m ponderttt.experiments.train_baseline --action SKIP       # ✅ Works
+uv run python -m ponderttt.experiments.train_baseline --action UPDATE_1   # ✅ Works
+uv run python -m ponderttt.experiments.train_baseline --action UPDATE_2   # ✅ Works
+uv run python -m ponderttt.experiments.train_baseline --action UPDATE_4   # ✅ Works
 ```
+
+**Validated Results** (synthetic data):
+- ✅ All pipelines run without errors
+- ✅ Cost calculations accurate (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
+- ✅ Loss values realistic (~11.0 for random tokens)
+- ⚠️ TTT improvement marginal (~0.1) - expected on synthetic data
+
+### Recent Fixes (v0.2.0)
+1. ✅ Fixed chunk_size: 512 for GPT-2 (was 4096)
+2. ✅ Fixed HuggingFace/Flax model compatibility wrapper
+3. ✅ Fixed dropout RNG for training mode
+4. ✅ Fixed synthetic data generation (was all 1s, now varied random tokens)
+5. ✅ Fixed JAX dynamic slicing in TTT layer
+6. ✅ Fixed base model deterministic parameter
 
 Total implementation:
 - **25 Python files**
 - **~4,032 lines of code**
 - **Fully documented** with docstrings
 - **Type hints** throughout
+- **CPU validated** on synthetic data
 
-## Next Steps (Phase 2)
+## Next Steps
 
-Based on PLAN.md timeline:
+### Immediate Blockers
+1. **The Stack Dataset Access**: Gated on HuggingFace, requires approval
+2. **GPU Resources**: CPU too slow for production experiments (10-100× slower)
 
-### Week 5-8: Initial Experiments (Current)
-- [x] Infrastructure complete
-- [ ] Run 125M validation experiments
-- [ ] Verify TTT improves over No-TTT
+### Phase 2: Real Data Experiments (Blocked)
+- ⏳ Obtain The Stack dataset access
+- ⏳ Secure GPU resources
+- [ ] Run 125M experiments with real code data
+- [ ] Verify TTT improves over No-TTT on real code
 - [ ] Test policy learning convergence
+- [ ] Validate cost/quality tradeoffs
 
-### Week 9-12: Scaling Up
+### Phase 3: Scaling Up (Future)
 - [ ] 350M experiments
 - [ ] Complete ablation studies
 - [ ] Feature importance analysis
 - [ ] LoRA rank tuning
 
-### Month 4-5: Main Results
+### Phase 4: Main Results (Future)
 - [ ] 1B scale experiments (5 seeds)
 - [ ] All baseline comparisons
 - [ ] ClassEval integration
@@ -406,6 +431,22 @@ config = ExperimentConfig(
 
 ## Conclusion
 
-Phase 1 implementation is **complete and ready for experimentation**. All core components are implemented, tested, and documented. The codebase follows best practices and is designed for easy extension in Phase 2.
+Phase 1 implementation is **complete and CPU-validated**. All core components are implemented, tested on synthetic data, and documented. The codebase follows best practices and is designed for easy extension.
 
-**Ready for**: Week 3-4 GO/NO-GO checkpoint (PLAN.md)
+### Current Status Summary
+
+**✅ Completed**:
+- All core components implemented and documented
+- CPU validation successful with synthetic data
+- Cost calculations verified (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
+- Pipeline runs end-to-end without errors
+- Bug fixes applied (chunk size, dropout, dynamic slicing, etc.)
+
+**⏳ Blocked**:
+- Real data experiments (The Stack dataset access required)
+- GPU training (CPU too slow for production)
+- Meaningful TTT validation (synthetic data has limited semantics)
+
+**✅ GO Decision**: Infrastructure validated, ready for real data and GPU resources.
+
+**Next Milestone**: Obtain dataset access and GPU resources for Phase 2 experiments.
