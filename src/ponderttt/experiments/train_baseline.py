@@ -155,7 +155,23 @@ def main():
 
     # Wrapper to make HF model compatible with trainer
     def model_apply_fn(variables, input_ids, attention_mask=None, deterministic=True):
-        outputs = hf_model(input_ids=input_ids, attention_mask=attention_mask, params=variables['params'], train=not deterministic)
+        # HF models need dropout RNG when train=True
+        if not deterministic:
+            dropout_rng = next_rng()
+            outputs = hf_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                params=variables['params'],
+                dropout_rng=dropout_rng,
+                train=True
+            )
+        else:
+            outputs = hf_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                params=variables['params'],
+                train=False
+            )
         return {'logits': outputs.logits}
 
     # Create a simple model object
