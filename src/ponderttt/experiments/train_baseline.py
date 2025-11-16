@@ -292,6 +292,7 @@ def main():
 
                 results["chunks"].append({
                     "chunk_id": chunk_count,
+                    "chunk_position": i,
                     "loss": float(chunk_loss),
                     "cost": chunk_cost,
                     "action": args.action,
