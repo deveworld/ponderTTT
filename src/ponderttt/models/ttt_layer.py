@@ -21,7 +21,7 @@ class TTTConfig:
     num_heads: int = 12
     head_dim: int = 64
     ttt_hidden_dim: int = 2048
-    chunk_size: int = 4096
+    chunk_size: int = 512
     max_seq_length: int = 8192
     dropout_rate: float = 0.1
     dtype: jnp.dtype = jnp.float32

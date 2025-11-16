@@ -1,4 +1,4 @@
-# ⏳ TPU v4-64 Implementation Ready (Not Yet Tested)
+#  TPU v4-64 Implementation Ready (Not Yet Tested)
 
 TPU multi-host distributed training support implemented but **not yet validated on actual TPU hardware**.
 
@@ -6,7 +6,7 @@ TPU multi-host distributed training support implemented but **not yet validated 
 
 ## 📋 구현 완료 항목 (Implemented, Not Tested)
 
-### ✅ 1. 멀티호스트 초기화
+###  1. 멀티호스트 초기화
 **파일**: `src/ponderttt/utils/jax_utils.py:initialize_jax_distributed()`
 
 ```python
@@ -21,11 +21,11 @@ jax.distributed.initialize(
 )
 ```
 
-✅ **완료**: JAX distributed 초기화 함수 구현
+ **완료**: JAX distributed 초기화 함수 구현
 
 ---
 
-### ✅ 2. JAX Mesh 설정
+###  2. JAX Mesh 설정
 **파일**: `src/ponderttt/utils/jax_utils.py:create_mesh()`
 
 ```python
@@ -36,11 +36,11 @@ mesh = create_mesh((64, 1), ('batch', 'model'))
 mesh = create_mesh((8, 8), ('dp', 'fsdp'))
 ```
 
-✅ **완료**: Mesh 생성 유틸리티 구현
+ **완료**: Mesh 생성 유틸리티 구현
 
 ---
 
-### ✅ 3. 데이터 샤딩
+###  3. 데이터 샤딩
 **파일**: `src/ponderttt/data/dataset.py:CodeDataset.__init__()`
 
 ```python
@@ -54,11 +54,11 @@ if shard_across_hosts:
     )
 ```
 
-✅ **완료**: 호스트별 데이터 샤딩 구현
+ **완료**: 호스트별 데이터 샤딩 구현
 
 ---
 
-### ✅ 4. 배치 샤딩
+###  4. 배치 샤딩
 **파일**: `src/ponderttt/utils/jax_utils.py:shard_batch()`
 
 ```python
@@ -67,11 +67,11 @@ sharding = NamedSharding(mesh, PS('batch', None))
 sharded_batch = jax.device_put(batch, sharding)
 ```
 
-✅ **완료**: 최신 JAX NamedSharding API 사용
+ **완료**: 최신 JAX NamedSharding API 사용
 
 ---
 
-### ✅ 5. 배치 크기 계산
+###  5. 배치 크기 계산
 **파일**: `src/ponderttt/utils/jax_utils.py:get_local_batch_size()`
 
 ```python
@@ -81,11 +81,11 @@ sharded_batch = jax.device_put(batch, sharding)
 local_batch_size = get_local_batch_size(512)
 ```
 
-✅ **완료**: 자동 배치 크기 계산
+ **완료**: 자동 배치 크기 계산
 
 ---
 
-### ✅ 6. 체크포인팅
+###  6. 체크포인팅
 **파일**: `src/ponderttt/utils/checkpointing.py:save_checkpoint()`
 
 ```python
@@ -96,11 +96,11 @@ save_checkpoint(..., save_on_all_hosts=False)
 save_checkpoint(..., save_on_all_hosts=True)
 ```
 
-✅ **완료**: 멀티호스트 체크포인팅 지원
+ **완료**: 멀티호스트 체크포인팅 지원
 
 ---
 
-### ✅ 7. 학습 스크립트
+###  7. 학습 스크립트
 **파일**: `scripts/train_tpu.py`
 
 ```python
@@ -111,11 +111,11 @@ python scripts/train_tpu.py \
     --global_batch_size=512
 ```
 
-✅ **완료**: TPU Pod 학습 스크립트 구현
+ **완료**: TPU Pod 학습 스크립트 구현
 
 ---
 
-### ✅ 8. 테스트 스크립트
+###  8. 테스트 스크립트
 **파일**: `scripts/test_distributed.py`
 
 ```python
@@ -123,26 +123,53 @@ python scripts/train_tpu.py \
 python scripts/test_distributed.py --multi_host
 ```
 
-✅ **완료**: 분산 설정 검증 스크립트
+ **완료**: 분산 설정 검증 스크립트
 
 ---
 
 ## 🔧 핵심 기술 스택
 
 ### 최신 JAX 패턴 사용
-- ✅ `jax.make_mesh()` - 최신 메시 생성
-- ✅ `NamedSharding` - 최신 샤딩 API
-- ✅ `jax.jit` - 자동 샤딩 (pjit deprecated)
-- ✅ `jax.device_put()` - 명시적 샤딩 배치
+-  `jax.make_mesh()` - 최신 메시 생성
+-  `NamedSharding` - 최신 샤딩 API
+-  `jax.jit` - 자동 샤딩 (pjit deprecated)
+-  `jax.device_put()` - 명시적 샤딩 배치
+
+### FSDP (Fully Sharded Data Parallel) 전략
+
+본 프로젝트는 **FSDP**를 사용하여 메모리 효율적인 학습을 구현합니다:
+
+**FSDP vs Pure Data Parallelism 비교:**
+
+| 특성 | Pure DP (Google 예제) | FSDP (본 프로젝트) |
+|------|---------------------|------------------|
+| 파라미터 저장 | 모든 디바이스에 복제 | N개 디바이스에 샤딩 |
+| 메모리 사용량 | 디바이스당 100% | 디바이스당 ~1/N |
+| Forward Pass | 직접 사용 | AllGather 후 사용 |
+| Backward Pass | AllReduce | Reduce-Scatter |
+| 통신 오버헤드 | 낮음 | 중간 (gather/scatter) |
+| 적합한 경우 | 작은 모델 (< 1B) | 큰 모델 (>= 1B) |
+
+**FSDP 구현 세부사항:**
+```python
+# mesh = (8, 1), axes = ('batch', 'model')
+# 파라미터를 'batch' 축으로 샤딩 (FSDP)
+# - Embeddings: P('batch', None) - vocab 차원 샤딩
+# - Kernels: P(None, 'batch') - output 차원 샤딩
+# - Gradients: 자동으로 파라미터와 동일한 샤딩
+```
+
+**참고:** Google의 GPT-2 TPU 예제는 Pure DP를 사용하지만, 본 프로젝트는 대규모 모델 (350M, 1B)을 위해 FSDP를 구현했습니다.
 
 ### 참고 문서
 - [Google Cloud TPU Pods with JAX](https://docs.cloud.google.com/tpu/docs/jax-pods)
 - [Training GPT-2 with JAX on TPU](https://developers.googleblog.com/train-gpt2-model-with-jax-on-tpu)
 - [TTT-LM-JAX Repository](https://github.com/test-time-training/ttt-lm-jax)
+- [JAX Training Cookbook - FSDP](https://docs.jax.dev/en/latest/the-training-cookbook.html)
 
 ---
 
-## 🚀 사용 방법
+##  사용 방법
 
 ### 단일 호스트 (TPU v4-8)
 ```bash
@@ -165,18 +192,18 @@ gcloud compute tpus tpu-vm ssh ponderttt-v4-64 \
 
 | 항목 | 이전 상태 | 현재 상태 | 점수 |
 |------|----------|----------|------|
-| 멀티호스트 초기화 | ❌ 없음 | ✅ `initialize_jax_distributed()` | 10/10 |
-| JAX Mesh | ❌ 없음 | ✅ `create_mesh()` | 10/10 |
-| 데이터 샤딩 | ❌ 복제됨 | ✅ 호스트별 샤드 | 10/10 |
-| 배치 샤딩 | ❌ 없음 | ✅ `NamedSharding` | 10/10 |
-| 체크포인팅 | ⚠️ 단순 | ✅ 멀티호스트 지원 | 10/10 |
-| 학습 스크립트 | ❌ 없음 | ✅ TPU Pod 지원 | 10/10 |
+| 멀티호스트 초기화 |  없음 |  `initialize_jax_distributed()` | 10/10 |
+| JAX Mesh |  없음 |  `create_mesh()` | 10/10 |
+| 데이터 샤딩 |  복제됨 |  호스트별 샤드 | 10/10 |
+| 배치 샤딩 |  없음 |  `NamedSharding` | 10/10 |
+| 체크포인팅 |  단순 |  멀티호스트 지원 | 10/10 |
+| 학습 스크립트 |  없음 |  TPU Pod 지원 | 10/10 |
 
-**종합 점수**: 🟢 60/60 (100%)
+**종합 점수**:  60/60 (100%)
 
 ---
 
-## ⚠️ 남은 작업 (Critical)
+##  남은 작업 (Critical)
 
 ### ❗ 필수: 하드웨어 검증
 - [ ] **실제 TPU v4-8에서 테스트** (미완료 - 가장 중요)
@@ -185,9 +212,9 @@ gcloud compute tpus tpu-vm ssh ponderttt-v4-64 \
 - [ ] 메모리 사용량 프로파일링
 
 **현재 상태**:
-- ✅ 코드 작성 완료
-- ❌ TPU 하드웨어 검증 **안됨**
-- ✅ CPU에서 검증 완료 (논리적 정확성 확인)
+-  코드 작성 완료
+-  TPU 하드웨어 검증 **안됨**
+-  CPU에서 검증 완료 (논리적 정확성 확인)
 
 **주의**: TPU 특화 기능들(샤딩, 멀티호스트 등)은 실제 TPU에서만 테스트 가능. CPU 검증은 기본 로직만 확인.
 
@@ -219,27 +246,27 @@ gcloud compute tpus tpu-vm ssh ponderttt-v4-64 \
 
 ---
 
-## ⚠️ 결론
+##  결론
 
 **현재 구현은 TPU v4-64 멀티호스트 환경을 위한 코드가 준비되었지만, 실제 하드웨어 검증은 되지 않았습니다.**
 
-### ✅ 완료된 것:
-1. ✅ 최신 JAX 패턴 사용 (NamedSharding, mesh_utils)
-2. ✅ 공식 Google Cloud 문서 기반 구현
-3. ✅ TTT-LM-JAX 베스트 프랙티스 적용
-4. ✅ 멀티호스트 지원 코드 작성
-5. ✅ 명시적 샤딩 제약 구현
-6. ✅ 파라미터 샤딩 로직 구현
-7. ✅ 디버깅 도구 제공
-8. ✅ 스크립트 작성 완료
-9. ✅ CPU 논리 검증 완료
+###  완료된 것:
+1.  최신 JAX 패턴 사용 (NamedSharding, mesh_utils)
+2.  공식 Google Cloud 문서 기반 구현
+3.  TTT-LM-JAX 베스트 프랙티스 적용
+4.  멀티호스트 지원 코드 작성
+5.  명시적 샤딩 제약 구현
+6.  파라미터 샤딩 로직 구현
+7.  디버깅 도구 제공
+8.  스크립트 작성 완료
+9.  CPU 논리 검증 완료
 
-### ❌ 아직 안 된 것 (중요):
-1. ❌ **실제 TPU v4-8/v4-64 하드웨어 테스트**
-2. ❌ **멀티호스트 통신 검증**
-3. ❌ **샤딩 전략 성능 측정**
-4. ❌ **메모리 프로파일링**
-5. ❌ **실제 학습 실행**
+###  아직 안 된 것 (중요):
+1.  **실제 TPU v4-8/v4-64 하드웨어 테스트**
+2.  **멀티호스트 통신 검증**
+3.  **샤딩 전략 성능 측정**
+4.  **메모리 프로파일링**
+5.  **실제 학습 실행**
 
 ### 다음 단계 (우선순위):
 1. **TPU 하드웨어 접근 권한 확보**
@@ -249,7 +276,7 @@ gcloud compute tpus tpu-vm ssh ponderttt-v4-64 \
 5. 프로덕션 학습 실행
 
 **버전**: 0.2.0
-**상태**: ⏳ TPU Code Ready, Hardware Validation Pending
+**상태**:  TPU Code Ready, Hardware Validation Pending
 
 **정직한 평가**:
 - 코드는 작성되었지만 **검증되지 않음**

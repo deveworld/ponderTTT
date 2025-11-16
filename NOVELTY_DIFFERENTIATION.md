@@ -156,10 +156,10 @@ class HaltingTTTPolicy:
 ### Expected outcomes:
 | Metric | PonderNet-style | PonderTTT (RL) |
 |--------|-----------------|----------------|
-| Convergence | ❌ Unstable/divergent | ✅ Stable |
-| Final performance | ❌ Poor (<heuristics) | ✅ Good (>heuristics) |
-| Budget compliance | ❌ Frequent violations | ✅ Strict enforcement |
-| Learning curve | ❌ High variance | ✅ Smooth improvement |
+| Convergence |  Unstable/divergent |  Stable |
+| Final performance |  Poor (<heuristics) |  Good (>heuristics) |
+| Budget compliance |  Frequent violations |  Strict enforcement |
+| Learning curve |  High variance |  Smooth improvement |
 
 ### If PonderNet-style succeeds:
 - **Still valuable**: Simpler method is better (Occam's razor)
@@ -252,12 +252,12 @@ PonderTTT:    SKIP → UPDATE → UPDATE → SKIP
 
 | Paper | Year | Problem | Parameters Change? | Learning Method |
 |-------|------|---------|-------------------|-----------------|
-| **ACT** (Graves 2016) | 2016 | Adaptive steps | ❌ No | Gradient |
-| **PonderNet** (Banino 2021) | 2021 | Adaptive steps | ❌ No | Gradient (β-VAE) |
-| **MoD** (Raposo 2024) | 2024 | Token routing | ❌ No | Gradient (STE) |
-| **TTT Layers** (Sun 2020) | 2020 | Test adaptation | ✅ Yes (fixed) | N/A (hand-designed) |
-| **LaCT** (Zhang 2025) | 2025 | Test adaptation | ✅ Yes (fixed) | N/A (hand-designed) |
-| **PonderTTT** (ours) | 2026 | Adaptive TTT | ✅ Yes (learned) | RL (PPO+PID) |
+| **ACT** (Graves 2016) | 2016 | Adaptive steps |  No | Gradient |
+| **PonderNet** (Banino 2021) | 2021 | Adaptive steps |  No | Gradient (β-VAE) |
+| **MoD** (Raposo 2024) | 2024 | Token routing |  No | Gradient (STE) |
+| **TTT Layers** (Sun 2020) | 2020 | Test adaptation |  Yes (fixed) | N/A (hand-designed) |
+| **LaCT** (Zhang 2025) | 2025 | Test adaptation |  Yes (fixed) | N/A (hand-designed) |
+| **PonderTTT** (ours) | 2026 | Adaptive TTT |  Yes (learned) | RL (PPO+PID) |
 
 ---
 

@@ -65,7 +65,7 @@ def save_checkpoint(
     )
 
     if process_index == 0:
-        print(f"✓ Checkpoint saved at step {step}")
+        print(f" Checkpoint saved at step {step}")
 
 
 def load_checkpoint(

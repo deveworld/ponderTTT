@@ -14,10 +14,10 @@
 
 | 방법론 | 결정 대상 | 파라미터 변경 | 학습 메커니즘 | 도전과제 |
 |--------|----------|-------------|------------|---------|
-| **PonderNet** | 계산 단계 수 | ❌ 없음 | 그래디언트 | 정지 시점 결정 |
-| **MoD/CALM** | 추론 경로 | ❌ 없음 | 그래디언트 | 효율적 라우팅 |
-| **고정 TTT** | N/A | ✅ 있음 (고정) | N/A | 스케줄 설계 |
-| **PonderTTT** | 적응 전략 | ✅ 있음 (적응) | RL | 비정상성 + 예산 |
+| **PonderNet** | 계산 단계 수 |  없음 | 그래디언트 | 정지 시점 결정 |
+| **MoD/CALM** | 추론 경로 |  없음 | 그래디언트 | 효율적 라우팅 |
+| **고정 TTT** | N/A |  있음 (고정) | N/A | 스케줄 설계 |
+| **PonderTTT** | 적응 전략 |  있음 (적응) | RL | 비정상성 + 예산 |
 
 **왜 이것이 새로운 문제인가:**
 1. **비정상성(Non-stationarity)**: TTT는 매 업데이트마다 파라미터를 변경 → 정책이 움직이는 타겟에 적응해야 함
@@ -1005,11 +1005,11 @@ gcloud compute tpus tpu-vm create ponderttt-v4-64 \
 
 **Day 4-7: 데이터 준비**
 ```python
-# The Stack Python subset
-dataset = load_dataset("bigcode/the-stack-dedup", 
-                       data_dir="data/python",
+# The Stack v2 Python subset
+dataset = load_dataset("bigcode/the-stack-v2",
+                       languages=["Python"],
                        split="train", streaming=True)
-chunks = preprocess_and_chunk(dataset, chunk_size=4096)
+chunks = preprocess_and_chunk(dataset, chunk_size=512)
 ```
 
 **Week 2: 베이스라인 검증**

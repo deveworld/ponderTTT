@@ -23,16 +23,23 @@ class ModelConfig:
 
 def apply_sharding_to_params(params, mesh: jax.sharding.Mesh):
     """
-    Apply sharding to model parameters for TPU Pod distribution.
+    Apply FSDP (Fully Sharded Data Parallel) sharding to model parameters.
 
-    Applies PartitionSpec annotations to shard large weight matrices across
-    the mesh for multi-host distribution.
+    This function implements FSDP for memory-efficient training on TPU Pods
+    by sharding parameters across devices. Unlike pure data parallelism where
+    parameters are replicated, FSDP shards them to reduce per-device memory usage.
 
-    Sharding strategy:
-    - Embeddings: Shard along vocab dimension (first axis)
-    - Large kernels (>= 2D): Shard along output dimension (second axis)
+    Sharding strategy (FSDP):
+    - Embeddings: Shard along vocab dimension (first axis) using first mesh axis
+    - Large kernels (>= 2D): Shard along output dimension (second axis) using first mesh axis
     - Biases and LayerNorm: Replicate (no sharding)
     - Small parameters: Replicate (no sharding)
+
+    For a mesh with shape (N, 1) and axes ('batch', 'model'):
+    - The 'batch' axis (size N) is used for FSDP sharding
+    - Parameters are sharded N-way across devices
+    - During forward pass, parameters are gathered via AllGather
+    - During backward pass, gradients are reduced via Reduce-Scatter
 
     Args:
         params: Parameter tree from model
