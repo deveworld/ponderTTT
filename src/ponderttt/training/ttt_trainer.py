@@ -79,13 +79,14 @@ class TTTTrainer:
     model: Any
     learning_rate: float = 1e-4
 
-    def train_step(
-        self,
+    @staticmethod
+    @jax.jit
+    def _train_step_jit(
         state: TrainState,
         batch: dict[str, jnp.ndarray],
     ) -> tuple[TrainState, dict[str, float]]:
         """
-        Perform one training step.
+        JIT-compiled training step for maximum performance.
 
         Args:
             state: Training state
@@ -135,13 +136,32 @@ class TTTTrainer:
 
         return state, metrics
 
-    def eval_step(
+    def train_step(
         self,
+        state: TrainState,
+        batch: dict[str, jnp.ndarray],
+    ) -> tuple[TrainState, dict[str, float]]:
+        """
+        Perform one training step (delegates to JIT-compiled function).
+
+        Args:
+            state: Training state
+            batch: Batch of data
+
+        Returns:
+            updated_state: Updated training state
+            metrics: Training metrics
+        """
+        return self._train_step_jit(state, batch)
+
+    @staticmethod
+    @jax.jit
+    def _eval_step_jit(
         state: TrainState,
         batch: dict[str, jnp.ndarray],
     ) -> dict[str, float]:
         """
-        Perform one evaluation step.
+        JIT-compiled evaluation step for maximum performance.
 
         Args:
             state: Training state
@@ -150,7 +170,6 @@ class TTTTrainer:
         Returns:
             metrics: Evaluation metrics
         """
-        # Forward pass (deterministic)
         outputs = state.apply_fn(
             {'params': state.params},
             batch['input_ids'],
@@ -162,14 +181,12 @@ class TTTTrainer:
         labels = batch['input_ids'][:, 1:]
         logits = logits[:, :-1]
 
-        # Compute loss
         vocab_size = logits.shape[-1]
         loss = optax.softmax_cross_entropy_with_integer_labels(
             logits.reshape(-1, vocab_size),
             labels.reshape(-1),
         )
 
-        # Mask padding
         if 'attention_mask' in batch:
             mask = batch['attention_mask'][:, 1:]
             loss = loss * mask.reshape(-1)
@@ -177,13 +194,29 @@ class TTTTrainer:
         else:
             loss = jnp.mean(loss)
 
-        # Compute perplexity
         perplexity = jnp.exp(loss)
 
         return {
             'loss': loss,
             'perplexity': perplexity,
         }
+
+    def eval_step(
+        self,
+        state: TrainState,
+        batch: dict[str, jnp.ndarray],
+    ) -> dict[str, float]:
+        """
+        Perform one evaluation step (delegates to JIT-compiled function).
+
+        Args:
+            state: Training state
+            batch: Batch of data
+
+        Returns:
+            metrics: Evaluation metrics
+        """
+        return self._eval_step_jit(state, batch)
 
 
 def create_learning_rate_schedule(

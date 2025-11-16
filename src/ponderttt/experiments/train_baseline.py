@@ -152,15 +152,12 @@ def main():
                 batch_idx += 1
         data_iter = synthetic_data_iter()
     else:
-        # Calculate actual number of examples needed based on max_chunks
+        import math
         num_chunks_per_seq = config.model.max_seq_length // config.model.chunk_size
-        # batches_needed = max_chunks / num_chunks_per_seq
-        # examples_needed = batches_needed * batch_size
-        # Add 1.5× buffer for failed downloads
-        batches_needed = args.max_chunks / num_chunks_per_seq
-        num_examples_needed = int(batches_needed * config.training.batch_size * 1.5)
+        num_batches_needed = math.ceil(args.max_chunks / num_chunks_per_seq)
+        num_examples_needed = int(num_batches_needed * config.training.batch_size * 1.5)
 
-        print(f"Downloading {num_examples_needed} examples for {args.max_chunks} chunks ({int(batches_needed)} batches)...")
+        print(f"Downloading {num_examples_needed} examples for {args.max_chunks} chunks ({num_batches_needed} batches)...")
 
         data_iter = create_data_iterator(
             tokenizer=tokenizer,

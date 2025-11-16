@@ -22,7 +22,7 @@ class ExperimentModelConfig:
 @dataclass
 class TrainingConfig:
     """Configuration for training."""
-    batch_size: int = 4
+    batch_size: int = 16
     learning_rate: float = 3e-4
     num_train_examples: int = 5000
     num_eval_examples: int = 500
@@ -73,11 +73,11 @@ def get_125m_config() -> ExperimentConfig:
     model = ExperimentModelConfig(
         model_name="gpt2",
         lora_rank=64,
-        chunk_size=512,  # GPT-2 max position = 1024, use 512 for safety
+        chunk_size=512,
     )
 
     training = TrainingConfig(
-        batch_size=4,
+        batch_size=16,
         num_train_examples=5000,
         num_iterations=100,
     )
@@ -98,7 +98,7 @@ def get_350m_config() -> ExperimentConfig:
     )
 
     training = TrainingConfig(
-        batch_size=4,
+        batch_size=12,
         num_train_examples=10000,
         num_iterations=100,
     )
@@ -119,7 +119,7 @@ def get_1b_config() -> ExperimentConfig:
     )
 
     training = TrainingConfig(
-        batch_size=2,
+        batch_size=8,
         num_train_examples=20000,
         num_iterations=100,
     )
