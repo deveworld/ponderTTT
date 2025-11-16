@@ -35,8 +35,8 @@ logs/
 runs/
 wandb/
 
-# Data
-data/
+# Data (only root-level data directory, not source code data modules)
+/data/
 *.h5
 *.pt
 *.pth
