@@ -8,9 +8,11 @@ Usage:
 import argparse
 import json
 from pathlib import Path
+from typing import Mapping, cast
 
 import jax.numpy as jnp
 from tqdm import tqdm
+from transformers import PreTrainedTokenizer
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import (
@@ -81,10 +83,8 @@ def main():
 
     # Initialize RNG
     init_rng(config.seed)
-
-    # Load tokenizer
     print("Loading tokenizer...")
-    tokenizer = get_tokenizer(config.model.model_name)
+    tokenizer = cast(PreTrainedTokenizer, get_tokenizer(config.model.model_name))
 
     # Create data iterator
     print("Creating data iterator...")
@@ -154,11 +154,14 @@ def main():
                 features = jnp.ones((batch_size, 32)) * (i / num_chunks)
 
                 # Get action from policy
-                policy_output = policy.apply(
-                    {'params': policy_params},
-                    features,
-                    deterministic=False,
-                    rngs={'action': next_rng()},
+                policy_output = cast(
+                    Mapping[str, jnp.ndarray],
+                    policy.apply(
+                        {'params': policy_params},
+                        features,
+                        deterministic=False,
+                        rngs={'action': next_rng()},
+                    ),
                 )
 
                 action = policy_output['action'][0]

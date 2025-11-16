@@ -19,8 +19,10 @@ Example on Google Cloud TPU v4-64:
 """
 
 import sys
-import os
 from pathlib import Path
+from typing import cast
+from transformers import PreTrainedTokenizer
+
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -41,7 +43,6 @@ from ponderttt.utils import (
     init_rng,
     next_rng,
     cross_entropy_loss,
-    create_sharding_constraint,
 )
 from ponderttt.data import get_tokenizer, create_data_iterator
 from ponderttt.models import TransformerLM, ModelConfig, inspect_sharding
@@ -231,18 +232,19 @@ def main():
         print(f"Local devices: {jax.local_device_count()}")
 
     # Step 2: Create mesh
-    print(f"\n[2/6] Creating device mesh...")
+    print("\n[2/6] Creating device mesh...")
     mesh_shape = tuple(map(int, args.mesh_shape.split(",")))
     mesh_axes = tuple(args.mesh_axes.split(","))
     mesh = create_mesh(mesh_shape, mesh_axes)
 
     # Step 3: Calculate batch sizes
-    print(f"\n[3/6] Setting up data pipeline...")
+    print("\n[3/6] Setting up data pipeline...")
     local_batch_size = get_local_batch_size(args.global_batch_size)
     print_on_main(f"Local batch size per host: {local_batch_size}")
 
     # Step 4: Load data
     tokenizer = get_tokenizer(args.model_name)
+    tokenizer = cast(PreTrainedTokenizer, tokenizer)
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         split="train",
@@ -252,7 +254,7 @@ def main():
     )
 
     # Step 5: Initialize model and optimizer
-    print(f"\n[4/6] Initializing model and optimizer...")
+    print("\n[4/6] Initializing model and optimizer...")
     init_rng(42)
 
     # Enable parameter sharding for large models (1B+)
@@ -275,10 +277,10 @@ def main():
         )
 
     print_on_main(f" Model initialized: {args.model_name}")
-    print_on_main(f" Optimizer: Adam with cosine decay")
+    print_on_main(" Optimizer: Adam with cosine decay")
 
     # Step 6: Training loop
-    print(f"\n[5/6] Starting training...")
+    print("\n[5/6] Starting training...")
     print_on_main(f"Training for {args.num_steps} steps")
     print_on_main(f"Global batch size: {args.global_batch_size}")
 

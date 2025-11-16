@@ -4,6 +4,7 @@ Quick test to verify JAX/Flax implementation.
 
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -13,6 +14,7 @@ from ponderttt.data import get_tokenizer
 from ponderttt.models import TransformerLM, PolicyNetwork, TTTLayer
 from ponderttt.models import PolicyConfig, TTTConfig, ModelConfig
 from ponderttt.utils import FeatureExtractor
+from transformers import PreTrainedTokenizer
 
 print("=" * 60)
 print("PonderTTT JAX/Flax Quick Test")
@@ -30,7 +32,7 @@ total_tests = 5
 # Test 1: Tokenizer
 print("\n[1/5] Testing tokenizer...")
 try:
-    tokenizer = get_tokenizer("gpt2")
+    tokenizer = cast(PreTrainedTokenizer, get_tokenizer("gpt2"))
     print(f" Tokenizer loaded (vocab size: {tokenizer.vocab_size})")
     tests_passed += 1
 except Exception as e:
@@ -48,10 +50,11 @@ try:
     test_input = jnp.ones((1, 10), dtype=jnp.int32)
 
     variables = model.init(rng, test_input)
-    print(f" Base model initialized")
+    print(" Base model initialized")
 
     # Forward pass
     outputs = model.apply(variables, test_input)
+    assert isinstance(outputs, dict), "Expected dict output from model"
     print(f" Forward pass successful, logits shape: {outputs['logits'].shape}")
     tests_passed += 1
 
@@ -88,13 +91,13 @@ try:
     rng = jax.random.PRNGKey(2)
 
     variables = policy.init({'params': rng, 'dropout': rng}, test_features)
-    policy_outputs = policy.apply(
+    policy_outputs = cast(dict[str, Any], policy.apply(
         variables,
         test_features,
         rngs={'action': rng, 'dropout': rng}
-    )
+    ))
 
-    print(f" Policy network works")
+    print(" Policy network works")
     print(f"  Actions: {policy_outputs['action']}")
     print(f"  Mean value: {jnp.mean(policy_outputs['value']):.4f}")
     tests_passed += 1
@@ -106,6 +109,7 @@ except Exception as e:
 # Test 5: Feature Extraction
 print("\n[5/5] Testing feature extraction...")
 try:
+    tokenizer = cast(PreTrainedTokenizer, get_tokenizer("gpt2"))
     extractor = FeatureExtractor(vocab_size=tokenizer.vocab_size)
 
     test_ids = jnp.array([[1, 2, 3, 4, 5]])
@@ -129,7 +133,7 @@ if tests_passed == total_tests:
 else:
     print(f"Tests: {tests_passed}/{total_tests} passed, {tests_failed} failed")
     print("=" * 60)
-    print(f"\n  Some tests failed. Please fix the issues above.")
+    print("\n  Some tests failed. Please fix the issues above.")
     if tests_passed > 0:
         print(f"Working components: {tests_passed}/{total_tests}")
 

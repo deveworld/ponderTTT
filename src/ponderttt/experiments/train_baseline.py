@@ -10,16 +10,16 @@ Usage:
 """
 
 import argparse
-import copy
 import json
 from pathlib import Path
+from typing import cast
 
 import jax
 import jax.numpy as jnp
 import optax
-from flax.core import freeze, unfreeze
 from flax.training import train_state
 from tqdm import tqdm
+from transformers import PreTrainedTokenizer
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import TTTConfig, load_ttt_model
@@ -118,7 +118,7 @@ def main():
 
     # Load tokenizer
     print("Loading tokenizer...")
-    tokenizer = get_tokenizer(config.model.model_name)
+    tokenizer = cast(PreTrainedTokenizer, get_tokenizer(config.model.model_name))
 
     # Create data iterator from The Stack dataset
     print("Creating data iterator...")
@@ -157,14 +157,15 @@ def main():
     )
 
     # Initialize model parameters
-    rng = next_rng()
+    rng_key = next_rng()
+    rng_key = jax.random.PRNGKey(config.seed) if not isinstance(rng_key, jax.Array) else rng_key
     dummy_input = jnp.ones((1, config.model.max_seq_length), dtype=jnp.int32)
-    variables = model.init(rng, dummy_input, deterministic=True)
+    variables = model.init(rng_key, dummy_input, deterministic=True)
     params = variables['params']
 
-    print(f"\nModel architecture:")
+    print("\nModel architecture:")
     print(f"  Slow weights: {config.model.model_name} (frozen)")
-    print(f"  Fast weights: TTT layer (adaptive)")
+    print("  Fast weights: TTT layer (adaptive)")
     print(f"  TTT hidden dim: {config.model.ttt_hidden_dim}")
     print()
 
@@ -207,7 +208,7 @@ def main():
     # Define loss function for TTT updates
     def compute_loss(params, batch):
         """Compute language modeling loss with TTT layer."""
-        outputs = model.apply(
+        outputs, _ = model.apply(
             {'params': params},
             batch['input_ids'],
             attention_mask=batch['attention_mask'],

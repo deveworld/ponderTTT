@@ -56,19 +56,19 @@ class PolicyNetwork(nn.Module):
         cfg = self.config
 
         # Shared feature extraction
-        x = nn.Dense(cfg.hidden_dim, dtype=cfg.dtype)(features)
+        x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(features)
         x = nn.relu(x)
         x = nn.Dropout(rate=cfg.dropout_rate)(x, deterministic=deterministic)
 
-        x = nn.Dense(cfg.hidden_dim, dtype=cfg.dtype)(x)
+        x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(x)
         x = nn.relu(x)
         x = nn.Dropout(rate=cfg.dropout_rate)(x, deterministic=deterministic)
 
         # Actor head (policy)
-        action_logits = nn.Dense(cfg.num_actions, dtype=cfg.dtype, name='actor')(x)
+        action_logits = nn.Dense(features=cfg.num_actions, dtype=cfg.dtype, name='actor')(x)
 
         # Critic head (value)
-        value = nn.Dense(1, dtype=cfg.dtype, name='critic')(x)
+        value = nn.Dense(features=1, dtype=cfg.dtype, name='critic')(x)
         value = jnp.squeeze(value, axis=-1)
 
         # Compute action probabilities
@@ -124,14 +124,14 @@ class PolicyNetwork(nn.Module):
         cfg = self.config
 
         # Forward pass (deterministic=True for evaluation)
-        x = nn.Dense(cfg.hidden_dim, dtype=cfg.dtype)(features)
+        x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(features)
         x = nn.relu(x)
-        x = nn.Dense(cfg.hidden_dim, dtype=cfg.dtype)(x)
+        x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(x)
         x = nn.relu(x)
 
         # Get action logits and value
-        action_logits = nn.Dense(cfg.num_actions, dtype=cfg.dtype, name='actor')(x)
-        value = nn.Dense(1, dtype=cfg.dtype, name='critic')(x)
+        action_logits = nn.Dense(features=cfg.num_actions, dtype=cfg.dtype, name='actor')(x)
+        value = nn.Dense(features=1, dtype=cfg.dtype, name='critic')(x)
         value = jnp.squeeze(value, axis=-1)
 
         # Compute log probability of given actions
@@ -159,7 +159,7 @@ def action_to_name(action: int) -> str:
     return action_names[action]
 
 
-def action_to_cost(action: int) -> float:
+def action_to_cost(action: int) -> jnp.ndarray:
     """
     Get computational cost for an action.
 

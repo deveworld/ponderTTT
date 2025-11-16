@@ -12,11 +12,13 @@ Tests:
 
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import jax
 import jax.numpy as jnp
+from transformers import PreTrainedTokenizer
 
 print("=" * 60)
 print("PonderTTT Pipeline Integration Test")
@@ -27,7 +29,7 @@ print("\n[1/6] Testing data loading...")
 try:
     from ponderttt.data import get_tokenizer
 
-    tokenizer = get_tokenizer("gpt2")
+    tokenizer = cast(PreTrainedTokenizer, get_tokenizer("gpt2"))
 
     # Create dummy batch for unit testing
     batch_size = 2
@@ -60,7 +62,7 @@ try:
     test_input = jnp.ones((1, 10), dtype=jnp.int32)
     variables = model.init(rng, test_input)
 
-    print(f" Model initialization works")
+    print(" Model initialization works")
 except Exception as e:
     print(f"✗ Model initialization failed: {e}")
     sys.exit(1)
@@ -93,12 +95,12 @@ try:
     rng = jax.random.PRNGKey(1)
 
     variables = policy.init(rng, test_features, deterministic=True)
-    outputs = policy.apply(
+    outputs = cast(dict[str, Any], policy.apply(
         variables,
         test_features,
         deterministic=True,
         rngs={'action': rng}
-    )
+    ))
 
     assert "action" in outputs
     assert "value" in outputs
@@ -139,22 +141,22 @@ try:
     input_ids = batch["input_ids"]
 
     # Forward through model
-    outputs = model.apply(variables, input_ids[:, :10])
+    outputs = cast(dict[str, Any], model.apply(variables, input_ids[:, :10]))
     logits = outputs["logits"]
 
     # Extract features
     features = extractor.extract(input_ids[:, :5], logits[:, :5, :])
 
     # Get policy decision
-    policy_outputs = policy.apply(
+    policy_outputs = cast(dict[str, Any], policy.apply(
         policy.init(rng, features, deterministic=True),
         features,
         deterministic=True,
         rngs={'action': rng}
-    )
+    ))
     action = policy_outputs["action"][0]
 
-    print(f" End-to-end flow works")
+    print(" End-to-end flow works")
     print(f"  Input shape: {input_ids.shape}")
     print(f"  Logits shape: {logits.shape}")
     print(f"  Features shape: {features.shape}")

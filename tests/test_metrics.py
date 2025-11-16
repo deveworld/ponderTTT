@@ -2,7 +2,6 @@
 Unit tests for evaluation metrics.
 """
 
-import numpy as np
 import pytest
 
 from ponderttt.evaluation.metrics import (

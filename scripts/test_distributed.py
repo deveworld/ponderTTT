@@ -49,8 +49,8 @@ def test_basic_jax():
     try:
         print(f"  Process index: {jax.process_index()}")
         print(f"  Process count: {jax.process_count()}")
-    except:
-        print(f"   Multi-host not initialized")
+    except (RuntimeError, ValueError):
+        print("   Multi-host not initialized")
 
     print("   Basic JAX works")
 

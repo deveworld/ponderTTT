@@ -6,7 +6,9 @@ import hashlib
 import pickle
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import closing
 from pathlib import Path
+from typing import BinaryIO, cast
 
 import boto3
 import jax
@@ -77,13 +79,16 @@ class CodeDataset:
                 host_id = jax.process_index()
 
                 if num_hosts > 1:
-                    self.dataset = self.dataset.shard(
-                        num_shards=num_hosts,
-                        index=host_id,
-                    )
-                    if host_id == 0:
-                        print(f"Dataset sharded across {num_hosts} hosts")
-                        print(f"  Host {host_id} processing shard {host_id}/{num_hosts}")
+                    if hasattr(self.dataset, "shard") and not isinstance(self.dataset, (dict,)):
+                        self.dataset = self.dataset.shard(
+                            num_shards=num_hosts,
+                            index=host_id,
+                        )
+                        if host_id == 0:
+                            print(f"Dataset sharded across {num_hosts} hosts")
+                            print(f"  Host {host_id} processing shard {host_id}/{num_hosts}")
+                    elif host_id == 0:
+                        print("Dataset implementation does not support sharding; proceeding without host sharding.")
             except (RuntimeError, ValueError):
                 # JAX distributed not initialized, single host mode
                 pass
@@ -99,14 +104,15 @@ class CodeDataset:
         Returns:
             Decoded file content as string
         """
+
         s3_url = f"s3://softwareheritage/content/{blob_id}"
         try:
-            with smart_open(
+            with closing(cast(BinaryIO, smart_open(
                 s3_url,
                 "rb",
                 compression=".gz",
                 transport_params={"client": self.s3_client}
-            ) as f:
+            ))) as f:
                 content = f.read().decode(src_encoding)
             return content
         except Exception:
@@ -142,8 +148,8 @@ class CodeDataset:
             return_tensors="np",
         )
 
-        input_ids = encoded["input_ids"][0]
-        attention_mask = encoded["attention_mask"][0].astype(bool)
+        input_ids = encoded.input_ids[0]
+        attention_mask = encoded.attention_mask[0].astype(bool)
 
         # Create chunks
         num_chunks = self.seq_length // self.chunk_size
@@ -168,9 +174,10 @@ class CodeDataset:
                 - chunks: [num_chunks, chunk_size] int array
         """
         for example in self.dataset:
-            processed = self._process_example(example)
-            if processed is not None:
-                yield processed
+            if isinstance(example, dict):
+                processed = self._process_example(example)
+                if processed is not None:
+                    yield processed
 
 
 def create_data_iterator(
@@ -290,7 +297,7 @@ def create_data_iterator(
 
         # Create batches from processed examples
         cached_batches = []
-        batch = {
+        batch: dict[str, list] = {
             "input_ids": [],
             "attention_mask": [],
             "chunks": [],
@@ -313,8 +320,8 @@ def create_data_iterator(
 
         # Save to cache
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "wb") as f:
-            pickle.dump(cached_batches, f)
+        with open(cache_path, "wb") as f_write:
+            pickle.dump(cached_batches, f_write)
         print(f"Saved cache to {cache_path}")
 
         # Return iterator over cached data

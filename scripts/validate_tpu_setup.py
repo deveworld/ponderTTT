@@ -25,7 +25,6 @@ What this script checks:
 """
 
 import sys
-import os
 from pathlib import Path
 
 # Add src to path
@@ -133,7 +132,7 @@ def check_data_sharding(mesh):
         # Shard batch
         sharded_batch = shard_batch(batch, mesh, batch_axis='batch')
 
-        print_on_main(f" PASS: Batch sharded successfully")
+        print_on_main(" PASS: Batch sharded successfully")
         print_on_main(f"  Original shape: {batch['input_ids'].shape}")
         print_on_main(f"  Sharded shape: {sharded_batch['input_ids'].shape}")
 
@@ -156,7 +155,6 @@ def check_parameter_sharding(mesh):
     print_on_main("=" * 80)
 
     try:
-        from jax.sharding import NamedSharding, PartitionSpec as P
 
         # Create dummy parameters
         params = {
@@ -171,7 +169,7 @@ def check_parameter_sharding(mesh):
         from ponderttt.models import apply_sharding_to_params
         sharded_params = apply_sharding_to_params(params, mesh)
 
-        print_on_main(f" PASS: Parameters sharded successfully")
+        print_on_main(" PASS: Parameters sharded successfully")
 
         # Inspect sharding
         from ponderttt.models import inspect_sharding
@@ -205,12 +203,12 @@ def check_gradient_computation(mesh, sharded_params):
 
         # Apply sharding constraint to gradients
         param_sharding = create_sharding_constraint(mesh, 'batch')
-        grads = jax.tree_map(
+        grads = jax.tree_util.tree_map(
             lambda g: with_sharding_constraint(g, param_sharding) if g is not None else None,
             grads
         )
 
-        print_on_main(f" PASS: Gradients computed successfully")
+        print_on_main(" PASS: Gradients computed successfully")
         print_on_main(f"  Loss: {float(loss):.6f}")
         print_on_main(f"  Gradient shape (embedding): {grads['embedding'].shape}")
 
@@ -250,11 +248,11 @@ def check_collective_ops(mesh):
         actual = float(result[0])
 
         if abs(actual - expected) < 1e-6:
-            print_on_main(f" PASS: AllReduce works correctly")
+            print_on_main(" PASS: AllReduce works correctly")
             print_on_main(f"  Expected sum: {expected}")
             print_on_main(f"  Actual sum: {actual}")
         else:
-            print_on_main(f" FAIL: AllReduce incorrect")
+            print_on_main(" FAIL: AllReduce incorrect")
             print_on_main(f"  Expected: {expected}, Got: {actual}")
             return False
 
@@ -285,7 +283,7 @@ def check_jit_compilation(mesh):
         # Run jitted function
         result = simple_fn(sharded_x)
 
-        print_on_main(f" PASS: JIT compilation works with sharded data")
+        print_on_main(" PASS: JIT compilation works with sharded data")
         print_on_main(f"  Input shape: {sharded_x.shape}")
         print_on_main(f"  Output shape: {result.shape}")
 

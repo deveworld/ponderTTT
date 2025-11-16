@@ -31,7 +31,7 @@ class PolicyTrainer:
         policy_state: TrainState,
         ttt_model: Any,
         data_iterator: Iterator,
-        rng: jax.random.PRNGKey,
+        rng: jax.Array, # jax.random.PRNGKey
     ) -> dict[str, jnp.ndarray]:
         """
         Collect rollout using current policy.
@@ -92,7 +92,7 @@ class PolicyTrainer:
             values_list.append(value)
             dones_list.append(jnp.zeros_like(action))
 
-            budget_used += jnp.sum(cost)
+            budget_used += float(jnp.sum(cost))
 
         # Convert to arrays
         rollout = {
@@ -168,14 +168,14 @@ class PolicyTrainer:
 
         # Average metrics
         avg_metrics = {
-            key: jnp.mean(jnp.array([m[key] for m in all_metrics]))
+            str(key): float(jnp.mean(jnp.array([m[key] for m in all_metrics])))
             for key in all_metrics[0].keys()
         }
 
         # Update PID controller
         avg_cost = jnp.mean(rollout['costs'])
-        self.ppo = self.ppo.update_pid(avg_cost)
-        avg_metrics['avg_cost'] = avg_cost
-        avg_metrics['budget_used'] = jnp.sum(rollout['costs'])
+        self.ppo = self.ppo.update_pid(float(avg_cost))
+        avg_metrics['avg_cost'] = float(avg_cost)
+        avg_metrics['budget_used'] = float(jnp.sum(rollout['costs']))
 
         return policy_state, avg_metrics

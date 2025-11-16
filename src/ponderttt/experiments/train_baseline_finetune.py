@@ -9,15 +9,16 @@ import argparse
 import copy
 import json
 from pathlib import Path
+from typing import cast
 
-import jax
 import jax.numpy as jnp
 from flax.core import freeze, unfreeze
 from tqdm import tqdm
+from transformers import PreTrainedTokenizer
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import TTTConfig, TTTLayer
-from ..training import TTTTrainer
+from ..training import TTTTrainer, TrainState
 from ..utils import init_rng, next_rng
 from .config import get_1b_config, get_125m_config, get_350m_config
 
@@ -109,11 +110,10 @@ def main():
     config.output_dir = args.output_dir
 
     # Initialize RNG
-    init_rng(config.seed)
-
     # Load tokenizer
     print("Loading tokenizer...")
     tokenizer = get_tokenizer(config.model.model_name)
+    tokenizer = cast(PreTrainedTokenizer, tokenizer)
 
     # Create data iterator from The Stack dataset
     print("Creating data iterator...")
@@ -189,8 +189,7 @@ def main():
     optimizer = optax.adam(config.training.learning_rate)
     optimizer.init(params)
 
-    from flax.training import train_state
-    state = train_state.TrainState.create(
+    state = TrainState.create(
         apply_fn=model_apply_fn,  # Use wrapper function
         params=params,
         tx=optimizer,
