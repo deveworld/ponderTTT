@@ -23,7 +23,7 @@ class ExperimentModelConfig:
 @dataclass
 class TrainingConfig:
     """Configuration for training."""
-    batch_size: int = 8
+    batch_size: int = 4
     learning_rate: float = 3e-4
     num_train_examples: int = 5000
     num_eval_examples: int = 500
@@ -78,7 +78,7 @@ def get_125m_config() -> ExperimentConfig:
     )
 
     training = TrainingConfig(
-        batch_size=8,
+        batch_size=4,
         num_train_examples=5000,
         num_iterations=100,
     )
