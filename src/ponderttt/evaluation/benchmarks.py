@@ -2,9 +2,9 @@
 Code generation benchmarks (HumanEval, MBPP, ClassEval).
 """
 
-from typing import List, Dict, Optional, Callable
-from dataclasses import dataclass
 import warnings
+from collections.abc import Callable
+from dataclasses import dataclass
 
 
 @dataclass
@@ -27,7 +27,7 @@ class HumanEvalBenchmark:
 
     def __init__(self):
         """Initialize HumanEval benchmark."""
-        self.problems: List[CodeProblem] = []
+        self.problems: list[CodeProblem] = []
         self._load_problems()
 
     def _load_problems(self):
@@ -47,14 +47,14 @@ class HumanEvalBenchmark:
                 self.problems.append(problem)
 
         except Exception as e:
-            warnings.warn(f"Failed to load HumanEval: {e}. Using placeholder.")
+            warnings.warn(f"Failed to load HumanEval: {e}. Using placeholder.", stacklevel=2)
             # Create placeholder problems for testing
             for i in range(5):
                 self.problems.append(
                     CodeProblem(
                         task_id=f"HumanEval/{i}",
                         prompt=f"def example_{i}(n):\n    # TODO: Implement\n    ",
-                        canonical_solution=f"    return n * 2\n",
+                        canonical_solution="    return n * 2\n",
                         test_code=f"assert example_{i}(2) == 4",
                         entry_point=f"example_{i}",
                     )
@@ -70,9 +70,9 @@ class HumanEvalBenchmark:
 
     def evaluate(
         self,
-        generate_fn: Callable[[str], List[str]],
+        generate_fn: Callable[[str], list[str]],
         k: int = 100,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """
         Evaluate model on HumanEval.
 
@@ -85,7 +85,7 @@ class HumanEvalBenchmark:
         """
         warnings.warn(
             "Execution-based evaluation requires a safe sandbox. "
-            "This is a placeholder implementation."
+            "This is a placeholder implementation.", stacklevel=2
         )
 
         # Placeholder: return dummy scores
@@ -106,7 +106,7 @@ class MBPPBenchmark:
 
     def __init__(self):
         """Initialize MBPP benchmark."""
-        self.problems: List[CodeProblem] = []
+        self.problems: list[CodeProblem] = []
         self._load_problems()
 
     def _load_problems(self):
@@ -126,7 +126,7 @@ class MBPPBenchmark:
                 self.problems.append(problem)
 
         except Exception as e:
-            warnings.warn(f"Failed to load MBPP: {e}. Using placeholder.")
+            warnings.warn(f"Failed to load MBPP: {e}. Using placeholder.", stacklevel=2)
             # Create placeholder problems
             for i in range(5):
                 self.problems.append(
@@ -149,9 +149,9 @@ class MBPPBenchmark:
 
     def evaluate(
         self,
-        generate_fn: Callable[[str], List[str]],
+        generate_fn: Callable[[str], list[str]],
         k: int = 100,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """
         Evaluate model on MBPP.
 
@@ -164,7 +164,7 @@ class MBPPBenchmark:
         """
         warnings.warn(
             "Execution-based evaluation requires a safe sandbox. "
-            "This is a placeholder implementation."
+            "This is a placeholder implementation.", stacklevel=2
         )
 
         return {
@@ -185,10 +185,10 @@ class ClassEvalBenchmark:
 
     def __init__(self):
         """Initialize ClassEval benchmark."""
-        self.problems: List[CodeProblem] = []
+        self.problems: list[CodeProblem] = []
         warnings.warn(
             "ClassEval dataset is not yet publicly available on HuggingFace. "
-            "Using placeholder."
+            "Using placeholder.", stacklevel=2
         )
         self._load_problems()
 
@@ -200,7 +200,7 @@ class ClassEvalBenchmark:
                 CodeProblem(
                     task_id=f"ClassEval/{i}",
                     prompt=f"class Example{i}:\n    def method(self, x):\n        # TODO\n        ",
-                    canonical_solution=f"        return x * 2",
+                    canonical_solution="        return x * 2",
                     test_code=f"assert Example{i}().method(2) == 4",
                     entry_point=f"Example{i}",
                 )
@@ -216,11 +216,11 @@ class ClassEvalBenchmark:
 
     def evaluate(
         self,
-        generate_fn: Callable[[str], List[str]],
+        generate_fn: Callable[[str], list[str]],
         k: int = 100,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Evaluate model on ClassEval."""
-        warnings.warn("ClassEval evaluation not yet implemented.")
+        warnings.warn("ClassEval evaluation not yet implemented.", stacklevel=2)
         return {"pass@1": 0.0}
 
 
@@ -256,9 +256,9 @@ class BenchmarkSuite:
 
     def evaluate_all(
         self,
-        generate_fn: Callable[[str], List[str]],
+        generate_fn: Callable[[str], list[str]],
         k: int = 100,
-    ) -> Dict[str, Dict[str, float]]:
+    ) -> dict[str, dict[str, float]]:
         """
         Evaluate on all benchmarks.
 

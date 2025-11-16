@@ -2,17 +2,17 @@
 Evaluation metrics and benchmarks for PonderTTT.
 """
 
-from .metrics import (
-    compute_pass_at_k,
-    compute_flops,
-    compute_efficiency_metrics,
-    compute_pareto_frontier,
-    compute_action_statistics,
-)
 from .benchmarks import (
+    BenchmarkSuite,
     HumanEvalBenchmark,
     MBPPBenchmark,
-    BenchmarkSuite,
+)
+from .metrics import (
+    compute_action_statistics,
+    compute_efficiency_metrics,
+    compute_flops,
+    compute_pareto_frontier,
+    compute_pass_at_k,
 )
 
 __all__ = [

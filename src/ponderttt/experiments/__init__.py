@@ -6,9 +6,9 @@ from .config import (
     ExperimentConfig,
     ExperimentModelConfig,
     TrainingConfig,
+    get_1b_config,
     get_125m_config,
     get_350m_config,
-    get_1b_config,
 )
 
 __all__ = [

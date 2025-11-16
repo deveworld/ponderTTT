@@ -2,10 +2,10 @@
 Statistical utilities for evaluation.
 """
 
-import jax
+from collections.abc import Callable
+
 import jax.numpy as jnp
 import numpy as np
-from typing import Callable, Optional
 
 
 def bootstrap_ci(
@@ -13,7 +13,7 @@ def bootstrap_ci(
     statistic: Callable = np.mean,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
-    random_seed: Optional[int] = None,
+    random_seed: int | None = None,
 ) -> tuple[float, float, float]:
     """
     Compute bootstrap confidence interval.

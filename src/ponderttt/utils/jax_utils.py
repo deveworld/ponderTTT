@@ -7,14 +7,14 @@ Based on:
 - Modern JAX patterns (jax.make_mesh, NamedSharding)
 """
 
-import os
+from typing import Any
+
+import flax
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as PS
 from jax.experimental import mesh_utils
-from typing import Tuple, Optional, Any
-import flax
-from functools import partial
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as PS
 
 
 class JaxRNG:
@@ -41,13 +41,13 @@ class JaxRNG:
         else:
             split_rngs = jax.random.split(self.rng, num=len(keys) + 1)
             self.rng = split_rngs[0]
-            return {key: val for key, val in zip(keys, split_rngs[1:])}
+            return dict(zip(keys, split_rngs[1:]))
 
 
 def initialize_jax_distributed(
-    coordinator_address: Optional[str] = None,
-    num_processes: Optional[int] = None,
-    process_id: Optional[int] = None,
+    coordinator_address: str | None = None,
+    num_processes: int | None = None,
+    process_id: int | None = None,
 ) -> None:
     """
     Initialize JAX for multi-host distributed training.
@@ -72,7 +72,7 @@ def initialize_jax_distributed(
         # Simple initialization - JAX auto-detects TPU Pod config
         try:
             jax.distributed.initialize()
-            print(f" JAX distributed initialized automatically")
+            print(" JAX distributed initialized automatically")
         except RuntimeError:
             # JAX distributed not available (single host or already initialized)
             print(" JAX distributed initialization skipped (single host?)")
@@ -84,7 +84,7 @@ def initialize_jax_distributed(
             num_processes=num_processes,
             process_id=process_id,
         )
-        print(f" JAX distributed initialized explicitly")
+        print(" JAX distributed initialized explicitly")
 
     # Print device info (but only from process 0 to avoid spam)
     if jax.process_index() == 0:
@@ -94,8 +94,8 @@ def initialize_jax_distributed(
 
 
 def create_mesh(
-    mesh_shape: Tuple[int, ...],
-    axis_names: Tuple[str, ...],
+    mesh_shape: tuple[int, ...],
+    axis_names: tuple[str, ...],
 ) -> Mesh:
     """
     Create a device mesh for distributed training.
@@ -161,7 +161,7 @@ def create_fsdp_sharding(
 
 def create_sharding_constraint(
     mesh: Mesh,
-    axis: Optional[str] = None,
+    axis: str | None = None,
     replicated: bool = False,
 ) -> NamedSharding:
     """
@@ -282,7 +282,7 @@ def get_metrics(metrics, unreplicate: bool = False):
 def cross_entropy_loss(
     logits: jnp.ndarray,
     labels: jnp.ndarray,
-    mask: Optional[jnp.ndarray] = None,
+    mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """
     Compute cross-entropy loss.

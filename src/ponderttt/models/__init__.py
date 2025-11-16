@@ -3,17 +3,17 @@ Flax models for PonderTTT.
 """
 
 from .base_model import (
-    TransformerLM,
     ModelConfig,
-    load_model,
-    initialize_sharded_model,
+    TransformerLM,
     apply_sharding_to_params,
     count_parameters,
+    initialize_sharded_model,
     inspect_sharding,
+    load_model,
 )
-from .ttt_layer import TTTLayer, TTTConfig
-from .policy import PolicyNetwork, PolicyConfig
 from .fast_weights import FastWeightModule
+from .policy import PolicyConfig, PolicyNetwork
+from .ttt_layer import TTTConfig, TTTLayer
 
 __all__ = [
     "TransformerLM",

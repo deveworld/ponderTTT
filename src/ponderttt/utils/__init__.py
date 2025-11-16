@@ -2,24 +2,24 @@
 Utility functions for PonderTTT.
 """
 
-from .features import extract_features, FeatureExtractor
-from .statistics import bootstrap_ci, compute_iqm
-from .checkpointing import save_checkpoint, load_checkpoint
+from .checkpointing import load_checkpoint, save_checkpoint
+from .features import FeatureExtractor, extract_features
 from .jax_utils import (
     JaxRNG,
-    initialize_jax_distributed,
-    create_mesh,
     create_data_sharding,
     create_fsdp_sharding,
+    create_mesh,
     create_sharding_constraint,
-    shard_batch,
+    cross_entropy_loss,
     get_local_batch_size,
     get_metrics,
-    cross_entropy_loss,
-    print_on_main,
     init_rng,
+    initialize_jax_distributed,
     next_rng,
+    print_on_main,
+    shard_batch,
 )
+from .statistics import bootstrap_ci, compute_iqm
 
 __all__ = [
     # Features

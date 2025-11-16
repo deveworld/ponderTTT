@@ -8,17 +8,16 @@ Usage:
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Any
 
 import jax
 import jax.numpy as jnp
 from tqdm import tqdm
 
-from ..data import get_tokenizer, create_data_iterator
-from ..models import TransformerLM, ModelConfig, TTTLayer, TTTConfig
-from ..training import TTTTrainer, create_train_state
+from ..data import create_data_iterator, get_tokenizer
+from ..models import TTTConfig, TTTLayer
+from ..training import TTTTrainer
 from ..utils import init_rng, next_rng
-from .config import get_125m_config, get_350m_config, get_1b_config
+from .config import get_1b_config, get_125m_config, get_350m_config
 
 
 def parse_args():
@@ -209,14 +208,14 @@ def main():
         ttt_hidden_dim=config.model.ttt_hidden_dim,
         chunk_size=config.model.chunk_size,
     )
-    ttt_layer = TTTLayer(config=ttt_config)
+    TTTLayer(config=ttt_config)
 
     # Create trainer with model (Note: using HF model directly)
     trainer = TTTTrainer(model=model)
 
     import optax
     optimizer = optax.adam(config.training.learning_rate)
-    opt_state = optimizer.init(params)
+    optimizer.init(params)
 
     from flax.training import train_state
     state = train_state.TrainState.create(
@@ -247,7 +246,7 @@ def main():
     }
 
     with tqdm(total=args.max_chunks, desc="Processing chunks") as pbar:
-        for batch_idx, batch in enumerate(data_iter):
+        for _batch_idx, batch in enumerate(data_iter):
             if chunk_count >= args.max_chunks:
                 break
 

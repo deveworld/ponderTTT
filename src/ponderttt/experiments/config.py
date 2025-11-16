@@ -3,7 +3,6 @@ Configuration for experiments.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass

@@ -5,12 +5,18 @@ Based on: Stooke et al., "Responsive Safety in Reinforcement Learning
 by PID Lagrangian Methods", ICML 2020
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 import jax
 import jax.numpy as jnp
 import optax
-from typing import Tuple, Dict
-from dataclasses import dataclass
 from flax.core import FrozenDict
+
+if TYPE_CHECKING:
+    from .ttt_trainer import TrainState
 
 
 @dataclass
@@ -37,7 +43,7 @@ class PIDController:
         self,
         constraint_violation: float,
         dt: float = 1.0,
-    ) -> 'PIDController':
+    ) -> PIDController:
         """
         Update Lagrangian multiplier based on constraint violation.
 
@@ -108,7 +114,7 @@ class PIDLagrangianPPO:
         advantages: jnp.ndarray,
         returns: jnp.ndarray,
         costs: jnp.ndarray,
-    ) -> Tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
+    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         """
         Compute PPO loss with Lagrangian constraint.
 
@@ -140,7 +146,7 @@ class PIDLagrangianPPO:
 
         # Lagrangian adjustment (subtract lambda * cost from advantages)
         lambda_value = self.pid.lambda_value
-        lagrangian_advantages = advantages - lambda_value * costs
+        advantages - lambda_value * costs
 
         # Policy loss
         policy_loss = -jnp.mean(jnp.minimum(surr1, surr2))
@@ -174,7 +180,7 @@ class PIDLagrangianPPO:
     def update_pid(
         self,
         avg_cost: float,
-    ) -> 'PIDLagrangianPPO':
+    ) -> PIDLagrangianPPO:
         """
         Update PID controller based on average cost.
 
@@ -203,10 +209,10 @@ def create_ppo_optimizer(learning_rate: float = 3e-4) -> optax.GradientTransform
 
 
 def ppo_update_step(
-    state: 'TrainState',
-    batch: Dict[str, jnp.ndarray],
+    state: TrainState,
+    batch: dict[str, jnp.ndarray],
     ppo: PIDLagrangianPPO,
-) -> Tuple['TrainState', Dict[str, jnp.ndarray]]:
+) -> tuple[TrainState, dict[str, jnp.ndarray]]:
     """
     Perform one PPO update step.
 
