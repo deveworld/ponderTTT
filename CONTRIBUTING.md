@@ -11,7 +11,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 2. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/ponderttt.git
+git clone https://github.com/deveworld/ponderttt.git
 cd ponderttt
 ```
 
@@ -28,12 +28,14 @@ uv pip install -e ".[dev]"
 
 4. Run validation:
 ```bash
-# Quick validation with synthetic data
+# Quick validation with The Stack dataset
 uv run python -m ponderttt.experiments.train_baseline \
     --model_scale 125m \
     --action SKIP \
-    --num_chunks 10
+    --max_chunks 10
 ```
+
+**Note**: Requires GPU for production experiments. The Stack dataset will be downloaded automatically.
 
 **Note**: This project uses **uv** for package management, not pip.
 

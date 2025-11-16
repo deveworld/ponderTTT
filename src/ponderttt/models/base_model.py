@@ -3,6 +3,7 @@ Base transformer language model.
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 import flax.linen as nn
 import jax
@@ -362,3 +363,153 @@ def inspect_sharding(params, max_params: int = 20) -> None:
     print("=" * 80)
     print(f"Total parameters: {total_params:,}")
     print("=" * 80 + "\n")
+
+
+class TTTTransformerLM(nn.Module):
+    """
+    Transformer Language Model with Test-Time Training layers.
+
+    Combines:
+    - Slow weights (θ_slow): Frozen pretrained transformer
+    - Fast weights (θ_fast): Adaptive TTT layer
+
+    Following the PonderTTT architecture from PLAN.md:
+        output = forward(chunk, θ_slow + θ_fast)
+
+    Attributes:
+        base_config: Configuration for base model
+        ttt_config: Configuration for TTT layer
+    """
+    base_config: ModelConfig
+    ttt_config: Any  # TTTConfig from ttt_layer
+
+    def setup(self):
+        """Initialize slow and fast weight components."""
+        from .ttt_layer import TTTLayer
+
+        # Slow weights: Pretrained transformer (frozen)
+        self.base_model = FlaxAutoModelForCausalLM.from_pretrained(
+            self.base_config.model_name,
+            dtype=self.base_config.dtype,
+        )
+
+        # Fast weights: TTT layer (adaptive)
+        self.ttt_layer = TTTLayer(config=self.ttt_config)
+
+        # LM head for converting adapted hidden states to logits
+        vocab_size = self.base_model.config.vocab_size
+        self.lm_head = nn.Dense(
+            vocab_size,
+            use_bias=False,
+            dtype=self.base_config.dtype,
+            name='lm_head_projection'
+        )
+
+    def __call__(
+        self,
+        input_ids: jnp.ndarray,
+        attention_mask: jnp.ndarray | None = None,
+        deterministic: bool = True,
+        use_ttt: bool = True,
+    ) -> dict:
+        """
+        Forward pass combining slow and fast weights.
+
+        For baselines: TTT layer does simple feedforward WITHOUT internal self-supervised updates.
+        Only external gradient descent from LM loss applies.
+
+        Args:
+            input_ids: Input token IDs [batch, seq_len]
+            attention_mask: Attention mask [batch, seq_len]
+            deterministic: Whether to use dropout
+            use_ttt: Whether to apply TTT layer (False for SKIP baseline)
+
+        Returns:
+            Dictionary with:
+                - logits: Output logits [batch, seq_len, vocab_size]
+                - ttt_stats: TTT layer statistics (if use_ttt=True)
+        """
+        # Get hidden states from frozen base model
+        base_outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            train=not deterministic,
+        )
+
+        # Use last hidden state
+        hidden_states = base_outputs.hidden_states[-1]  # [batch, seq_len, hidden_dim]
+
+        if use_ttt:
+            # Apply TTT layer WITHOUT internal self-supervised updates
+            # Pass enable_internal_updates=False to disable self-supervised learning
+            # TTT layer is just a learnable feedforward transformation
+            adapted_hidden, ttt_stats = self.ttt_layer(
+                hidden_states,
+                mask=attention_mask,
+                deterministic=deterministic,
+                enable_internal_updates=False,  # Disable internal TTT updates for baselines
+            )
+
+            # Project adapted hidden states to vocabulary logits
+            logits = self.lm_head(adapted_hidden)
+
+            return {
+                'logits': logits,
+                'ttt_stats': ttt_stats,
+            }
+        else:
+            # SKIP: Use base model logits directly (no TTT adaptation)
+            return {
+                'logits': base_outputs.logits,
+                'ttt_stats': None,
+            }
+
+
+def load_ttt_model(
+    model_name: str = "gpt2",
+    ttt_config: Any = None,
+    dtype: jnp.dtype = jnp.float32,
+) -> tuple[TTTTransformerLM, AutoTokenizer]:
+    """
+    Load TTT-augmented transformer model.
+
+    Args:
+        model_name: HuggingFace model name
+        ttt_config: TTT layer configuration
+        dtype: Data type for model
+
+    Returns:
+        model: TTTTransformerLM instance
+        tokenizer: Tokenizer
+    """
+    from .ttt_layer import TTTConfig
+
+    # Default TTT config if not provided
+    if ttt_config is None:
+        ttt_config = TTTConfig(
+            hidden_dim=768,  # GPT-2 hidden size
+            num_heads=12,
+            head_dim=64,
+            ttt_hidden_dim=2048,
+            chunk_size=512,
+        )
+
+    # Base model config
+    base_config = ModelConfig(
+        model_name=model_name,
+        dtype=dtype,
+    )
+
+    # Create TTT model
+    model = TTTTransformerLM(
+        base_config=base_config,
+        ttt_config=ttt_config,
+    )
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    return model, tokenizer

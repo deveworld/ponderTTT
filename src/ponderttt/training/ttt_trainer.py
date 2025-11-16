@@ -21,12 +21,12 @@ class TrainState(train_state.TrainState):
         batch_stats: Batch statistics for normalization (if using BatchNorm)
         dropout_rng: RNG key for dropout
     """
-    batch_stats: FrozenDict[str, Any] = None
-    dropout_rng: jax.random.PRNGKey = None
+    batch_stats: FrozenDict[str, Any] | None = None
+    dropout_rng: jax.Array | None = None
 
 
 def create_train_state(
-    rng: jax.random.PRNGKey,
+    rng: jax.Array, # jax.random.PRNGKey
     model: Any,
     learning_rate: float,
     input_shape: tuple,
@@ -159,7 +159,7 @@ class TTTTrainer:
     def _eval_step_jit(
         state: TrainState,
         batch: dict[str, jnp.ndarray],
-    ) -> dict[str, float]:
+    ) -> dict[str, jax.Array]:
         """
         JIT-compiled evaluation step for maximum performance.
 
@@ -223,7 +223,7 @@ def create_learning_rate_schedule(
     base_learning_rate: float,
     num_warmup_steps: int,
     num_training_steps: int,
-) -> Callable[[int], float]:
+) -> optax.Schedule:
     """
     Create learning rate schedule with warmup and cosine decay.
 
