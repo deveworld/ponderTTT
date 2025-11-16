@@ -43,6 +43,7 @@ class TTTLayer(nn.Module):
         x: jnp.ndarray,
         mask: jnp.ndarray | None = None,
         deterministic: bool = True,
+        enable_internal_updates: bool = False,
     ) -> tuple[jnp.ndarray, dict]:
         """
         Apply TTT layer.
@@ -51,6 +52,8 @@ class TTTLayer(nn.Module):
             x: Input [batch, seq_len, hidden_dim]
             mask: Attention mask [batch, seq_len]
             deterministic: Whether to use dropout
+            enable_internal_updates: If True, do self-supervised internal updates (for PonderTTT).
+                                    If False, simple feedforward pass (for baselines).
 
         Returns:
             output: Transformed sequence [batch, seq_len, hidden_dim]
@@ -94,60 +97,85 @@ class TTTLayer(nn.Module):
             cfg.dtype,
         )
 
-        # Process in chunks for TTT using scan (JIT-compatible)
-        num_chunks = seq_len // cfg.chunk_size
-        learning_rate = 1e-3
+        #  Branch: Simple feedforward OR internal TTT updates
+        if not enable_internal_updates:
+            # BASELINE MODE: Simple feedforward without internal updates
+            # Just apply fast weight transformation once
+            k_flat = k.reshape(batch_size, seq_len, k_flat_dim)
 
-        def process_chunk(carry, chunk_idx):
-            """Process a single chunk with gradient-based weight updates."""
-            current_w0, current_w1, current_w2 = carry
+            # Scale down inputs to prevent activation explosion
+            k_flat_normalized = k_flat / jnp.sqrt(k_flat_dim)
 
-            start_idx = chunk_idx * cfg.chunk_size
+            gate = nn.silu(jnp.dot(k_flat_normalized, w0))
+            hidden = jnp.dot(k_flat_normalized, w2)
+            activated = gate * hidden
 
-            # Extract chunk using dynamic_slice (JIT-compatible)
-            k_chunk = jax.lax.dynamic_slice(
-                k,
-                (0, start_idx, 0, 0),
-                (batch_size, cfg.chunk_size, cfg.num_heads, cfg.head_dim)
+            # Scale down before final projection
+            activated = activated / jnp.sqrt(cfg.ttt_hidden_dim)
+            v_transformed = jnp.dot(activated, w1)
+            v_transformed = v_transformed.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
+
+            # Apply query to get final output
+            output = jnp.einsum('bshd,bthd->bst', q, v_transformed)
+
+            ttt_stats = {'ttt_loss': 0.0, 'num_chunks': 0}
+
+        else:
+            # PONDERTTT MODE: Self-supervised internal TTT updates
+            # Process in chunks for TTT using scan (JIT-compatible)
+            num_chunks = seq_len // cfg.chunk_size
+            learning_rate = 1e-3
+
+            def process_chunk(carry, chunk_idx):
+                """Process a single chunk with gradient-based weight updates."""
+                current_w0, current_w1, current_w2 = carry
+
+                start_idx = chunk_idx * cfg.chunk_size
+
+                # Extract chunk using dynamic_slice (JIT-compatible)
+                k_chunk = jax.lax.dynamic_slice(
+                    k,
+                    (0, start_idx, 0, 0),
+                    (batch_size, cfg.chunk_size, cfg.num_heads, cfg.head_dim)
+                )
+                v_chunk = jax.lax.dynamic_slice(
+                    v,
+                    (0, start_idx, 0, 0),
+                    (batch_size, cfg.chunk_size, cfg.num_heads, cfg.head_dim)
+                )
+
+                # Perform TTT update with gradient descent
+                chunk_output, chunk_loss, updated_w0, updated_w1, updated_w2 = self._ttt_update_chunk(
+                    k_chunk,
+                    v_chunk,
+                    current_w0,
+                    current_w1,
+                    current_w2,
+                    learning_rate,
+                )
+
+                new_carry = (updated_w0, updated_w1, updated_w2)
+                return new_carry, (chunk_output, chunk_loss)
+
+            # Use scan to process all chunks with weight updates
+            init_carry = (w0, w1, w2)
+            _, (chunk_outputs, chunk_losses) = jax.lax.scan(
+                process_chunk,
+                init_carry,
+                jnp.arange(num_chunks),
             )
-            v_chunk = jax.lax.dynamic_slice(
-                v,
-                (0, start_idx, 0, 0),
-                (batch_size, cfg.chunk_size, cfg.num_heads, cfg.head_dim)
-            )
 
-            # Perform TTT update with gradient descent
-            chunk_output, chunk_loss, updated_w0, updated_w1, updated_w2 = self._ttt_update_chunk(
-                k_chunk,
-                v_chunk,
-                current_w0,
-                current_w1,
-                current_w2,
-                learning_rate,
-            )
+            # Concatenate chunks
+            output = jnp.concatenate(chunk_outputs, axis=1)
+            ttt_stats = {
+                'ttt_loss': jnp.mean(chunk_losses),
+                'num_chunks': num_chunks,
+            }
 
-            new_carry = (updated_w0, updated_w1, updated_w2)
-            return new_carry, (chunk_output, chunk_loss)
-
-        # Use scan to process all chunks with weight updates
-        init_carry = (w0, w1, w2)
-        _, (chunk_outputs, chunk_losses) = jax.lax.scan(
-            process_chunk,
-            init_carry,
-            jnp.arange(num_chunks),
-        )
-
-        # Concatenate chunks
-        output = jnp.concatenate(chunk_outputs, axis=1)
-        ttt_stats = {
-            'ttt_loss': jnp.mean(chunk_losses),
-            'num_chunks': num_chunks,
-        }
-
-        # Apply query to get final output
-        output = jnp.einsum('bshd,bthd->bst', q, output.reshape(
-            batch_size, seq_len, cfg.num_heads, cfg.head_dim
-        ))
+            # Apply query to get final output
+            output = jnp.einsum('bshd,bthd->bst', q, output.reshape(
+                batch_size, seq_len, cfg.num_heads, cfg.head_dim
+            ))
 
         # Output projection
         output = nn.Dense(
@@ -162,6 +190,88 @@ class TTTLayer(nn.Module):
             output = nn.Dropout(rate=cfg.dropout_rate)(output, deterministic=False)
 
         return output, ttt_stats
+
+    @nn.compact
+    def apply_simple_forward(
+        self,
+        x: jnp.ndarray,
+        deterministic: bool = True,
+    ) -> jnp.ndarray:
+        """
+        Simple feedforward pass WITHOUT internal TTT updates.
+
+        For baseline evaluation: TTT layer is just a learnable transformation.
+        No self-supervised updates - only external gradient descent applies.
+
+        Args:
+            x: Input [batch, seq_len, hidden_dim]
+            deterministic: Whether to use dropout
+
+        Returns:
+            output: Transformed sequence [batch, seq_len, hidden_dim]
+        """
+        batch_size, seq_len, hidden_dim = x.shape
+        cfg = self.config
+
+        # QKV projections
+        qkv = nn.Dense(
+            features=3 * hidden_dim,
+            use_bias=False,
+            dtype=cfg.dtype,
+            name='qkv_proj'
+        )(x)
+        q, k, v = jnp.split(qkv, 3, axis=-1)
+
+        # Reshape for multi-head attention
+        q = q.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
+        k = k.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
+        v = v.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
+
+        # Get fast weight parameters (but don't update them internally)
+        k_flat_dim = cfg.num_heads * cfg.head_dim
+        w0 = self.param(
+            'fast_w0',
+            nn.initializers.normal(stddev=0.02),
+            (k_flat_dim, cfg.ttt_hidden_dim),
+            cfg.dtype,
+        )
+        w1 = self.param(
+            'fast_w1',
+            nn.initializers.normal(stddev=0.02),
+            (cfg.ttt_hidden_dim, hidden_dim),
+            cfg.dtype,
+        )
+        w2 = self.param(
+            'fast_w2',
+            nn.initializers.normal(stddev=0.02),
+            (k_flat_dim, cfg.ttt_hidden_dim),
+            cfg.dtype,
+        )
+
+        # Simple feedforward transformation (no internal updates)
+        k_flat = k.reshape(batch_size, seq_len, k_flat_dim)
+        gate = nn.silu(jnp.dot(k_flat, w0))
+        hidden = jnp.dot(k_flat, w2)
+        activated = gate * hidden
+        v_transformed = jnp.dot(activated, w1)
+        v_transformed = v_transformed.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
+
+        # Apply query to get final output
+        output = jnp.einsum('bshd,bthd->bst', q, v_transformed)
+
+        # Output projection
+        output = nn.Dense(
+            features=hidden_dim,
+            use_bias=False,
+            dtype=cfg.dtype,
+            name='output_proj'
+        )(output)
+
+        # Dropout
+        if not deterministic:
+            output = nn.Dropout(rate=cfg.dropout_rate)(output, deterministic=False)
+
+        return output
 
     def _ttt_update_chunk(
         self,

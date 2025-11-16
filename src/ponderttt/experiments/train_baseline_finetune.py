@@ -1,12 +1,8 @@
 """
 Train baseline TTT models with fixed action schedules.
 
-Implements the architecture from PLAN.md:
-- Slow weights (θ_slow): Frozen pretrained model
-- Fast weights (θ_fast): Adaptive TTT layer weights
-
 Usage:
-    python -m ponderttt.experiments.train_baseline_ttt --model_scale 125m --action UPDATE_1
+    python -m ponderttt.experiments.train_baseline --model_scale 125m --action UPDATE_1
 """
 
 import argparse
@@ -16,13 +12,12 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import optax
 from flax.core import freeze, unfreeze
-from flax.training import train_state
 from tqdm import tqdm
 
 from ..data import create_data_iterator, get_tokenizer
-from ..models import TTTConfig, load_ttt_model
+from ..models import TTTConfig, TTTLayer
+from ..training import TTTTrainer
 from ..utils import init_rng, next_rng
 from .config import get_1b_config, get_125m_config, get_350m_config
 
@@ -54,7 +49,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="outputs/baselines_ttt",
+        default="outputs/baselines",
         help="Output directory",
     )
     parser.add_argument(
@@ -94,7 +89,7 @@ def main():
     args = parse_args()
 
     print("=" * 60)
-    print("PonderTTT Baseline Training (TTT Architecture)")
+    print("PonderTTT Baseline Training")
     print("=" * 60)
     print(f"Model scale: {args.model_scale}")
     print(f"Action: {args.action}")
@@ -124,10 +119,10 @@ def main():
     print("Creating data iterator...")
     import math
     num_chunks_per_seq = config.model.max_seq_length // config.model.chunk_size
-    num_batches_needed = math.ceil(args.max_chunks / (num_chunks_per_seq * config.training.batch_size))
+    num_batches_needed = math.ceil(args.max_chunks / num_chunks_per_seq)
     num_examples_needed = int(num_batches_needed * config.training.batch_size * 1.5)
 
-    print(f"Downloading {num_examples_needed} examples for {args.max_chunks} chunks...")
+    print(f"Downloading {num_examples_needed} examples for {args.max_chunks} chunks ({num_batches_needed} batches)...")
 
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
@@ -138,43 +133,65 @@ def main():
         max_examples=num_examples_needed,
     )
 
-    # Initialize TTT model
-    print("Initializing TTT model...")
+    # Initialize model
+    print("Initializing model...")
+    from transformers import FlaxAutoModelForCausalLM
+
+    hf_model = FlaxAutoModelForCausalLM.from_pretrained(
+        config.model.model_name,
+        dtype=jnp.float32,
+    )
+    params = hf_model.params
+
+    # Wrapper to make HF model compatible with trainer
+    def model_apply_fn(variables, input_ids, attention_mask=None, deterministic=True):
+        # HF models need dropout RNG when train=True
+        if not deterministic:
+            dropout_rng = next_rng()
+            outputs = hf_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                params=variables['params'],
+                dropout_rng=dropout_rng,
+                train=True
+            )
+        else:
+            outputs = hf_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                params=variables['params'],
+                train=False
+            )
+        return {'logits': outputs.logits}
+
+    # Create a simple model object
+    class ModelWrapper:
+        def __init__(self, apply_fn):
+            self.apply = apply_fn
+            self.__call__ = apply_fn
+
+    model = ModelWrapper(model_apply_fn)
+
+    # Initialize TTT layer
     ttt_config = TTTConfig(
         hidden_dim=config.model.hidden_dim,
         num_heads=config.model.num_heads,
         head_dim=config.model.head_dim,
         ttt_hidden_dim=config.model.ttt_hidden_dim,
         chunk_size=config.model.chunk_size,
-        max_seq_length=config.model.max_seq_length,
-        dtype=jnp.float32,
     )
+    TTTLayer(config=ttt_config)
 
-    model, _ = load_ttt_model(
-        model_name=config.model.model_name,
-        ttt_config=ttt_config,
-        dtype=jnp.float32,
-    )
+    # Create trainer with model (Note: using HF model directly)
+    trainer = TTTTrainer(model=model)
 
-    # Initialize model parameters
-    rng = next_rng()
-    dummy_input = jnp.ones((1, config.model.max_seq_length), dtype=jnp.int32)
-    variables = model.init(rng, dummy_input, deterministic=True)
-    params = variables['params']
-
-    print(f"\nModel architecture:")
-    print(f"  Slow weights: {config.model.model_name} (frozen)")
-    print(f"  Fast weights: TTT layer (adaptive)")
-    print(f"  TTT hidden dim: {config.model.ttt_hidden_dim}")
-    print()
-
-    # Create optimizer (only for TTT layer parameters)
-    # Base model parameters are frozen
+    import optax
     optimizer = optax.adam(config.training.learning_rate)
+    optimizer.init(params)
 
-    # Create train state
+    from flax.training import train_state
     state = train_state.TrainState.create(
-        apply_fn=model.apply,
+        apply_fn=model_apply_fn,  # Use wrapper function
         params=params,
         tx=optimizer,
     )
@@ -196,110 +213,97 @@ def main():
             "action": args.action,
             "num_steps": num_steps,
             "cost_per_chunk": action_to_cost(args.action),
-            "architecture": "TTT (slow + fast weights)",
         },
         "chunks": [],
     }
 
-    # Save base TTT parameters (will be restored for each batch)
-    base_params = state.params
-
-    # Define loss function for TTT updates
-    def compute_loss(params, batch):
-        """Compute language modeling loss with TTT layer."""
-        outputs = model.apply(
-            {'params': params},
-            batch['input_ids'],
-            attention_mask=batch['attention_mask'],
-            deterministic=True,
-            use_ttt=(num_steps > 0),  # Skip TTT for SKIP action
-        )
-
-        logits = outputs['logits']
-        labels = batch['input_ids'][:, 1:]
-        logits = logits[:, :-1]
-
-        vocab_size = logits.shape[-1]
-        loss = optax.softmax_cross_entropy_with_integer_labels(
-            logits.reshape(-1, vocab_size),
-            labels.reshape(-1),
-        )
-
-        mask = batch['attention_mask'][:, 1:]
-        loss = loss * mask.reshape(-1)
-        loss = jnp.sum(loss) / jnp.sum(mask)
-
-        return loss
-
-    # JIT compile for speed
-    @jax.jit
-    def ttt_update_step(params, opt_state, batch):
-        """Single TTT gradient step on fast weights."""
-        loss, grads = jax.value_and_grad(compute_loss)(params, batch)
-
-        # Update only TTT layer parameters (fast weights)
-        # Base model parameters remain frozen
-        updates, new_opt_state = optimizer.update(grads, opt_state, params)
-        new_params = optax.apply_updates(params, updates)
-
-        return new_params, new_opt_state, loss
-
-    @jax.jit
-    def evaluate(params, batch):
-        """Evaluate with current parameters."""
-        loss = compute_loss(params, batch)
-        return loss
+    # Save base model state (will be restored for each batch)
+    base_params = copy.deepcopy(unfreeze(state.params))
 
     with tqdm(total=args.max_chunks, desc="Processing chunks") as pbar:
         for _batch_idx, batch in enumerate(data_iter):
             if chunk_count >= args.max_chunks:
                 break
 
-            # Start from base parameters for each batch (batch independence)
-            batch_params = base_params
-            batch_opt_state = state.opt_state
-
             if num_steps == 0:
-                # SKIP: No TTT, just evaluate with frozen base model
-                sequence_loss = evaluate(batch_params, batch)
+                # SKIP: Evaluate full sequence at once (proper context)
+                full_batch = {
+                    'input_ids': batch['input_ids'],
+                    'attention_mask': batch['attention_mask'],
+                }
+                metrics = trainer.eval_step(state, full_batch)
+                sequence_loss = metrics['loss']
+
+                # Count as num_chunks for fair comparison
+                chunks = batch["chunks"]
+                batch_size, num_chunks, chunk_size = chunks.shape
+
+                for i in range(num_chunks):
+                    if chunk_count >= args.max_chunks:
+                        break
+
+                    chunk_cost = action_to_cost(args.action)
+                    total_cost += chunk_cost
+                    total_loss += float(sequence_loss)
+                    chunk_count += 1
+
+                    results["chunks"].append({
+                        "chunk_id": chunk_count,
+                        "chunk_position": i,
+                        "loss": float(sequence_loss),
+                        "cost": chunk_cost,
+                        "action": args.action,
+                    })
+
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        "loss": f"{sequence_loss:.4f}",
+                        "avg_cost": f"{total_cost/chunk_count:.2f}×",
+                    })
             else:
-                # UPDATE: Adapt TTT fast weights N times on full sequence
-                current_params = batch_params
-                current_opt_state = batch_opt_state
+                # UPDATE: Adapt on full sequences
+                # Start from base model for each batch
+                batch_state = state.replace(params=freeze(copy.deepcopy(base_params)))
+
+                full_batch = {
+                    'input_ids': batch['input_ids'],
+                    'attention_mask': batch['attention_mask'],
+                }
+
+                # Adapt model on FULL sequence
                 for _ in range(num_steps):
-                    current_params, current_opt_state, _ = ttt_update_step(
-                        current_params, current_opt_state, batch
-                    )
+                    batch_state, _ = trainer.train_step(batch_state, full_batch)
 
-                # Evaluate with adapted fast weights
-                sequence_loss = evaluate(current_params, batch)
+                # Evaluate full sequence to get proper loss
+                metrics = trainer.eval_step(batch_state, full_batch)
+                sequence_loss = metrics['loss']
 
-            # Record results per chunk (for fair comparison)
-            chunks = batch["chunks"]
-            batch_size, num_chunks, chunk_size = chunks.shape
+                # Count cost per chunk for fair comparison
+                chunks = batch["chunks"]
+                batch_size, num_chunks, chunk_size = chunks.shape
 
-            for i in range(num_chunks):
-                if chunk_count >= args.max_chunks:
-                    break
+                for i in range(num_chunks):
+                    if chunk_count >= args.max_chunks:
+                        break
 
-                chunk_cost = action_to_cost(args.action)
-                total_cost += chunk_cost
-                total_loss += float(sequence_loss)
-                chunk_count += 1
+                    chunk_cost = action_to_cost(args.action)
+                    total_cost += chunk_cost
+                    total_loss += float(sequence_loss)
+                    chunk_count += 1
 
-                results["chunks"].append({
-                    "chunk_id": chunk_count,
-                    "chunk_position": i,
-                    "loss": float(sequence_loss),
-                    "cost": chunk_cost,
-                    "action": args.action,
-                })
+                    results["chunks"].append({
+                        "chunk_id": chunk_count,
+                        "chunk_position": i,
+                        "loss": float(sequence_loss),
+                        "cost": chunk_cost,
+                        "action": args.action,
+                    })
 
-                pbar.update(1)
-                pbar.set_postfix({
-                    "loss": f"{sequence_loss:.4f}",
-                    "avg_cost": f"{total_cost/chunk_count:.2f}×",
-                })
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        "loss": f"{sequence_loss:.4f}",
+                        "avg_cost": f"{total_cost/chunk_count:.2f}×",
+                    })
 
     # Compute final statistics
     avg_loss = total_loss / chunk_count

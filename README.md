@@ -20,15 +20,15 @@ PonderTTT is a reinforcement learning framework for adaptive test-time training 
 
 ```
 JAX/Flax Stack:
-├── JAX 0.4.14+         # Numerical computing
-├── Flax 0.7.0+         # Neural network library
-├── Optax 0.1.7+        # Optimization
-├── Orbax              # Checkpointing
-├── Transformers 4.41+ # Pre-trained models
-└── Datasets           # Data loading
+├── JAX 0.8.0+            # Numerical computing
+├── Flax 0.12.0+          # Neural network library
+├── Optax 0.2.6+          # Optimization
+├── Orbax                 # Checkpointing
+├── Transformers 4.57.1+  # Pre-trained models
+└── Datasets              # Data loading
 ```
 
-**Note on JAX Version**: Minimum JAX 0.4.14 required. The codebase uses modern JAX patterns (NamedSharding, mesh_utils, jax.make_mesh) compatible with the latest JAX versions (tested compatible up to 0.4.35+). We specify 0.4.14+ for TPU compatibility while supporting newer versions.
+**Note on JAX Version**: Minimum JAX 0.8.0 required. The codebase uses modern JAX patterns (NamedSharding, mesh_utils, jax.make_mesh). We specify 0.8.0+ for TPU compatibility while supporting newer versions.
 
 ## Installation
 
@@ -46,7 +46,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```bash
 # On TPU VM
 uv pip install -f https://storage.googleapis.com/jax-releases/libtpu_releases.html \
-    jax[tpu]==0.4.14
+    jax[tpu]==0.8.0
 
 # Install other dependencies
 uv pip install -e .
@@ -76,30 +76,30 @@ uv pip install -e .
 
 ## Quick Start
 
-### 1. Validate Pipeline (CPU/GPU)
+### 1. Run Baseline Experiments (Requires GPU)
 
 ```bash
-# Run baseline validation with synthetic data
+# Run baseline with The Stack dataset
 uv run python -m ponderttt.experiments.train_baseline \
     --model_scale 125m \
-    --action SKIP \
-    --num_chunks 10
+    --action UPDATE_1 \
+    --max_chunks 100
 ```
 
-This validates:
-- JAX/Flax setup
-- Model initialization
-- TTT layer functionality
-- Policy network
-- Feature extraction
-- Training loop
+This runs:
+- JAX/Flax pipeline
+- Model initialization (GPT-2 125M)
+- TTT layer with fast weights
+- Data loading from The Stack v2
+- Training with fixed action schedule
 
-**Expected Results** (with synthetic data):
-- SKIP baseline: ~11.0 loss (random tokens)
-- UPDATE_1/2/4: ~10.9 loss (marginal improvement)
-- All baselines run without errors
+**Available Actions**:
+- `--action SKIP`: No TTT updates (1× cost)
+- `--action UPDATE_1`: 1 TTT step (3× cost)
+- `--action UPDATE_2`: 2 TTT steps (5× cost)
+- `--action UPDATE_4`: 4 TTT steps (12× cost)
 
-**Important**: Synthetic data has limited semantic structure. Real data (The Stack) needed for meaningful results.
+**Note**: GPU required for production training. CPU is too slow for real experiments.
 
 ### 2. Test Distributed Setup (Single Host)
 
@@ -175,7 +175,7 @@ gcloud compute tpus tpu-vm create ponderttt-v4-64 \
 gcloud compute tpus tpu-vm ssh ponderttt-v4-64 \
   --zone=us-central2-b \
   --worker=all \
-  --command="git clone <your-repo> && cd ponderttt && pip install -e ."
+  --command="git clone https://github.com/deveworld/ponderttt.git && cd ponderttt && pip install -e ."
 
 # Test distributed setup (on all hosts)
 gcloud compute tpus tpu-vm ssh ponderttt-v4-64 \
@@ -205,9 +205,9 @@ ponderttt/
 │   │   └── tokenization.py
 │   ├── models/            # Flax models
 │   │   ├── base_model.py  # TransformerLM (HF wrapper)
-│   │   ├── ttt_layer.py   # TTT layer with fast weights
+│   │   ├── ttt_layer.py   # TTT layer with fast weights (primary)
 │   │   ├── policy.py      # PolicyNetwork (actor-critic)
-│   │   └── fast_weights.py # LoRA-style fast weights
+│   │   └── fast_weights.py # LoRA-style fast weights (alternative)
 │   ├── training/          # Training algorithms
 │   │   ├── pid_lagrangian.py # PID-Lagrangian PPO
 │   │   ├── ttt_trainer.py    # TTT baseline trainer
@@ -225,12 +225,12 @@ ponderttt/
 
 ### Action Space
 
-| Action | TTT Steps | Cost | Use Case |
-|--------|-----------|------|----------|
-| SKIP | 0 | 1× | Easy chunks |
-| UPDATE_1 | 1 | 3× | Moderate difficulty |
-| UPDATE_2 | 2 | 5× | Difficult chunks |
-| UPDATE_4 | 4 | 12× | Very difficult |
+|  Action  | TTT Steps | Cost |       Use Case      |
+|----------|-----------|------|---------------------|
+| SKIP     |     0     |  1×  | Easy chunks         |
+| UPDATE_1 |     1     |  3×  | Moderate difficulty |
+| UPDATE_2 |     2     |  5×  | Difficult chunks    |
+| UPDATE_4 |     4     |  12× | Very difficult      |
 
 ### Feature Space (32D)
 
@@ -349,21 +349,16 @@ For questions, open an issue on GitHub.
 ## Current Limitations
 
 ### Known Issues
-1. ~~**Synthetic Data Only**: Currently using random tokens for validation. Real data (The Stack) is gated and requires approval.~~  **RESOLVED** - The Stack v2 access approved
-2. **GPU Required**: CPU validation confirms pipeline works, but GPU needed for production experiments (CPU too slow).
-3. **TTT Improvement Marginal**: On synthetic data, TTT shows only ~0.1 loss reduction (expected - random tokens have no semantic structure).
-4. **Real Benchmarks Pending**: HumanEval/MBPP evaluation requires real code training data.
+1. **GPU Required**: CPU validation confirms pipeline works, but GPU needed for production experiments (CPU too slow).
+2. **Real Benchmarks Pending**: HumanEval/MBPP evaluation requires real code training data.
 
 ### Implementation Notes (v0.2.0)
-1. **chunk_size**: Set to 512 for GPT-2 compatibility (max_position_embeddings=1024)
-2. **Model Integration**: HuggingFace/Flax compatibility wrapper for seamless model loading
-3. **Training Mode**: Proper RNG handling for dropout layers
-4. **Synthetic Data**: Varied random tokens for pipeline validation
-5. **JAX Compatibility**: Dynamic slicing in TTT layer for flexible sequence handling
-6. **FSDP Strategy**: Fully Sharded Data Parallel for memory-efficient training on large models
+1. **Model Integration**: HuggingFace/Flax compatibility wrapper for seamless model loading
+2. **Training Mode**: Proper RNG handling for dropout layers
+3. **JAX Compatibility**: Dynamic slicing in TTT layer for flexible sequence handling
+4. **FSDP Strategy**: Fully Sharded Data Parallel for memory-efficient training on large models
 
 ### Next Steps
-1. Obtain access to The Stack dataset **DONE** - v2 access approved
-2. Secure GPU resources for training (Vast.ai / RunPod)
-3. Run baseline experiments with real code data
-4. Validate TTT improvement on meaningful data
+1. Secure GPU resources for training (Vast.ai / RunPod)
+2. Run baseline experiments with real code data
+3. Validate TTT improvement on meaningful data
