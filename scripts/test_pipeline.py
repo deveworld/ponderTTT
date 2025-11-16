@@ -22,14 +22,14 @@ print("=" * 60)
 print("PonderTTT Pipeline Integration Test")
 print("=" * 60)
 
-# Test 1: Data loading (using synthetic data for testing)
+# Test 1: Data loading (using dummy data for unit testing)
 print("\n[1/6] Testing data loading...")
 try:
     from ponderttt.data import get_tokenizer
 
     tokenizer = get_tokenizer("gpt2")
 
-    # Create synthetic batch for testing
+    # Create dummy batch for unit testing
     batch_size = 2
     seq_length = 1024
     chunk_size = 512
@@ -43,7 +43,7 @@ try:
 
     assert "input_ids" in batch
     assert "chunks" in batch
-    print(f" Data loading works (synthetic batch shape: {batch['input_ids'].shape})")
+    print(f" Data loading works (dummy batch shape: {batch['input_ids'].shape})")
 except Exception as e:
     print(f"✗ Data loading failed: {e}")
     sys.exit(1)
@@ -135,7 +135,7 @@ except Exception as e:
 # Test 6: End-to-end flow
 print("\n[6/6] Testing end-to-end flow...")
 try:
-    # Use synthetic batch from Test 1
+    # Use dummy batch from Test 1
     input_ids = batch["input_ids"]
 
     # Forward through model
