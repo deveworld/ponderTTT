@@ -60,3 +60,4 @@ dmypy.json
 # Linting
 .ruff_cache/
 .cache/
+*.json
