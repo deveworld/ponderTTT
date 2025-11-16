@@ -12,7 +12,7 @@ from transformers import PreTrainedTokenizer
 
 class CodeDataset:
     """
-    Streaming dataset for code from The Stack v2 with multi-host sharding.
+    Streaming dataset for code from The Stack (dedup) with multi-host sharding.
 
     Args:
         tokenizer: HuggingFace tokenizer
@@ -39,11 +39,11 @@ class CodeDataset:
         self.chunk_size = chunk_size
         self.shard_across_hosts = shard_across_hosts
 
-        # Load dataset in streaming mode (The Stack v2)
-        # Note: language should be capitalized (e.g., "Python", "Java")
+        # Load dataset in streaming mode (The Stack dedup)
+        # Note: data_dir uses lowercase language name
         self.dataset = load_dataset(
-            "bigcode/the-stack-v2",
-            language.capitalize(),
+            "bigcode/the-stack-dedup",
+            data_dir=f"data/{language.lower()}",
             split=split,
             streaming=True,
         )
