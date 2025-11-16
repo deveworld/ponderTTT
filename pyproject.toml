@@ -5,7 +5,7 @@ description = "Adaptive Budget-Constrained Test-Time Training for Code Generatio
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    {name = "PonderTTT Team"}
+    {name = "deveworld"}
 ]
 license = {text = "MIT"}
 keywords = ["test-time-training", "adaptive-computation", "llm", "efficiency"]
