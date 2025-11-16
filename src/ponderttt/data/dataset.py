@@ -8,16 +8,22 @@ import jax.numpy as jnp
 from typing import Iterator, Optional, Dict
 from datasets import load_dataset
 from transformers import PreTrainedTokenizer
+import boto3
+from botocore import UNSIGNED
+from botocore.client import Config
+from smart_open import open as smart_open
 
 
 class CodeDataset:
     """
-    Streaming dataset for code from The Stack (dedup) with multi-host sharding.
+    Streaming dataset for code from The Stack v2 (dedup) with multi-host sharding.
+
+    Downloads actual code content from Software Heritage S3 bucket using unsigned requests.
 
     Args:
         tokenizer: HuggingFace tokenizer
         split: Dataset split ('train', 'validation', 'test')
-        language: Programming language (e.g., 'python', 'javascript')
+        language: Programming language (e.g., 'Python', 'JavaScript')
         seq_length: Maximum sequence length
         chunk_size: Chunk size for TTT
         shard_across_hosts: If True, shard data across hosts for distributed training
@@ -27,7 +33,7 @@ class CodeDataset:
         self,
         tokenizer: PreTrainedTokenizer,
         split: str = "train",
-        language: str = "python",
+        language: str = "Python",
         seq_length: int = 8192,
         chunk_size: int = 4096,
         shard_across_hosts: bool = True,
@@ -39,11 +45,17 @@ class CodeDataset:
         self.chunk_size = chunk_size
         self.shard_across_hosts = shard_across_hosts
 
-        # Load dataset in streaming mode (The Stack dedup)
-        # Note: data_dir uses lowercase language name
+        # Setup S3 client for unsigned requests (no AWS credentials needed)
+        self.s3_client = boto3.client(
+            's3',
+            region_name='us-east-1',
+            config=Config(signature_version=UNSIGNED)
+        )
+
+        # Load dataset in streaming mode (The Stack v2 dedup)
         self.dataset = load_dataset(
-            "bigcode/the-stack-dedup",
-            data_dir=f"data/{language.lower()}",
+            "bigcode/the-stack-v2-dedup",
+            language,
             split=split,
             streaming=True,
         )
@@ -60,11 +72,36 @@ class CodeDataset:
                         index=host_id,
                     )
                     if host_id == 0:
-                        print(f" Dataset sharded across {num_hosts} hosts")
+                        print(f"Dataset sharded across {num_hosts} hosts")
                         print(f"  Host {host_id} processing shard {host_id}/{num_hosts}")
             except (RuntimeError, ValueError):
                 # JAX distributed not initialized, single host mode
                 pass
+
+    def _download_content(self, blob_id: str, src_encoding: str) -> str:
+        """
+        Download actual code content from Software Heritage S3 bucket.
+
+        Args:
+            blob_id: Software Heritage blob ID
+            src_encoding: Source file encoding
+
+        Returns:
+            Decoded file content as string
+        """
+        s3_url = f"s3://softwareheritage/content/{blob_id}"
+        try:
+            with smart_open(
+                s3_url,
+                "rb",
+                compression=".gz",
+                transport_params={"client": self.s3_client}
+            ) as f:
+                content = f.read().decode(src_encoding)
+            return content
+        except Exception as e:
+            # Skip files that fail to download
+            return ""
 
     def __iter__(self) -> Iterator[Dict[str, np.ndarray]]:
         """
@@ -77,7 +114,15 @@ class CodeDataset:
                 - chunks: [num_chunks, chunk_size] int array
         """
         for example in self.dataset:
-            text = example["content"]
+            # Download actual content from S3
+            text = self._download_content(
+                example["blob_id"],
+                example["src_encoding"]
+            )
+
+            # Skip empty or failed downloads
+            if not text or len(text.strip()) == 0:
+                continue
 
             # Tokenize
             encoded = self.tokenizer(
