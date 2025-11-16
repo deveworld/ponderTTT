@@ -40,9 +40,10 @@ class CodeDataset:
         self.shard_across_hosts = shard_across_hosts
 
         # Load dataset in streaming mode (The Stack v2)
+        # Note: language should be capitalized (e.g., "Python", "Java")
         self.dataset = load_dataset(
             "bigcode/the-stack-v2",
-            languages=[language.capitalize()],
+            language.capitalize(),
             split=split,
             streaming=True,
         )
