@@ -1,6 +1,6 @@
 # PonderTTT Project Status
 
-**Phase**: Phase 1 - Foundation Complete , Phase 2 - Blocked 
+**Phase**: Phase 1 - Foundation Complete, Phase 2 - Blocked
 **Status**: Pipeline Validated on CPU, Ready for GPU & Real Data
 
 **Last Updated**: 2025-11-16
@@ -9,7 +9,7 @@
 
 PonderTTT is a complete implementation of an adaptive test-time training framework using reinforcement learning for code generation. All core components have been implemented and validated on CPU with synthetic data. The project is now ready for GPU training with real code data.
 
-## Implementation Complete 
+## Implementation Complete
 
 ### Core Framework (100%)
 - [x] Data pipeline for The Stack dataset
@@ -80,7 +80,7 @@ PonderTTT is a complete implementation of an adaptive test-time training framewo
 
 ## Validation Status (CPU with Synthetic Data)
 
-###  Successfully Validated
+### Successfully Validated
 ```bash
 # All baselines run successfully with synthetic data
 uv run python -m ponderttt.experiments.train_baseline --action SKIP
@@ -90,11 +90,11 @@ uv run python -m ponderttt.experiments.train_baseline --action UPDATE_4
 ```
 
 **Validated Outcomes**:
--  Code runs without errors
--  Cost tracking is accurate (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
--  All components work end-to-end
--  Loss values realistic (~11.0 for random tokens)
--  TTT improvement marginal (~0.1 loss reduction) - **Expected on synthetic data**
+- Code runs without errors
+- Cost tracking is accurate (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
+- All components work end-to-end
+- Loss values realistic (~11.0 for random tokens)
+- TTT improvement marginal (~0.1 loss reduction) - **Expected on synthetic data**
 
 **Synthetic Data Limitations**:
 - Random tokens with no semantic structure
@@ -103,7 +103,7 @@ uv run python -m ponderttt.experiments.train_baseline --action UPDATE_4
 - Cannot validate TTT effectiveness on real patterns
 - Results NOT indicative of performance on real code
 
-###  Pending: Real Data Experiments
+### Pending: Real Data Experiments
 
 **Blockers**:
 1. **The Stack dataset access**: Gated dataset, requires HuggingFace approval
@@ -115,7 +115,7 @@ uv run python -m ponderttt.experiments.train_baseline --action UPDATE_4
 - Evaluation benchmarks (HumanEval, MBPP) implemented
 - All infrastructure tested and validated
 
-###  Pending: Policy Training (Requires GPU)
+### Pending: Policy Training (Requires GPU)
 ```bash
 # Train adaptive policy (125M) - Requires GPU
 uv run python -m ponderttt.experiments.train_policy \
@@ -131,7 +131,7 @@ uv run python -m ponderttt.experiments.train_policy \
 - Better than random action selection
 - Training converges
 
-###  Pending: Ablation Studies (Requires Real Data)
+### Pending: Ablation Studies (Requires Real Data)
 - Feature importance
 - LoRA rank sensitivity
 - Budget limit effects
@@ -141,24 +141,24 @@ uv run python -m ponderttt.experiments.train_policy \
 
 | Scale | Model | Parameters | Status |
 |-------|-------|-----------|--------|
-| 125M | gpt2 | 124M |  Ready |
-| 350M | gpt2-medium | 355M |  Ready |
-| 1B | gpt2-large | 774M |  Ready |
+| 125M | gpt2 | 124M | Ready |
+| 350M | gpt2-medium | 355M | Ready |
+| 1B | gpt2-large | 774M | Ready |
 
 ## Testing Status
 
-### Unit Tests 
+### Unit Tests
 - Unit tests: Not yet implemented (planned for Phase 2)
 - Test infrastructure: pytest configuration ready
 - Test directory: Empty (tests/ exists but no test files yet)
 
-### Integration Tests 
+### Integration Tests
 - Manual testing via scripts/
 - scripts/quick_test.py: Quick smoke test available
 - scripts/test_pipeline.py: Integration test available
 - scripts/test_distributed.py: Distributed JAX test available
 
-### Performance Tests 
+### Performance Tests
 - Large-scale training: Pending
 - TPU validation: Pending (requires actual hardware)
 - Memory profiling: Pending
@@ -166,17 +166,17 @@ uv run python -m ponderttt.experiments.train_policy \
 ## Known Issues & Limitations
 
 ### Current Blockers (Phase 2)
-1. ~~**The Stack Dataset**: Gated, requires HuggingFace approval for access~~  **RESOLVED** - Using The Stack v2
+1. **The Stack Dataset**: Gated, requires HuggingFace approval for access **RESOLVED** - Using The Stack v2
 2. **GPU Resources**: CPU too slow for production training (validated on CPU for correctness only)
 3. **Real Benchmarks**: HumanEval/MBPP need real code training (not synthetic data)
 
 ### Implementation Details (v0.2.0)
-1.  **chunk_size**: 512 for GPT-2 compatibility (max_position_embeddings=1024)
-2.  **Model Integration**: HuggingFace/Flax compatibility wrapper
-3.  **Training Mode**: Proper RNG handling for dropout
-4.  **Synthetic Data**: Varied random tokens for validation
-5.  **JAX Compatibility**: Dynamic slicing in TTT layer
-6.  **FSDP Strategy**: Memory-efficient parameter sharding for large models
+1. **chunk_size**: 512 for GPT-2 compatibility (max_position_embeddings=1024)
+2. **Model Integration**: HuggingFace/Flax compatibility wrapper
+3. **Training Mode**: Proper RNG handling for dropout
+4. **Synthetic Data**: Varied random tokens for validation
+5. **JAX Compatibility**: Dynamic slicing in TTT layer
+6. **FSDP Strategy**: Memory-efficient parameter sharding for large models
 
 ### Design Limitations (Non-Blocking)
 1. **Execution evaluation**: HumanEval needs safe sandbox (placeholder)
@@ -186,15 +186,15 @@ uv run python -m ponderttt.experiments.train_policy \
 5. **Feature overhead**: Not profiled at scale yet
 
 ### Validation Status
--  CPU validation complete
--  GPU validation pending (requires hardware)
--  TPU validation pending (requires hardware)
--  Real data validation pending (requires dataset access)
+- CPU validation complete
+- GPU validation pending (requires hardware)
+- TPU validation pending (requires hardware)
+- Real data validation pending (requires dataset access)
 
 ## Next Steps (Priority Order)
 
 ### Immediate (This Week)
-1. **Run quick_test.py**: Verify installation  Ready
+1. **Run quick_test.py**: Verify installation Ready
 2. **125M validation**: Confirm TTT helps (GO/NO-GO)
 3. **Baseline comparison**: Establish baselines
 4. **Bug fixes**: Address any issues found
@@ -214,10 +214,11 @@ uv run python -m ponderttt.experiments.train_policy \
 ## Resource Requirements
 
 ### Compute
-- **Development**: Any GPU (tested on CUDA)
+- **Development/Validation**: CPU (tested, working) or any GPU
 - **125M experiments**: 1 GPU, ~1 hour per run
 - **350M experiments**: 1 GPU, ~3 hours per run
 - **1B experiments**: 1-2 GPUs, ~8 hours per run
+- **Note**: CPU is ~10-100× slower than GPU, suitable only for validation
 
 ### Storage
 - **Code**: <50 MB
@@ -226,9 +227,22 @@ uv run python -m ponderttt.experiments.train_policy \
 - **Results**: ~1 GB per experiment
 
 ### Memory
-- **125M**: 4-6 GB GPU memory
-- **350M**: 8-12 GB GPU memory
-- **1B**: 16-24 GB GPU memory
+
+**GPU Memory Requirements**:
+- **125M**: 4-6 GB GPU memory (batch_size=4)
+- **350M**: 8-12 GB GPU memory (batch_size=4)
+- **1B**: 16-24 GB GPU memory (batch_size=2)
+
+**RAM Requirements** (for data loading):
+- Minimum: 8 GB RAM
+- Recommended: 16 GB RAM
+
+**Important Notes** (v0.2.0):
+- **OOM Fix (commit bcd6ec0)**: Batch size reduced from 8 to 4 for 125M/350M models
+  - This fixed OOM errors on memory-constrained systems
+  - If you still encounter OOM, further reduce batch_size in `experiments/config.py`
+- **Gradient checkpointing**: Available for larger models if needed
+- **Multi-host training**: Data automatically sharded across hosts
 
 ## Risk Assessment
 
@@ -241,19 +255,19 @@ uv run python -m ponderttt.experiments.train_policy \
 
 ## Success Criteria
 
-### Week 3-4 (GO/NO-GO)  PASSED
+### Week 3-4 (GO/NO-GO) PASSED
 - [x] Infrastructure complete
 - [x] Code runs end-to-end
 - [x] Results reproducible
 - [x] Cost calculations accurate
--  TTT improvement on synthetic data: marginal (expected)
--  TTT improvement on real data: pending (dataset ready, need GPU)
+- TTT improvement on synthetic data: marginal (expected)
+- TTT improvement on real data: pending (dataset ready, need GPU)
 
-**Decision**:  GO - Infrastructure validated, ready for real data
+**Decision**: GO - Infrastructure validated, ready for real data
 
-### Week 8 (Method Validation) -  PENDING
--  Blocked on GPU access
--  ~~Blocked on The Stack dataset access~~ **UNBLOCKED** - v2 approved
+### Week 8 (Method Validation) - PENDING
+- Blocked on GPU access
+- Blocked on The Stack dataset access **UNBLOCKED** - v2 approved
 - [ ] Policy learns useful strategy
 - [ ] Budget constraint works
 - [ ] Better than fixed schedule
@@ -293,6 +307,6 @@ For questions or issues:
 
 ---
 
-**Status**:  Active Development
+**Status**: Active Development
 **Next Milestone**: Week 3-4 GO/NO-GO Checkpoint
 **Confidence**: High (all components tested)

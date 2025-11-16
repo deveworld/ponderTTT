@@ -4,11 +4,9 @@ Fast weight adaptation using LoRA-style low-rank updates.
 Inspired by LaCT's fast weight mechanism.
 """
 
-import jax
-import jax.numpy as jnp
+
 import flax.linen as nn
-from typing import Optional, Tuple
-from dataclasses import field
+import jax.numpy as jnp
 
 
 class LoRALinear(nn.Module):
@@ -82,9 +80,9 @@ class FastWeightModule(nn.Module):
     def __call__(
         self,
         x: jnp.ndarray,
-        w0: Optional[jnp.ndarray] = None,
-        w1: Optional[jnp.ndarray] = None,
-        w2: Optional[jnp.ndarray] = None,
+        w0: jnp.ndarray | None = None,
+        w1: jnp.ndarray | None = None,
+        w2: jnp.ndarray | None = None,
     ) -> jnp.ndarray:
         """
         Apply fast weight transformation.

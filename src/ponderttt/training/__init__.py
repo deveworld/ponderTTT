@@ -3,8 +3,8 @@ Training algorithms for PonderTTT.
 """
 
 from .pid_lagrangian import PIDController, PIDLagrangianPPO
-from .ttt_trainer import TTTTrainer, create_train_state
 from .policy_trainer import PolicyTrainer
+from .ttt_trainer import TTTTrainer, create_train_state
 
 __all__ = [
     "PIDController",

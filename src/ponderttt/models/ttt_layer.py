@@ -4,12 +4,11 @@ Test-Time Training Layer implementation in Flax.
 Based on TTT-LM-JAX architecture.
 """
 
+from dataclasses import dataclass
+
+import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
-from typing import Optional, Callable, Tuple
-from dataclasses import dataclass
-from functools import partial
 
 from .fast_weights import FastWeightModule, compute_fast_weight_update
 
@@ -42,9 +41,9 @@ class TTTLayer(nn.Module):
     def __call__(
         self,
         x: jnp.ndarray,
-        mask: Optional[jnp.ndarray] = None,
+        mask: jnp.ndarray | None = None,
         deterministic: bool = True,
-    ) -> Tuple[jnp.ndarray, dict]:
+    ) -> tuple[jnp.ndarray, dict]:
         """
         Apply TTT layer.
 
@@ -172,7 +171,7 @@ class TTTLayer(nn.Module):
         w1: jnp.ndarray,
         w2: jnp.ndarray,
         learning_rate: float,
-    ) -> Tuple[jnp.ndarray, float, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, float, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Perform TTT update on a single chunk with gradient descent.
 
@@ -256,8 +255,8 @@ class ChunkedTTTLayer(nn.Module):
     def __call__(
         self,
         x: jnp.ndarray,
-        mask: Optional[jnp.ndarray] = None,
-    ) -> Tuple[jnp.ndarray, dict]:
+        mask: jnp.ndarray | None = None,
+    ) -> tuple[jnp.ndarray, dict]:
         """
         Apply chunked TTT with fast weight updates.
 

@@ -2,11 +2,11 @@
 Policy network for adaptive TTT decisions.
 """
 
+from dataclasses import dataclass
+
+import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
-from typing import Tuple
-from dataclasses import dataclass
 
 
 @dataclass
@@ -179,7 +179,7 @@ def compute_gae(
     dones: jnp.ndarray,
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Compute Generalized Advantage Estimation using jax.lax.scan.
 

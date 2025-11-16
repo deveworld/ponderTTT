@@ -2,17 +2,18 @@
 Checkpointing utilities using Orbax with multi-host support.
 """
 
-import orbax.checkpoint as ocp
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
+
 import jax
+import orbax.checkpoint as ocp
 
 
 def save_checkpoint(
     checkpoint_dir: str | Path,
     step: int,
     state: Any,
-    metadata: Optional[Dict] = None,
+    metadata: dict | None = None,
     save_on_all_hosts: bool = False,
 ):
     """
@@ -70,8 +71,8 @@ def save_checkpoint(
 
 def load_checkpoint(
     checkpoint_dir: str | Path,
-    step: Optional[int] = None,
-) -> Dict[str, Any]:
+    step: int | None = None,
+) -> dict[str, Any]:
     """
     Load checkpoint using Orbax.
 
@@ -104,7 +105,7 @@ def load_checkpoint(
     return checkpoint
 
 
-def get_latest_checkpoint_step(checkpoint_dir: str | Path) -> Optional[int]:
+def get_latest_checkpoint_step(checkpoint_dir: str | Path) -> int | None:
     """
     Get the step number of the latest checkpoint.
 

@@ -2,9 +2,9 @@
 Evaluation metrics for code generation and efficiency.
 """
 
-import numpy as np
-from typing import List, Dict, Tuple, Optional
 from collections import Counter
+
+import numpy as np
 
 
 def compute_pass_at_k(
@@ -41,7 +41,7 @@ def compute_pass_at_k(
 
 
 def compute_flops(
-    actions: List[str],
+    actions: list[str],
     base_flops: float = 1.0,
 ) -> float:
     """
@@ -66,9 +66,9 @@ def compute_flops(
 
 
 def compute_efficiency_metrics(
-    quality_scores: List[float],
-    costs: List[float],
-) -> Dict[str, float]:
+    quality_scores: list[float],
+    costs: list[float],
+) -> dict[str, float]:
     """
     Compute efficiency metrics.
 
@@ -93,10 +93,10 @@ def compute_efficiency_metrics(
 
 
 def compute_pareto_frontier(
-    methods: List[str],
-    quality_scores: List[List[float]],
-    costs: List[List[float]],
-) -> Tuple[List[str], List[float], List[float]]:
+    methods: list[str],
+    quality_scores: list[list[float]],
+    costs: list[list[float]],
+) -> tuple[list[str], list[float], list[float]]:
     """
     Compute Pareto frontier of methods.
 
@@ -143,8 +143,8 @@ def compute_pareto_frontier(
 
 
 def compute_action_statistics(
-    actions: List[str],
-) -> Dict[str, float]:
+    actions: list[str],
+) -> dict[str, float]:
     """
     Compute statistics about action distribution.
 
@@ -173,8 +173,8 @@ def compute_action_statistics(
 
 
 def compute_auc(
-    x: List[float],
-    y: List[float],
+    x: list[float],
+    y: list[float],
 ) -> float:
     """
     Compute Area Under Curve using trapezoidal rule.
@@ -205,8 +205,8 @@ def compute_auc(
 
 
 def compute_oracle_agreement(
-    predicted_actions: List[str],
-    oracle_actions: List[str],
+    predicted_actions: list[str],
+    oracle_actions: list[str],
 ) -> float:
     """
     Compute agreement between predicted and oracle actions.
@@ -226,9 +226,9 @@ def compute_oracle_agreement(
 
 
 def compute_correlation(
-    x: List[float],
-    y: List[float],
-) -> Tuple[float, float]:
+    x: list[float],
+    y: list[float],
+) -> tuple[float, float]:
     """
     Compute Pearson and Spearman correlation.
 

@@ -8,24 +8,18 @@ Usage:
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List
 
-import jax
 import jax.numpy as jnp
 from tqdm import tqdm
 
-from ..data import get_tokenizer, create_data_iterator
+from ..data import create_data_iterator, get_tokenizer
 from ..models import (
-    TransformerLM,
-    ModelConfig,
-    PolicyNetwork,
     PolicyConfig,
-    TTTLayer,
-    TTTConfig,
+    PolicyNetwork,
 )
-from ..training import PolicyTrainer, PIDController
-from ..utils import init_rng, next_rng, FeatureExtractor
-from .config import get_125m_config, get_350m_config, get_1b_config
+from ..training import PIDController
+from ..utils import FeatureExtractor, init_rng, next_rng
+from .config import get_1b_config, get_125m_config, get_350m_config
 
 
 def parse_args():
@@ -121,7 +115,7 @@ def main():
     policy_params = policy_variables['params']
 
     # Feature extractor
-    feature_extractor = FeatureExtractor(vocab_size=tokenizer.vocab_size)
+    FeatureExtractor(vocab_size=tokenizer.vocab_size)
 
     # PID controller
     pid = PIDController(
@@ -154,7 +148,7 @@ def main():
             batch_size, num_chunks, chunk_size = chunks.shape
 
             for i in range(min(num_chunks, config.training.rollout_length)):
-                chunk = chunks[:, i, :]
+                chunks[:, i, :]
 
                 # Extract features (dummy for now)
                 features = jnp.ones((batch_size, 32)) * (i / num_chunks)
@@ -207,7 +201,7 @@ def main():
         # Compute statistics
         avg_reward = sum(rollout_rewards) / len(rollout_rewards)
 
-        print(f"\nRollout summary:")
+        print("\nRollout summary:")
         print(f"  Average cost: {avg_cost:.2f}× (target: {config.training.budget_limit:.1f}×)")
         print(f"  Average reward: {avg_reward:.4f}")
         print(f"  Lambda (penalty): {pid.lambda_value:.4f}")

@@ -2,9 +2,9 @@
 Feature extraction for policy network.
 """
 
+
 import jax
 import jax.numpy as jnp
-from typing import Optional, List
 
 
 class FeatureExtractor:
@@ -40,8 +40,8 @@ class FeatureExtractor:
         self,
         input_ids: jnp.ndarray,
         logits: jnp.ndarray,
-        hidden_states: Optional[List[jnp.ndarray]] = None,
-        attentions: Optional[List[jnp.ndarray]] = None,
+        hidden_states: list[jnp.ndarray] | None = None,
+        attentions: list[jnp.ndarray] | None = None,
         budget_remaining: float = 1.0,
     ) -> jnp.ndarray:
         """
@@ -120,7 +120,7 @@ class FeatureExtractor:
             jnp.log(max_perplexity + 1e-10),
         ], axis=-1)
 
-    def _extract_activations(self, hidden_states: List[jnp.ndarray]) -> jnp.ndarray:
+    def _extract_activations(self, hidden_states: list[jnp.ndarray]) -> jnp.ndarray:
         """Extract activation statistics (6D)."""
         # Use last layer
         last_hidden = hidden_states[-1]  # [batch, seq_len, hidden_dim]
@@ -142,7 +142,7 @@ class FeatureExtractor:
             range_act,
         ], axis=-1)
 
-    def _extract_attention(self, attentions: List[jnp.ndarray]) -> jnp.ndarray:
+    def _extract_attention(self, attentions: list[jnp.ndarray]) -> jnp.ndarray:
         """Extract attention pattern features (4D)."""
         # Use last layer attention
         last_attn = attentions[-1]  # [batch, num_heads, seq_len, seq_len]

@@ -2,13 +2,15 @@
 Training utilities for TTT models.
 """
 
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import optax
-from flax.training import train_state
 from flax.core import FrozenDict
-from typing import Any, Callable, Dict
-from dataclasses import dataclass
+from flax.training import train_state
 
 
 class TrainState(train_state.TrainState):
@@ -80,8 +82,8 @@ class TTTTrainer:
     def train_step(
         self,
         state: TrainState,
-        batch: Dict[str, jnp.ndarray],
-    ) -> tuple[TrainState, Dict[str, float]]:
+        batch: dict[str, jnp.ndarray],
+    ) -> tuple[TrainState, dict[str, float]]:
         """
         Perform one training step.
 
@@ -136,8 +138,8 @@ class TTTTrainer:
     def eval_step(
         self,
         state: TrainState,
-        batch: Dict[str, jnp.ndarray],
-    ) -> Dict[str, float]:
+        batch: dict[str, jnp.ndarray],
+    ) -> dict[str, float]:
         """
         Perform one evaluation step.
 

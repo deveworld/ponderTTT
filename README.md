@@ -286,21 +286,21 @@ JAX/Flax equivalents to common PyTorch patterns:
 
 See [PLAN.md](PLAN.md) for detailed research plan and [PROJECT_STATUS.md](PROJECT_STATUS.md) for current status.
 
-### Phase 1: Foundation  COMPLETE
--  JAX/Flax implementation
--  Data pipeline with multi-host sharding
--  Core models (TTT, Policy)
--  Training algorithms (PID-Lagrangian PPO)
--  Feature extraction
--  Multi-host distributed training
--  TPU-ready training scripts (not yet tested on hardware)
--  CPU validation complete
--  Bug fixes (chunk size, dropout, dynamic slicing, etc.)
--  Cost calculations validated (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
+### Phase 1: Foundation COMPLETE
+- JAX/Flax implementation
+- Data pipeline with multi-host sharding
+- Core models (TTT, Policy)
+- Training algorithms (PID-Lagrangian PPO)
+- Feature extraction
+- Multi-host distributed training
+- TPU-ready training scripts (not yet tested on hardware)
+- CPU validation complete
+- Bug fixes (chunk size, dropout, dynamic slicing, etc.)
+- Cost calculations validated (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
 
 ### Phase 2: Real Data & GPU (Current - Partially Blocked)
--  **UNBLOCKED**: The Stack v2 dataset access approved
--  **Blocker**: GPU access for production training (CPU too slow)
+- **UNBLOCKED**: The Stack v2 dataset access approved
+- **Blocker**: GPU access for production training (CPU too slow)
 - [ ] 125M baseline experiments with real data
 - [ ] Policy training and evaluation
 - [ ] Ablation studies
@@ -363,7 +363,7 @@ For questions, open an issue on GitHub.
 6. **FSDP Strategy**: Fully Sharded Data Parallel for memory-efficient training on large models
 
 ### Next Steps
-1.  ~~Obtain access to The Stack dataset~~ **DONE** - v2 access approved
+1. Obtain access to The Stack dataset **DONE** - v2 access approved
 2. Secure GPU resources for training (Vast.ai / RunPod)
 3. Run baseline experiments with real code data
 4. Validate TTT improvement on meaningful data

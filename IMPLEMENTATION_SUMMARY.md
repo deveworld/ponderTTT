@@ -2,7 +2,7 @@
 
 Complete implementation of the PonderTTT framework as described in PLAN.md
 
-## Implementation Status:  Phase 1 Complete,  Phase 2 Blocked
+## Implementation Status: Phase 1 Complete, Phase 2 Blocked
 
 All core components for Phase 1 have been implemented and validated on CPU with synthetic data. Phase 2 (real data experiments) is blocked on dataset access and GPU resources.
 
@@ -312,30 +312,30 @@ python -m ponderttt.experiments.train_policy \
 4. Update PID controller
 5. Evaluate and log
 
-## Verification 
+## Verification
 
 ### CPU Validation Complete
 All baselines run successfully with synthetic data:
 ```bash
-uv run python -m ponderttt.experiments.train_baseline --action SKIP       #  Works
-uv run python -m ponderttt.experiments.train_baseline --action UPDATE_1   #  Works
-uv run python -m ponderttt.experiments.train_baseline --action UPDATE_2   #  Works
-uv run python -m ponderttt.experiments.train_baseline --action UPDATE_4   #  Works
+uv run python -m ponderttt.experiments.train_baseline --action SKIP       # Works
+uv run python -m ponderttt.experiments.train_baseline --action UPDATE_1   # Works
+uv run python -m ponderttt.experiments.train_baseline --action UPDATE_2   # Works
+uv run python -m ponderttt.experiments.train_baseline --action UPDATE_4   # Works
 ```
 
 **Validated Results** (synthetic data):
--  All pipelines run without errors
--  Cost calculations accurate (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
--  Loss values realistic (~11.0 for random tokens)
--  TTT improvement marginal (~0.1) - expected on synthetic data
+- All pipelines run without errors
+- Cost calculations accurate (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
+- Loss values realistic (~11.0 for random tokens)
+- TTT improvement marginal (~0.1) - expected on synthetic data
 
 ### Recent Fixes (v0.2.0)
-1.  Fixed chunk_size: 512 for GPT-2 (was 4096)
-2.  Fixed HuggingFace/Flax model compatibility wrapper
-3.  Fixed dropout RNG for training mode
-4.  Fixed synthetic data generation (was all 1s, now varied random tokens)
-5.  Fixed JAX dynamic slicing in TTT layer
-6.  Fixed base model deterministic parameter
+1. Fixed chunk_size: 512 for GPT-2 (was 4096)
+2. Fixed HuggingFace/Flax model compatibility wrapper
+3. Fixed dropout RNG for training mode
+4. Fixed synthetic data generation (was all 1s, now varied random tokens)
+5. Fixed JAX dynamic slicing in TTT layer
+6. Fixed base model deterministic parameter
 
 Total implementation:
 - **25 Python files**
@@ -351,8 +351,8 @@ Total implementation:
 2. **GPU Resources**: CPU too slow for production experiments (10-100× slower)
 
 ### Phase 2: Real Data Experiments (Blocked)
--  Obtain The Stack dataset access
--  Secure GPU resources
+- Obtain The Stack dataset access
+- Secure GPU resources
 - [ ] Run 125M experiments with real code data
 - [ ] Verify TTT improves over No-TTT on real code
 - [ ] Test policy learning convergence
@@ -435,18 +435,18 @@ Phase 1 implementation is **complete and CPU-validated**. All core components ar
 
 ### Current Status Summary
 
-** Completed**:
+**Completed**:
 - All core components implemented and documented
 - CPU validation successful with synthetic data
 - Cost calculations verified (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
 - Pipeline runs end-to-end without errors
 - Bug fixes applied (chunk size, dropout, dynamic slicing, etc.)
 
-** Blocked**:
+**Blocked**:
 - Real data experiments (The Stack dataset access required)
 - GPU training (CPU too slow for production)
 - Meaningful TTT validation (synthetic data has limited semantics)
 
-** GO Decision**: Infrastructure validated, ready for real data and GPU resources.
+**GO Decision**: Infrastructure validated, ready for real data and GPU resources.
 
 **Next Milestone**: Obtain dataset access and GPU resources for Phase 2 experiments.

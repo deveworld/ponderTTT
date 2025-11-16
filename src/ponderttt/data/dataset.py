@@ -2,16 +2,17 @@
 Dataset implementation for code data with multi-host sharding support.
 """
 
-import numpy as np
+from collections.abc import Iterator
+
+import boto3
 import jax
 import jax.numpy as jnp
-from typing import Iterator, Optional, Dict
-from datasets import load_dataset
-from transformers import PreTrainedTokenizer
-import boto3
+import numpy as np
 from botocore import UNSIGNED
 from botocore.client import Config
+from datasets import load_dataset
 from smart_open import open as smart_open
+from transformers import PreTrainedTokenizer
 
 
 class CodeDataset:
@@ -99,11 +100,11 @@ class CodeDataset:
             ) as f:
                 content = f.read().decode(src_encoding)
             return content
-        except Exception as e:
+        except Exception:
             # Skip files that fail to download
             return ""
 
-    def __iter__(self) -> Iterator[Dict[str, np.ndarray]]:
+    def __iter__(self) -> Iterator[dict[str, np.ndarray]]:
         """
         Iterate over tokenized code examples.
 
@@ -155,8 +156,8 @@ def create_data_iterator(
     batch_size: int = 8,
     seq_length: int = 8192,
     chunk_size: int = 4096,
-    max_examples: Optional[int] = None,
-) -> Iterator[Dict[str, jnp.ndarray]]:
+    max_examples: int | None = None,
+) -> Iterator[dict[str, jnp.ndarray]]:
     """
     Create batched data iterator that yields JAX arrays.
 

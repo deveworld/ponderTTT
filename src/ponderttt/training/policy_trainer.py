@@ -2,14 +2,16 @@
 Policy trainer using PID-Lagrangian PPO.
 """
 
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Any
+
 import jax
 import jax.numpy as jnp
-from typing import Dict, Iterator, Any
-from dataclasses import dataclass
 
+from ..models.policy import compute_gae
 from .pid_lagrangian import PIDLagrangianPPO, ppo_update_step
 from .ttt_trainer import TrainState
-from ..models.policy import compute_gae
 
 
 @dataclass
@@ -30,7 +32,7 @@ class PolicyTrainer:
         ttt_model: Any,
         data_iterator: Iterator,
         rng: jax.random.PRNGKey,
-    ) -> Dict[str, jnp.ndarray]:
+    ) -> dict[str, jnp.ndarray]:
         """
         Collect rollout using current policy.
 
@@ -53,7 +55,7 @@ class PolicyTrainer:
 
         budget_used = 0.0
 
-        for i in range(self.rollout_length):
+        for _i in range(self.rollout_length):
             # Get next batch
             try:
                 batch = next(data_iterator)
@@ -118,10 +120,10 @@ class PolicyTrainer:
     def train_policy(
         self,
         policy_state: TrainState,
-        rollout: Dict[str, jnp.ndarray],
+        rollout: dict[str, jnp.ndarray],
         num_epochs: int = 4,
         batch_size: int = 64,
-    ) -> tuple[TrainState, Dict[str, float]]:
+    ) -> tuple[TrainState, dict[str, float]]:
         """
         Train policy using collected rollout.
 

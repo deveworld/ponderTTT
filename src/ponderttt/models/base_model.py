@@ -2,13 +2,14 @@
 Base transformer language model.
 """
 
+from dataclasses import dataclass
+
+import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
-from transformers import FlaxAutoModelForCausalLM, AutoTokenizer
-from jax.sharding import NamedSharding, PartitionSpec as P
-from typing import Optional, Tuple
-from dataclasses import dataclass, field
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
+from transformers import AutoTokenizer, FlaxAutoModelForCausalLM
 
 
 @dataclass
@@ -17,7 +18,7 @@ class ModelConfig:
     model_name: str = "gpt2"
     dtype: jnp.dtype = jnp.float32
     gradient_checkpointing: bool = False
-    mesh: Optional[jax.sharding.Mesh] = None
+    mesh: jax.sharding.Mesh | None = None
     shard_params: bool = False  # Enable parameter sharding for TPU Pods
 
 
@@ -125,7 +126,7 @@ class TransformerLM(nn.Module):
     def __call__(
         self,
         input_ids: jnp.ndarray,
-        attention_mask: Optional[jnp.ndarray] = None,
+        attention_mask: jnp.ndarray | None = None,
         deterministic: bool = True,
         output_hidden_states: bool = False,
         output_attentions: bool = False,
@@ -169,8 +170,8 @@ class TransformerLM(nn.Module):
     def compute_loss(
         self,
         input_ids: jnp.ndarray,
-        attention_mask: Optional[jnp.ndarray] = None,
-    ) -> Tuple[jnp.ndarray, dict]:
+        attention_mask: jnp.ndarray | None = None,
+    ) -> tuple[jnp.ndarray, dict]:
         """
         Compute language modeling loss.
 
@@ -232,9 +233,9 @@ class TransformerLM(nn.Module):
 def load_model(
     model_name: str = "gpt2",
     dtype: jnp.dtype = jnp.float32,
-    mesh: Optional[jax.sharding.Mesh] = None,
+    mesh: jax.sharding.Mesh | None = None,
     shard_params: bool = False,
-) -> Tuple[TransformerLM, AutoTokenizer]:
+) -> tuple[TransformerLM, AutoTokenizer]:
     """
     Load pretrained model and tokenizer.
 
@@ -269,7 +270,7 @@ def load_model(
 def initialize_sharded_model(
     model: TransformerLM,
     rng: jax.random.PRNGKey,
-    input_shape: Tuple[int, int],
+    input_shape: tuple[int, int],
 ) -> dict:
     """
     Initialize model parameters with optional sharding for TPU Pods.
@@ -329,8 +330,10 @@ def inspect_sharding(params, max_params: int = 20) -> None:
     print("Parameter Sharding Inspection")
     print("=" * 80)
 
-    def inspect_tree(path, subtree, count=[0]):
+    def inspect_tree(path, subtree, count=None):
         """Recursively inspect parameter tree."""
+        if count is None:
+            count = [0]
         if isinstance(subtree, dict):
             for k, v in subtree.items():
                 inspect_tree(path + [k], v, count)

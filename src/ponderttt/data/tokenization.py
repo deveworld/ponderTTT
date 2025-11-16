@@ -2,8 +2,8 @@
 Tokenization utilities.
 """
 
+
 from transformers import AutoTokenizer
-from typing import Optional
 
 
 def get_tokenizer(
