@@ -257,52 +257,82 @@ def main():
             if chunk_count >= args.max_chunks:
                 break
 
-            # Get chunks from batch
-            chunks = batch["chunks"]  # [batch, num_chunks, chunk_size]
-            batch_size, num_chunks, chunk_size = chunks.shape
+            if num_steps == 0:
+                # SKIP: Evaluate full sequence at once (proper context)
+                full_batch = {
+                    'input_ids': batch['input_ids'],
+                    'attention_mask': batch['attention_mask'],
+                }
+                metrics = trainer.eval_step(state, full_batch)
+                sequence_loss = metrics['loss']
 
-            for i in range(num_chunks):
-                if chunk_count >= args.max_chunks:
-                    break
+                # Count as num_chunks for fair comparison
+                chunks = batch["chunks"]
+                batch_size, num_chunks, chunk_size = chunks.shape
 
-                chunk = chunks[:, i, :]  # [batch, chunk_size]
+                for i in range(num_chunks):
+                    if chunk_count >= args.max_chunks:
+                        break
 
-                # Prepare batch for training
-                chunk_batch = {
-                    'input_ids': chunk,
-                    'attention_mask': jnp.ones_like(chunk),
+                    chunk_cost = action_to_cost(args.action)
+                    total_cost += chunk_cost
+                    total_loss += float(sequence_loss)
+                    chunk_count += 1
+
+                    results["chunks"].append({
+                        "chunk_id": chunk_count,
+                        "chunk_position": i,
+                        "loss": float(sequence_loss),
+                        "cost": chunk_cost,
+                        "action": args.action,
+                    })
+
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        "loss": f"{sequence_loss:.4f}",
+                        "avg_cost": f"{total_cost/chunk_count:.2f}×",
+                    })
+            else:
+                # UPDATE: Adapt on full sequences, evaluate per-chunk
+                full_batch = {
+                    'input_ids': batch['input_ids'],
+                    'attention_mask': batch['attention_mask'],
                 }
 
-                # Compute actual loss using the model
-                if num_steps > 0:
-                    # Perform TTT updates
-                    for _ in range(num_steps):
-                        state, metrics = trainer.train_step(state, chunk_batch)
-                    chunk_loss = metrics['loss']
-                else:
-                    # SKIP: just evaluate without training
-                    metrics = trainer.eval_step(state, chunk_batch)
-                    chunk_loss = metrics['loss']
+                # Adapt model on FULL sequence
+                for _ in range(num_steps):
+                    state, _ = trainer.train_step(state, full_batch)
 
-                # Accumulate cost
-                chunk_cost = action_to_cost(args.action)
-                total_cost += chunk_cost
-                total_loss += float(chunk_loss)
-                chunk_count += 1
+                # Evaluate full sequence to get proper loss
+                metrics = trainer.eval_step(state, full_batch)
+                sequence_loss = metrics['loss']
 
-                results["chunks"].append({
-                    "chunk_id": chunk_count,
-                    "chunk_position": i,
-                    "loss": float(chunk_loss),
-                    "cost": chunk_cost,
-                    "action": args.action,
-                })
+                # Count cost per chunk for fair comparison
+                chunks = batch["chunks"]
+                batch_size, num_chunks, chunk_size = chunks.shape
 
-                pbar.update(1)
-                pbar.set_postfix({
-                    "loss": f"{chunk_loss:.4f}",
-                    "avg_cost": f"{total_cost/chunk_count:.2f}×",
-                })
+                for i in range(num_chunks):
+                    if chunk_count >= args.max_chunks:
+                        break
+
+                    chunk_cost = action_to_cost(args.action)
+                    total_cost += chunk_cost
+                    total_loss += float(sequence_loss)
+                    chunk_count += 1
+
+                    results["chunks"].append({
+                        "chunk_id": chunk_count,
+                        "chunk_position": i,
+                        "loss": float(sequence_loss),
+                        "cost": chunk_cost,
+                        "action": args.action,
+                    })
+
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        "loss": f"{sequence_loss:.4f}",
+                        "avg_cost": f"{total_cost/chunk_count:.2f}×",
+                    })
 
     # Compute final statistics
     avg_loss = total_loss / chunk_count
