@@ -8,7 +8,7 @@ by PID Lagrangian Methods", ICML 2020
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import jax
 import jax.numpy as jnp
@@ -69,7 +69,7 @@ class PIDController:
             kp=self.kp,
             ki=self.ki,
             kd=self.kd,
-            lambda_value=new_lambda,
+            lambda_value=float(new_lambda),
             integral=self.integral + error * dt,
             previous_error=error,
         )
@@ -107,14 +107,14 @@ class PIDLagrangianPPO:
     def compute_ppo_loss(
         self,
         params: FrozenDict,
-        policy_fn: callable,
+        policy_fn: Callable,
         features: jnp.ndarray,
         actions: jnp.ndarray,
         old_log_probs: jnp.ndarray,
         advantages: jnp.ndarray,
         returns: jnp.ndarray,
         costs: jnp.ndarray,
-    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray | float]]:
         """
         Compute PPO loss with Lagrangian constraint.
 
@@ -139,16 +139,14 @@ class PIDLagrangianPPO:
         values = policy_outputs['value']
         entropy = policy_outputs['entropy']
 
-        # PPO clipped surrogate objective
-        ratio = jnp.exp(log_probs - old_log_probs)
-        surr1 = ratio * advantages
-        surr2 = jnp.clip(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages
-
         # Lagrangian adjustment (subtract lambda * cost from advantages)
         lambda_value = self.pid.lambda_value
-        advantages - lambda_value * costs
+        adjusted_advantages = advantages - lambda_value * costs
 
-        # Policy loss
+        # PPO clipped surrogate objective (with Lagrangian constraint)
+        ratio = jnp.exp(log_probs - old_log_probs)
+        surr1 = ratio * adjusted_advantages
+        surr2 = jnp.clip(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adjusted_advantages
         policy_loss = -jnp.mean(jnp.minimum(surr1, surr2))
 
         # Value loss
@@ -167,7 +165,7 @@ class PIDLagrangianPPO:
         # Compute approximate KL for monitoring
         approx_kl = jnp.mean((ratio - 1) - jnp.log(ratio))
 
-        metrics = {
+        metrics: dict[str, jnp.ndarray | float] = {
             'policy_loss': policy_loss,
             'value_loss': value_loss,
             'entropy': jnp.mean(entropy),

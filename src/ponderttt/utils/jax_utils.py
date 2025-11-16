@@ -10,8 +10,10 @@ Based on:
 from typing import Any
 
 import flax
+import flax.jax_utils
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as PS
@@ -30,7 +32,7 @@ class JaxRNG:
     def __init__(self, rng):
         self.rng = rng
 
-    def __call__(self, keys=None):
+    def __call__(self, keys=None) -> Any:
         if keys is None:
             self.rng, split_rng = jax.random.split(self.rng)
             return split_rng
@@ -227,7 +229,7 @@ def shard_batch(
             return jax.device_put(x, sharding)
         return x
 
-    return jax.tree_map(shard_array, batch)
+    return jtu.tree_map(shard_array, batch)
 
 
 def get_local_batch_size(
@@ -348,4 +350,5 @@ def next_rng(*args, **kwargs):
     global _global_rng
     if _global_rng is None:
         init_rng(42)
+    assert _global_rng is not None, "Failed to initialize global RNG"
     return _global_rng(*args, **kwargs)

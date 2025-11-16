@@ -37,14 +37,15 @@ class HumanEvalBenchmark:
             dataset = load_dataset("openai_humaneval", split="test")
 
             for example in dataset:
-                problem = CodeProblem(
-                    task_id=example["task_id"],
-                    prompt=example["prompt"],
-                    canonical_solution=example["canonical_solution"],
-                    test_code=example["test"],
-                    entry_point=example["entry_point"],
-                )
-                self.problems.append(problem)
+                if isinstance(example, dict):
+                    problem = CodeProblem(
+                        task_id=example["task_id"],
+                        prompt=example["prompt"],
+                        canonical_solution=example["canonical_solution"],
+                        test_code=example["test"],
+                        entry_point=example["entry_point"],
+                    )
+                    self.problems.append(problem)
 
         except Exception as e:
             warnings.warn(f"Failed to load HumanEval: {e}. Using placeholder.", stacklevel=2)
@@ -116,14 +117,15 @@ class MBPPBenchmark:
             dataset = load_dataset("mbpp", split="test")
 
             for example in dataset:
-                problem = CodeProblem(
-                    task_id=f"mbpp/{example['task_id']}",
-                    prompt=example["text"],
-                    canonical_solution=example["code"],
-                    test_code="\n".join(example["test_list"]),
-                    entry_point="solution",  # MBPP doesn't specify
-                )
-                self.problems.append(problem)
+                if isinstance(example, dict):
+                    problem = CodeProblem(
+                        task_id=f"mbpp/{example['task_id']}",
+                        prompt=example["text"],
+                        canonical_solution=example["code"],
+                        test_code="\n".join(example["test_list"]),
+                        entry_point="solution",  # MBPP doesn't specify
+                    )
+                    self.problems.append(problem)
 
         except Exception as e:
             warnings.warn(f"Failed to load MBPP: {e}. Using placeholder.", stacklevel=2)

@@ -79,16 +79,16 @@ def compute_efficiency_metrics(
     Returns:
         Dictionary with efficiency metrics
     """
-    quality_scores = np.array(quality_scores)
-    costs = np.array(costs)
+    quality_scores_np = np.array(quality_scores)
+    costs_np = np.array(costs)
 
     return {
-        "mean_quality": float(np.mean(quality_scores)),
-        "std_quality": float(np.std(quality_scores)),
-        "mean_cost": float(np.mean(costs)),
-        "std_cost": float(np.std(costs)),
-        "quality_per_cost": float(np.mean(quality_scores / costs)),
-        "efficiency_score": float(np.mean(quality_scores) / np.mean(costs)),
+        "mean_quality": float(np.mean(quality_scores_np)),
+        "std_quality": float(np.std(quality_scores_np)),
+        "mean_cost": float(np.mean(costs_np)),
+        "std_cost": float(np.std(costs_np)),
+        "quality_per_cost": float(np.mean(quality_scores_np / costs_np)),
+        "efficiency_score": float(np.mean(quality_scores_np) / np.mean(costs_np)),
     }
 
 
@@ -186,19 +186,19 @@ def compute_auc(
     Returns:
         AUC value
     """
-    x = np.array(x)
-    y = np.array(y)
+    x_np = np.array(x)
+    y_np = np.array(y)
 
     # Sort by x
-    sorted_indices = np.argsort(x)
-    x = x[sorted_indices]
-    y = y[sorted_indices]
+    sorted_indices = np.argsort(x_np)
+    x_sorted = x_np[sorted_indices]
+    y_sorted = y_np[sorted_indices]
 
     # Trapezoidal rule
     auc = 0.0
-    for i in range(len(x) - 1):
-        width = x[i + 1] - x[i]
-        height = (y[i] + y[i + 1]) / 2
+    for i in range(len(x_sorted) - 1):
+        width = x_sorted[i + 1] - x_sorted[i]
+        height = (y_sorted[i] + y_sorted[i + 1]) / 2
         auc += width * height
 
     return float(auc)
@@ -239,15 +239,15 @@ def compute_correlation(
     Returns:
         Tuple of (pearson_r, spearman_rho)
     """
-    x = np.array(x)
-    y = np.array(y)
+    x_np = np.array(x)
+    y_np = np.array(y)
 
     # Pearson correlation
-    pearson_r = float(np.corrcoef(x, y)[0, 1])
+    pearson_r = float(np.corrcoef(x_np, y_np)[0, 1])
 
     # Spearman correlation (rank-based)
-    x_ranks = np.argsort(np.argsort(x))
-    y_ranks = np.argsort(np.argsort(y))
+    x_ranks = np.argsort(np.argsort(x_np))
+    y_ranks = np.argsort(np.argsort(y_np))
     spearman_rho = float(np.corrcoef(x_ranks, y_ranks)[0, 1])
 
     return pearson_r, spearman_rho

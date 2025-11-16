@@ -168,8 +168,8 @@ class TTTLayer(nn.Module):
             # Concatenate chunks
             output = jnp.concatenate(chunk_outputs, axis=1)
             ttt_stats = {
-                'ttt_loss': jnp.mean(chunk_losses),
-                'num_chunks': num_chunks,
+                'ttt_loss': float(jnp.mean(chunk_losses)),
+                'num_chunks': int(num_chunks),
             }
 
             # Apply query to get final output
@@ -281,7 +281,7 @@ class TTTLayer(nn.Module):
         w1: jnp.ndarray,
         w2: jnp.ndarray,
         learning_rate: float,
-    ) -> tuple[jnp.ndarray, float, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Perform TTT update on a single chunk with gradient descent.
 
@@ -359,7 +359,7 @@ class ChunkedTTTLayer(nn.Module):
         learning_rate: Fast weight learning rate
     """
     config: TTTConfig
-    learning_rate: float = 1e-3
+    learning_rate: float
 
     @nn.compact
     def __call__(

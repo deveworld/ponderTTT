@@ -34,14 +34,14 @@ def bootstrap_ci(
     point_estimate = statistic(data)
 
     # Bootstrap sampling
-    bootstrap_estimates = []
+    bootstrap_estimates_list = []
     n = len(data)
 
     for _ in range(n_bootstrap):
         sample = np.random.choice(data, size=n, replace=True)
-        bootstrap_estimates.append(statistic(sample))
+        bootstrap_estimates_list.append(statistic(sample))
 
-    bootstrap_estimates = np.array(bootstrap_estimates)
+    bootstrap_estimates = np.array(bootstrap_estimates_list)
 
     # Confidence interval
     alpha = 1 - confidence_level
@@ -51,7 +51,7 @@ def bootstrap_ci(
     lower_bound = np.percentile(bootstrap_estimates, lower_percentile)
     upper_bound = np.percentile(bootstrap_estimates, upper_percentile)
 
-    return point_estimate, lower_bound, upper_bound
+    return float(point_estimate), float(lower_bound), float(upper_bound)
 
 
 def compute_iqm(
@@ -75,7 +75,7 @@ def compute_iqm(
 
     filtered_data = data[(data >= lower_threshold) & (data <= upper_threshold)]
 
-    return np.mean(filtered_data)
+    return float(np.mean(filtered_data))
 
 
 def normalize_advantages(advantages: jnp.ndarray) -> jnp.ndarray:

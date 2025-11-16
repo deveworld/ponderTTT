@@ -270,9 +270,9 @@ def load_model(
 
 def initialize_sharded_model(
     model: TransformerLM,
-    rng: jax.random.PRNGKey,
+    rng: jax.Array, # jax.random.PRNGKey
     input_shape: tuple[int, int],
-) -> dict:
+) -> Any:
     """
     Initialize model parameters with optional sharding for TPU Pods.
 
@@ -345,7 +345,7 @@ def inspect_sharding(params, max_params: int = 20) -> None:
                 sharding = subtree.sharding if hasattr(subtree, 'sharding') else "unknown"
 
                 # Extract PartitionSpec if available
-                if hasattr(sharding, 'spec'):
+                if isinstance(sharding, NamedSharding):
                     spec = sharding.spec
                     is_replicated = all(s is None for s in spec)
                     spec_str = f"P{spec}" if not is_replicated else "P() [replicated]"
@@ -399,7 +399,7 @@ class TTTTransformerLM(nn.Module):
         # LM head for converting adapted hidden states to logits
         vocab_size = self.base_model.config.vocab_size
         self.lm_head = nn.Dense(
-            vocab_size,
+            features=vocab_size,
             use_bias=False,
             dtype=self.base_config.dtype,
             name='lm_head_projection'

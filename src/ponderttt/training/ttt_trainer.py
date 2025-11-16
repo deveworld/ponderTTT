@@ -2,7 +2,6 @@
 Training utilities for TTT models.
 """
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 

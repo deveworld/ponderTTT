@@ -58,11 +58,9 @@ def save_checkpoint(
         checkpoint['metadata'] = metadata
 
     # Save
-    save_args = ocp.SaveArgs(save_args=ocp.ArraySaveArgs())
     checkpointer.save(
         checkpoint_dir / f"checkpoint_{step}",
         checkpoint,
-        save_args=save_args,
     )
 
     if process_index == 0:
