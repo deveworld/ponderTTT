@@ -331,7 +331,7 @@ MIT License - see LICENSE file
 ```bibtex
 @software{ponderttt2025,
   title={PonderTTT: Adaptive Budget-Constrained Test-Time Training},
-  author={PonderTTT Team},
+  author={deveworld},
   year={2025},
   note={JAX/Flax implementation}
 }
