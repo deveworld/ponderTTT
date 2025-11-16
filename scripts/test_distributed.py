@@ -50,9 +50,9 @@ def test_basic_jax():
         print(f"  Process index: {jax.process_index()}")
         print(f"  Process count: {jax.process_count()}")
     except:
-        print(f"  ⚠️ Multi-host not initialized")
+        print(f"   Multi-host not initialized")
 
-    print("  ✓ Basic JAX works")
+    print("   Basic JAX works")
 
 
 def test_mesh_creation():
@@ -75,7 +75,7 @@ def test_mesh_creation():
 
     print(f"  Mesh shape: {mesh.devices.shape}")
     print(f"  Mesh axes: {mesh.axis_names}")
-    print("  ✓ Mesh creation works")
+    print("   Mesh creation works")
 
     return mesh
 
@@ -99,7 +99,7 @@ def test_data_sharding(mesh):
 
     print(f"  Sharded batch shape: {sharded_batch['input_ids'].shape}")
     print(f"  Sharding: {sharded_batch['input_ids'].sharding}")
-    print("  ✓ Data sharding works")
+    print("   Data sharding works")
 
 
 def test_collective_ops(mesh):
@@ -117,7 +117,7 @@ def test_collective_ops(mesh):
     result = all_reduce_sum(local_data)
     print(f"  Local data: {local_data}")
     print(f"  All-reduce result: {result}")
-    print("  ✓ Collective operations work")
+    print("   Collective operations work")
 
 
 def test_batch_size_calculation():
@@ -130,7 +130,7 @@ def test_batch_size_calculation():
         local_bs = get_local_batch_size(gbs)
         print(f"  Global: {gbs:4d} -> Local: {local_bs:4d}")
 
-    print("  ✓ Batch size calculation works")
+    print("   Batch size calculation works")
 
 
 def main():
@@ -155,7 +155,7 @@ def main():
     test_batch_size_calculation()
 
     print("\n" + "=" * 60)
-    print_on_main("✓ All distributed tests passed!")
+    print_on_main(" All distributed tests passed!")
     print("=" * 60)
 
 

@@ -255,7 +255,7 @@ def main():
     # Load results
     try:
         results = load_results(args.results_file)
-        print(f"✓ Loaded results from {args.results_file}")
+        print(f" Loaded results from {args.results_file}")
     except Exception as e:
         print(f"✗ Failed to load results: {e}")
         return
@@ -273,7 +273,7 @@ def main():
     plot_summary_stats(results, output_dir, args.format)
 
     print("\n" + "=" * 60)
-    print("✓ Visualization complete!")
+    print(" Visualization complete!")
     print("=" * 60)
     print(f"\nFigures saved to: {output_dir}")
 

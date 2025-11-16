@@ -286,21 +286,21 @@ JAX/Flax equivalents to common PyTorch patterns:
 
 See [PLAN.md](PLAN.md) for detailed research plan and [PROJECT_STATUS.md](PROJECT_STATUS.md) for current status.
 
-### Phase 1: Foundation ✅ COMPLETE
-- ✅ JAX/Flax implementation
-- ✅ Data pipeline with multi-host sharding
-- ✅ Core models (TTT, Policy)
-- ✅ Training algorithms (PID-Lagrangian PPO)
-- ✅ Feature extraction
-- ✅ Multi-host distributed training
-- ✅ TPU-ready training scripts (not yet tested on hardware)
-- ✅ CPU validation complete
-- ✅ Bug fixes (chunk size, dropout, dynamic slicing, etc.)
-- ✅ Cost calculations validated (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
+### Phase 1: Foundation  COMPLETE
+-  JAX/Flax implementation
+-  Data pipeline with multi-host sharding
+-  Core models (TTT, Policy)
+-  Training algorithms (PID-Lagrangian PPO)
+-  Feature extraction
+-  Multi-host distributed training
+-  TPU-ready training scripts (not yet tested on hardware)
+-  CPU validation complete
+-  Bug fixes (chunk size, dropout, dynamic slicing, etc.)
+-  Cost calculations validated (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
 
-### Phase 2: Real Data & GPU (Current - Blocked)
-- ⏳ **Blocker**: Access to The Stack dataset (gated, requires approval)
-- ⏳ **Blocker**: GPU access for production training (CPU too slow)
+### Phase 2: Real Data & GPU (Current - Partially Blocked)
+-  **UNBLOCKED**: The Stack v2 dataset access approved
+-  **Blocker**: GPU access for production training (CPU too slow)
 - [ ] 125M baseline experiments with real data
 - [ ] Policy training and evaluation
 - [ ] Ablation studies
@@ -349,21 +349,21 @@ For questions, open an issue on GitHub.
 ## Current Limitations
 
 ### Known Issues
-1. **Synthetic Data Only**: Currently using random tokens for validation. Real data (The Stack) is gated and requires approval.
+1. ~~**Synthetic Data Only**: Currently using random tokens for validation. Real data (The Stack) is gated and requires approval.~~  **RESOLVED** - The Stack v2 access approved
 2. **GPU Required**: CPU validation confirms pipeline works, but GPU needed for production experiments (CPU too slow).
 3. **TTT Improvement Marginal**: On synthetic data, TTT shows only ~0.1 loss reduction (expected - random tokens have no semantic structure).
 4. **Real Benchmarks Pending**: HumanEval/MBPP evaluation requires real code training data.
 
-### Recent Fixes (v0.2.0)
-1. Fixed chunk_size: 512 for GPT-2 (was 4096, incompatible with model's positional embeddings)
-2. Fixed HuggingFace/Flax model compatibility wrapper
-3. Fixed dropout RNG for training mode
-4. Fixed synthetic data generation (was all 1s, now varied random tokens)
-5. Fixed JAX dynamic slicing in TTT layer
-6. Fixed base model deterministic parameter
+### Implementation Notes (v0.2.0)
+1. **chunk_size**: Set to 512 for GPT-2 compatibility (max_position_embeddings=1024)
+2. **Model Integration**: HuggingFace/Flax compatibility wrapper for seamless model loading
+3. **Training Mode**: Proper RNG handling for dropout layers
+4. **Synthetic Data**: Varied random tokens for pipeline validation
+5. **JAX Compatibility**: Dynamic slicing in TTT layer for flexible sequence handling
+6. **FSDP Strategy**: Fully Sharded Data Parallel for memory-efficient training on large models
 
 ### Next Steps
-1. Obtain access to The Stack dataset
-2. Secure GPU resources for training
+1.  ~~Obtain access to The Stack dataset~~ **DONE** - v2 access approved
+2. Secure GPU resources for training (Vast.ai / RunPod)
 3. Run baseline experiments with real code data
 4. Validate TTT improvement on meaningful data

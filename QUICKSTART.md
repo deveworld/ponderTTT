@@ -48,11 +48,11 @@ Total cost: 10.0 (baseline)
 ```
 
 **What This Validates**:
-- ✅ JAX/Flax installation working
-- ✅ GPT-2 model loading
-- ✅ TTT layer functionality
-- ✅ Cost calculation correct
-- ✅ Training loop functional
+-  JAX/Flax installation working
+-  GPT-2 model loading
+-  TTT layer functionality
+-  Cost calculation correct
+-  Training loop functional
 
 **Expected Results** (synthetic data):
 - SKIP baseline: ~11.0 loss
@@ -101,7 +101,7 @@ uv run python -m ponderttt.experiments.train_policy \
     --output_dir outputs/policy
 ```
 
-**Status**: ⏳ Not yet run (requires GPU and real data)
+**Status**:  Not yet run (requires GPU and real data)
 
 This will:
 - Initialize policy network

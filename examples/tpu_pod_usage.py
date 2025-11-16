@@ -40,7 +40,7 @@ model, tokenizer = load_model(
     shard_params=True,  # Enable parameter sharding
 )
 
-print(f"✓ Model loaded: {model.config.model_name}")
+print(f" Model loaded: {model.config.model_name}")
 
 # Step 4: Initialize model parameters with sharding
 rng = jax.random.PRNGKey(42)
@@ -50,7 +50,7 @@ params = initialize_sharded_model(
     input_shape=(2, 1024),  # (batch_size, seq_length)
 )
 
-print("✓ Parameters initialized and sharded")
+print(" Parameters initialized and sharded")
 print(f"Parameter structure: {jax.tree_map(lambda x: x.shape, params)}")
 
 # Step 5: Example forward pass
@@ -66,7 +66,7 @@ sharded_input = jax.device_put(input_ids, input_sharding)
 outputs = model.apply({'params': params}, sharded_input)
 logits = outputs['logits']
 
-print(f"✓ Forward pass complete")
+print(f" Forward pass complete")
 print(f"Input shape: {sharded_input.shape}")
 print(f"Output logits shape: {logits.shape}")
 
@@ -79,4 +79,4 @@ print(f"Output sharding: {logits.sharding}")
 param_sample = jax.tree_util.tree_leaves(params)[0]
 print(f"Parameter sharding example: {param_sample.sharding}")
 
-print("\n✓ TPU Pod sharding example complete!")
+print("\n TPU Pod sharding example complete!")

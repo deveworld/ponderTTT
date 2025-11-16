@@ -2,7 +2,7 @@
 
 Complete implementation of the PonderTTT framework as described in PLAN.md
 
-## Implementation Status: ✅ Phase 1 Complete, ⏳ Phase 2 Blocked
+## Implementation Status:  Phase 1 Complete,  Phase 2 Blocked
 
 All core components for Phase 1 have been implemented and validated on CPU with synthetic data. Phase 2 (real data experiments) is blocked on dataset access and GPU resources.
 
@@ -13,62 +13,62 @@ All core components for Phase 1 have been implemented and validated on CPU with 
 ```
 ponderttt/
 ├── src/ponderttt/
-│   ├── __init__.py                     ✅ Package initialization
+│   ├── __init__.py                      Package initialization
 │   │
-│   ├── data/                           ✅ Data Pipeline
+│   ├── data/                            Data Pipeline
 │   │   ├── __init__.py
 │   │   ├── dataset.py                  # CodeDataset
 │   │   └── tokenization.py             # get_tokenizer
 │   │
-│   ├── models/                         ✅ Model Architectures
+│   ├── models/                          Model Architectures
 │   │   ├── __init__.py
 │   │   ├── base_model.py              # TransformerLM (HF wrapper)
 │   │   ├── ttt_layer.py               # TTTLayer with fast-weight updates
 │   │   ├── policy.py                  # PolicyNetwork
 │   │   └── fast_weights.py            # FastWeightLayer
 │   │
-│   ├── training/                       ✅ Training Algorithms
+│   ├── training/                        Training Algorithms
 │   │   ├── __init__.py
 │   │   ├── ttt_trainer.py             # TTTTrainer for baselines
 │   │   ├── policy_trainer.py          # PolicyTrainer with RL
 │   │   └── pid_lagrangian.py          # PIDLagrangianPPO algorithm
 │   │
-│   ├── evaluation/                     ✅ Evaluation & Metrics
+│   ├── evaluation/                      Evaluation & Metrics
 │   │   ├── __init__.py
 │   │   ├── metrics.py                 # pass@k, Pareto, FLOPs, etc.
 │   │   └── benchmarks.py              # HumanEval, MBPP, ClassEval
 │   │
-│   ├── utils/                          ✅ Utilities
+│   ├── utils/                           Utilities
 │   │   ├── __init__.py
 │   │   ├── features.py                # FeatureExtractor (32D features)
 │   │   ├── statistics.py              # Bootstrap CI, IQM, etc.
 │   │   ├── jax_utils.py               # JAX distributed training utilities
 │   │   └── checkpointing.py           # Checkpoint save/load
 │   │
-│   └── experiments/                    ✅ Experiment Scripts
+│   └── experiments/                     Experiment Scripts
 │       ├── __init__.py
 │       ├── config.py                  # Configuration classes
 │       ├── train_baseline.py          # Baseline training script
 │       └── train_policy.py            # Policy training script
 │
-├── tests/                              ⏳ Unit Tests (TODO)
+├── tests/                               Unit Tests (TODO)
 │   └── (empty - tests to be added)
 │
-├── scripts/                            ✅ Helper Scripts
+├── scripts/                             Helper Scripts
 │   ├── test_distributed.py            # Distributed JAX test
 │   ├── train_tpu.py                   # TPU training script
 │   ├── test_pipeline.py               # Integration test
 │   ├── quick_test.py                  # Quick smoke test
 │   └── visualize_results.py           # Visualization
 │
-├── Configuration Files                 ✅ Project Config
+├── Configuration Files                  Project Config
 │   ├── pyproject.toml                 # Package metadata
 │   ├── pytest.ini                     # Test configuration
 │   ├── ruff.toml                      # Linter configuration
 │   ├── .gitignore                     # Git ignore rules
 │   └── Makefile                       # Build commands
 │
-└── Documentation                       ✅ Documentation
+└── Documentation                        Documentation
     ├── README.md                      # Main documentation
     ├── QUICKSTART.md                  # Quick start guide
     ├── CONTRIBUTING.md                # Contribution guidelines
@@ -78,7 +78,7 @@ ponderttt/
 
 ## Core Components
 
-### 1. Data Pipeline ✅
+### 1. Data Pipeline 
 
 **Files**: `data/dataset.py`, `data/tokenization.py`
 
@@ -103,7 +103,7 @@ data_iter = create_data_iterator(
 )
 ```
 
-### 2. Model Architectures ✅
+### 2. Model Architectures 
 
 **Files**: `models/*.py`
 
@@ -145,7 +145,7 @@ policy = PolicyNetwork(config=policy_config)
 policy_outputs = policy.apply(variables, features, rngs={'action': rng})
 ```
 
-### 3. Feature Extraction ✅
+### 3. Feature Extraction 
 
 **File**: `utils/features.py`
 
@@ -166,7 +166,7 @@ policy_outputs = policy.apply(variables, features, rngs={'action': rng})
 - EMA tracking for temporal context
 - Budget-aware feature computation
 
-### 4. Training Algorithms ✅
+### 4. Training Algorithms 
 
 **Files**: `training/*.py`
 
@@ -195,7 +195,7 @@ policy_outputs = policy.apply(variables, features, rngs={'action': rng})
 - Value coefficient: 0.5
 - Entropy coefficient: 0.01
 
-### 5. Evaluation Metrics ✅
+### 5. Evaluation Metrics 
 
 **File**: `evaluation/metrics.py`
 
@@ -223,18 +223,18 @@ policy_outputs = policy.apply(variables, features, rngs={'action': rng})
    - Paired tests (Wilcoxon, t-test)
    - Effect sizes (Cohen's d, Cliff's delta)
 
-### 6. Benchmarks ✅
+### 6. Benchmarks 
 
 **File**: `evaluation/benchmarks.py`
 
 **Implemented**:
-- ✅ HumanEval (164 problems)
-- ✅ MBPP (974 problems)
-- ⏳ ClassEval (100 problems) - placeholder for Phase 2
+-  HumanEval (164 problems)
+-  MBPP (974 problems)
+-  ClassEval (100 problems) - placeholder for Phase 2
 
 **BenchmarkSuite**: Unified interface for all benchmarks
 
-### 7. Experiment Configuration ✅
+### 7. Experiment Configuration 
 
 **File**: `experiments/config.py`
 
@@ -253,7 +253,7 @@ config = get_350m_config()  # Development
 config = get_1b_config()    # Main results
 ```
 
-## Testing Infrastructure ✅
+## Testing Infrastructure 
 
 **Test Coverage**:
 
@@ -280,7 +280,7 @@ pytest tests/          # Unit tests only
 python scripts/quick_test.py  # Quick smoke test
 ```
 
-## Experiment Scripts ✅
+## Experiment Scripts 
 
 ### Baseline Training
 
@@ -312,30 +312,30 @@ python -m ponderttt.experiments.train_policy \
 4. Update PID controller
 5. Evaluate and log
 
-## Verification ✅
+## Verification 
 
 ### CPU Validation Complete
 All baselines run successfully with synthetic data:
 ```bash
-uv run python -m ponderttt.experiments.train_baseline --action SKIP       # ✅ Works
-uv run python -m ponderttt.experiments.train_baseline --action UPDATE_1   # ✅ Works
-uv run python -m ponderttt.experiments.train_baseline --action UPDATE_2   # ✅ Works
-uv run python -m ponderttt.experiments.train_baseline --action UPDATE_4   # ✅ Works
+uv run python -m ponderttt.experiments.train_baseline --action SKIP       #  Works
+uv run python -m ponderttt.experiments.train_baseline --action UPDATE_1   #  Works
+uv run python -m ponderttt.experiments.train_baseline --action UPDATE_2   #  Works
+uv run python -m ponderttt.experiments.train_baseline --action UPDATE_4   #  Works
 ```
 
 **Validated Results** (synthetic data):
-- ✅ All pipelines run without errors
-- ✅ Cost calculations accurate (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
-- ✅ Loss values realistic (~11.0 for random tokens)
-- ⚠️ TTT improvement marginal (~0.1) - expected on synthetic data
+-  All pipelines run without errors
+-  Cost calculations accurate (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
+-  Loss values realistic (~11.0 for random tokens)
+-  TTT improvement marginal (~0.1) - expected on synthetic data
 
 ### Recent Fixes (v0.2.0)
-1. ✅ Fixed chunk_size: 512 for GPT-2 (was 4096)
-2. ✅ Fixed HuggingFace/Flax model compatibility wrapper
-3. ✅ Fixed dropout RNG for training mode
-4. ✅ Fixed synthetic data generation (was all 1s, now varied random tokens)
-5. ✅ Fixed JAX dynamic slicing in TTT layer
-6. ✅ Fixed base model deterministic parameter
+1.  Fixed chunk_size: 512 for GPT-2 (was 4096)
+2.  Fixed HuggingFace/Flax model compatibility wrapper
+3.  Fixed dropout RNG for training mode
+4.  Fixed synthetic data generation (was all 1s, now varied random tokens)
+5.  Fixed JAX dynamic slicing in TTT layer
+6.  Fixed base model deterministic parameter
 
 Total implementation:
 - **25 Python files**
@@ -351,8 +351,8 @@ Total implementation:
 2. **GPU Resources**: CPU too slow for production experiments (10-100× slower)
 
 ### Phase 2: Real Data Experiments (Blocked)
-- ⏳ Obtain The Stack dataset access
-- ⏳ Secure GPU resources
+-  Obtain The Stack dataset access
+-  Secure GPU resources
 - [ ] Run 125M experiments with real code data
 - [ ] Verify TTT improves over No-TTT on real code
 - [ ] Test policy learning convergence
@@ -435,18 +435,18 @@ Phase 1 implementation is **complete and CPU-validated**. All core components ar
 
 ### Current Status Summary
 
-**✅ Completed**:
+** Completed**:
 - All core components implemented and documented
 - CPU validation successful with synthetic data
 - Cost calculations verified (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
 - Pipeline runs end-to-end without errors
 - Bug fixes applied (chunk size, dropout, dynamic slicing, etc.)
 
-**⏳ Blocked**:
+** Blocked**:
 - Real data experiments (The Stack dataset access required)
 - GPU training (CPU too slow for production)
 - Meaningful TTT validation (synthetic data has limited semantics)
 
-**✅ GO Decision**: Infrastructure validated, ready for real data and GPU resources.
+** GO Decision**: Infrastructure validated, ready for real data and GPU resources.
 
 **Next Milestone**: Obtain dataset access and GPU resources for Phase 2 experiments.

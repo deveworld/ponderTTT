@@ -43,7 +43,7 @@ try:
 
     assert "input_ids" in batch
     assert "chunks" in batch
-    print(f"✓ Data loading works (synthetic batch shape: {batch['input_ids'].shape})")
+    print(f" Data loading works (synthetic batch shape: {batch['input_ids'].shape})")
 except Exception as e:
     print(f"✗ Data loading failed: {e}")
     sys.exit(1)
@@ -60,7 +60,7 @@ try:
     test_input = jnp.ones((1, 10), dtype=jnp.int32)
     variables = model.init(rng, test_input)
 
-    print(f"✓ Model initialization works")
+    print(f" Model initialization works")
 except Exception as e:
     print(f"✗ Model initialization failed: {e}")
     sys.exit(1)
@@ -76,7 +76,7 @@ try:
 
     features = extractor.extract(test_ids, test_logits)
     assert features.shape[-1] == 32
-    print(f"✓ Feature extraction works (shape: {features.shape})")
+    print(f" Feature extraction works (shape: {features.shape})")
 except Exception as e:
     print(f"✗ Feature extraction failed: {e}")
     sys.exit(1)
@@ -102,7 +102,7 @@ try:
 
     assert "action" in outputs
     assert "value" in outputs
-    print(f"✓ Policy network works (actions: {outputs['action']})")
+    print(f" Policy network works (actions: {outputs['action']})")
 except Exception as e:
     print(f"✗ Policy network failed: {e}")
     sys.exit(1)
@@ -127,7 +127,7 @@ try:
 
     assert output.shape == test_hidden.shape
     assert "ttt_loss" in stats
-    print(f"✓ TTT layer works (loss: {stats['ttt_loss']:.4f})")
+    print(f" TTT layer works (loss: {stats['ttt_loss']:.4f})")
 except Exception as e:
     print(f"✗ TTT layer failed: {e}")
     sys.exit(1)
@@ -154,7 +154,7 @@ try:
     )
     action = policy_outputs["action"][0]
 
-    print(f"✓ End-to-end flow works")
+    print(f" End-to-end flow works")
     print(f"  Input shape: {input_ids.shape}")
     print(f"  Logits shape: {logits.shape}")
     print(f"  Features shape: {features.shape}")
@@ -164,6 +164,6 @@ except Exception as e:
     sys.exit(1)
 
 print("\n" + "=" * 60)
-print("✓ All integration tests passed!")
+print(" All integration tests passed!")
 print("=" * 60)
 print("\nPipeline is working correctly. Ready for experiments!")

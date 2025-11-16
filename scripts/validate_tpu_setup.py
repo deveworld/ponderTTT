@@ -70,12 +70,12 @@ def check_jax_distributed(multi_host: bool):
     if multi_host:
         try:
             initialize_jax_distributed()
-            print_on_main("✅ PASS: Multi-host JAX initialized")
+            print_on_main(" PASS: Multi-host JAX initialized")
         except Exception as e:
-            print_on_main(f"❌ FAIL: {e}")
+            print_on_main(f" FAIL: {e}")
             return False
     else:
-        print_on_main("✅ PASS: Single-host mode")
+        print_on_main(" PASS: Single-host mode")
 
     # Print device information
     print_on_main(f"  Process index: {jax.process_index()}")
@@ -86,7 +86,7 @@ def check_jax_distributed(multi_host: bool):
     # Verify device count
     expected_local = 8  # TPU v4 has 8 chips per host
     if jax.local_device_count() != expected_local:
-        print_on_main(f"⚠️  WARNING: Expected {expected_local} local devices, got {jax.local_device_count()}")
+        print_on_main(f"  WARNING: Expected {expected_local} local devices, got {jax.local_device_count()}")
 
     return True
 
@@ -100,18 +100,18 @@ def check_mesh_creation(mesh_shape_str: str):
     try:
         mesh_shape = tuple(map(int, mesh_shape_str.split(",")))
         mesh = create_mesh(mesh_shape, ('batch', 'model'))
-        print_on_main(f"✅ PASS: Mesh created with shape {mesh_shape}")
+        print_on_main(f" PASS: Mesh created with shape {mesh_shape}")
         print_on_main(f"  Mesh axes: {mesh.axis_names}")
         print_on_main(f"  Total devices in mesh: {mesh.devices.size}")
 
         # Verify mesh size matches device count
         if mesh.devices.size != jax.device_count():
-            print_on_main(f"❌ FAIL: Mesh size {mesh.devices.size} != device count {jax.device_count()}")
+            print_on_main(f" FAIL: Mesh size {mesh.devices.size} != device count {jax.device_count()}")
             return None
 
         return mesh
     except Exception as e:
-        print_on_main(f"❌ FAIL: {e}")
+        print_on_main(f" FAIL: {e}")
         return None
 
 
@@ -133,7 +133,7 @@ def check_data_sharding(mesh):
         # Shard batch
         sharded_batch = shard_batch(batch, mesh, batch_axis='batch')
 
-        print_on_main(f"✅ PASS: Batch sharded successfully")
+        print_on_main(f" PASS: Batch sharded successfully")
         print_on_main(f"  Original shape: {batch['input_ids'].shape}")
         print_on_main(f"  Sharded shape: {sharded_batch['input_ids'].shape}")
 
@@ -143,7 +143,7 @@ def check_data_sharding(mesh):
 
         return sharded_batch
     except Exception as e:
-        print_on_main(f"❌ FAIL: {e}")
+        print_on_main(f" FAIL: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -171,7 +171,7 @@ def check_parameter_sharding(mesh):
         from ponderttt.models import apply_sharding_to_params
         sharded_params = apply_sharding_to_params(params, mesh)
 
-        print_on_main(f"✅ PASS: Parameters sharded successfully")
+        print_on_main(f" PASS: Parameters sharded successfully")
 
         # Inspect sharding
         from ponderttt.models import inspect_sharding
@@ -179,7 +179,7 @@ def check_parameter_sharding(mesh):
 
         return sharded_params
     except Exception as e:
-        print_on_main(f"❌ FAIL: {e}")
+        print_on_main(f" FAIL: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -210,13 +210,13 @@ def check_gradient_computation(mesh, sharded_params):
             grads
         )
 
-        print_on_main(f"✅ PASS: Gradients computed successfully")
+        print_on_main(f" PASS: Gradients computed successfully")
         print_on_main(f"  Loss: {float(loss):.6f}")
         print_on_main(f"  Gradient shape (embedding): {grads['embedding'].shape}")
 
         return True
     except Exception as e:
-        print_on_main(f"❌ FAIL: {e}")
+        print_on_main(f" FAIL: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -250,17 +250,17 @@ def check_collective_ops(mesh):
         actual = float(result[0])
 
         if abs(actual - expected) < 1e-6:
-            print_on_main(f"✅ PASS: AllReduce works correctly")
+            print_on_main(f" PASS: AllReduce works correctly")
             print_on_main(f"  Expected sum: {expected}")
             print_on_main(f"  Actual sum: {actual}")
         else:
-            print_on_main(f"❌ FAIL: AllReduce incorrect")
+            print_on_main(f" FAIL: AllReduce incorrect")
             print_on_main(f"  Expected: {expected}, Got: {actual}")
             return False
 
         return True
     except Exception as e:
-        print_on_main(f"❌ FAIL: {e}")
+        print_on_main(f" FAIL: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -285,13 +285,13 @@ def check_jit_compilation(mesh):
         # Run jitted function
         result = simple_fn(sharded_x)
 
-        print_on_main(f"✅ PASS: JIT compilation works with sharded data")
+        print_on_main(f" PASS: JIT compilation works with sharded data")
         print_on_main(f"  Input shape: {sharded_x.shape}")
         print_on_main(f"  Output shape: {result.shape}")
 
         return True
     except Exception as e:
-        print_on_main(f"❌ FAIL: {e}")
+        print_on_main(f" FAIL: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -316,7 +316,7 @@ def main():
     results.append(("Mesh Creation", mesh is not None))
 
     if mesh is None:
-        print_on_main("\n❌ Cannot continue: Mesh creation failed")
+        print_on_main("\n Cannot continue: Mesh creation failed")
         sys.exit(1)
 
     # Test 3: Data sharding
@@ -347,7 +347,7 @@ def main():
 
     all_passed = True
     for test_name, passed in results:
-        status = "✅ PASS" if passed else "❌ FAIL"
+        status = " PASS" if passed else " FAIL"
         print_on_main(f"  {test_name:30s} {status}")
         if not passed:
             all_passed = False
@@ -359,7 +359,7 @@ def main():
         print_on_main("\nNext steps:")
         print_on_main("  python scripts/train_tpu.py --multi_host --mesh_shape='64,1'")
     else:
-        print_on_main("⚠️  Some tests failed. Please review the errors above.")
+        print_on_main("  Some tests failed. Please review the errors above.")
         sys.exit(1)
 
 

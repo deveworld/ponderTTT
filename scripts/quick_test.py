@@ -31,7 +31,7 @@ total_tests = 5
 print("\n[1/5] Testing tokenizer...")
 try:
     tokenizer = get_tokenizer("gpt2")
-    print(f"✓ Tokenizer loaded (vocab size: {tokenizer.vocab_size})")
+    print(f" Tokenizer loaded (vocab size: {tokenizer.vocab_size})")
     tests_passed += 1
 except Exception as e:
     print(f"✗ Tokenizer test failed: {e}")
@@ -48,11 +48,11 @@ try:
     test_input = jnp.ones((1, 10), dtype=jnp.int32)
 
     variables = model.init(rng, test_input)
-    print(f"✓ Base model initialized")
+    print(f" Base model initialized")
 
     # Forward pass
     outputs = model.apply(variables, test_input)
-    print(f"✓ Forward pass successful, logits shape: {outputs['logits'].shape}")
+    print(f" Forward pass successful, logits shape: {outputs['logits'].shape}")
     tests_passed += 1
 
 except Exception as e:
@@ -70,7 +70,7 @@ try:
 
     variables = ttt_layer.init(rng, test_hidden)
     output, stats = ttt_layer.apply(variables, test_hidden)
-    print(f"✓ TTT layer works, output shape: {output.shape}")
+    print(f" TTT layer works, output shape: {output.shape}")
     print(f"  TTT loss: {stats['ttt_loss']:.4f}")
     tests_passed += 1
 
@@ -94,7 +94,7 @@ try:
         rngs={'action': rng, 'dropout': rng}
     )
 
-    print(f"✓ Policy network works")
+    print(f" Policy network works")
     print(f"  Actions: {policy_outputs['action']}")
     print(f"  Mean value: {jnp.mean(policy_outputs['value']):.4f}")
     tests_passed += 1
@@ -112,7 +112,7 @@ try:
     test_logits = jnp.ones((1, 5, tokenizer.vocab_size))
 
     features = extractor.extract(test_ids, test_logits)
-    print(f"✓ Feature extraction works, shape: {features.shape}")
+    print(f" Feature extraction works, shape: {features.shape}")
     assert features.shape[-1] == 32, "Features should be 32-dimensional"
     tests_passed += 1
 
@@ -123,13 +123,13 @@ except Exception as e:
 # Summary
 print("\n" + "=" * 60)
 if tests_passed == total_tests:
-    print(f"✓ All {total_tests} tests passed!")
+    print(f" All {total_tests} tests passed!")
     print("=" * 60)
     print("\nJAX/Flax implementation is ready.")
 else:
     print(f"Tests: {tests_passed}/{total_tests} passed, {tests_failed} failed")
     print("=" * 60)
-    print(f"\n⚠️  Some tests failed. Please fix the issues above.")
+    print(f"\n  Some tests failed. Please fix the issues above.")
     if tests_passed > 0:
         print(f"Working components: {tests_passed}/{total_tests}")
 

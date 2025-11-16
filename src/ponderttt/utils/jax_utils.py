@@ -72,10 +72,10 @@ def initialize_jax_distributed(
         # Simple initialization - JAX auto-detects TPU Pod config
         try:
             jax.distributed.initialize()
-            print(f"✓ JAX distributed initialized automatically")
+            print(f" JAX distributed initialized automatically")
         except RuntimeError:
             # JAX distributed not available (single host or already initialized)
-            print("⚠️ JAX distributed initialization skipped (single host?)")
+            print(" JAX distributed initialization skipped (single host?)")
             return
     else:
         # Explicit initialization
@@ -84,7 +84,7 @@ def initialize_jax_distributed(
             num_processes=num_processes,
             process_id=process_id,
         )
-        print(f"✓ JAX distributed initialized explicitly")
+        print(f" JAX distributed initialized explicitly")
 
     # Print device info (but only from process 0 to avoid spam)
     if jax.process_index() == 0:
@@ -119,7 +119,7 @@ def create_mesh(
     mesh = Mesh(devices, axis_names=axis_names)
 
     if jax.process_index() == 0:
-        print(f"✓ Created mesh with shape {mesh_shape} and axes {axis_names}")
+        print(f" Created mesh with shape {mesh_shape} and axes {axis_names}")
         print(f"  Total devices in mesh: {mesh.devices.size}")
 
     return mesh

@@ -95,7 +95,7 @@ def get_350m_config() -> ExperimentConfig:
     model = ExperimentModelConfig(
         model_name="gpt2-medium",
         lora_rank=128,
-        chunk_size=4096,
+        chunk_size=512,
     )
 
     training = TrainingConfig(
@@ -116,7 +116,7 @@ def get_1b_config() -> ExperimentConfig:
     model = ExperimentModelConfig(
         model_name="gpt2-large",
         lora_rank=256,
-        chunk_size=4096,
+        chunk_size=512,
     )
 
     training = TrainingConfig(

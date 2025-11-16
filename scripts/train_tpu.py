@@ -79,7 +79,7 @@ def parse_args():
     parser.add_argument("--model_name", type=str, default="gpt2")
     parser.add_argument("--global_batch_size", type=int, default=512)
     parser.add_argument("--seq_length", type=int, default=4096)
-    parser.add_argument("--chunk_size", type=int, default=4096)
+    parser.add_argument("--chunk_size", type=int, default=512)
     parser.add_argument("--num_steps", type=int, default=10000)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--warmup_steps", type=int, default=500)
@@ -108,7 +108,7 @@ def create_train_state(config, mesh, learning_rate, warmup_steps, num_steps):
         from ponderttt.models import apply_sharding_to_params
         print_on_main("Applying parameter sharding...")
         params = apply_sharding_to_params(params, config.mesh)
-        print_on_main("✓ Parameters sharded across devices")
+        print_on_main(" Parameters sharded across devices")
 
         # Inspect sharding (only shows first 20 params)
         inspect_sharding(params, max_params=20)
@@ -133,7 +133,11 @@ def create_train_state(config, mesh, learning_rate, warmup_steps, num_steps):
 @partial(jax.jit, donate_argnums=(0,))
 def train_step(state, batch, model, optimizer, mesh, use_sharding_constraint=True):
     """
-    Single training step with sharding constraints.
+    Single training step with sharding constraints for FSDP.
+
+    In FSDP mode, gradients automatically inherit parameter sharding.
+    JAX's autodiff ensures gradients have the same sharding as parameters,
+    and the compiler inserts necessary Reduce-Scatter operations.
 
     Args:
         state: Training state
@@ -146,9 +150,8 @@ def train_step(state, batch, model, optimizer, mesh, use_sharding_constraint=Tru
     from jax.lax import with_sharding_constraint
     from jax.sharding import NamedSharding, PartitionSpec as PS
 
-    # Define sharding specs
+    # Define sharding specs for data
     batch_sharding = NamedSharding(mesh, PS('batch', None))
-    param_sharding = create_sharding_constraint(mesh, 'batch')
 
     def loss_fn(params):
         # Constrain input sharding
@@ -182,14 +185,9 @@ def train_step(state, batch, model, optimizer, mesh, use_sharding_constraint=Tru
         return loss
 
     # Compute gradients
+    # Gradients automatically inherit parameter sharding in FSDP
+    # JAX's autodiff propagates sharding from parameters to gradients
     loss, grads = jax.value_and_grad(loss_fn)(state['params'])
-
-    # Constrain gradient sharding to match parameter sharding
-    if use_sharding_constraint:
-        grads = jax.tree_map(
-            lambda g: with_sharding_constraint(g, param_sharding) if g is not None else None,
-            grads
-        )
 
     # Update parameters
     updates, new_opt_state = optimizer.update(
@@ -276,8 +274,8 @@ def main():
             args.num_steps,
         )
 
-    print_on_main(f"✓ Model initialized: {args.model_name}")
-    print_on_main(f"✓ Optimizer: Adam with cosine decay")
+    print_on_main(f" Model initialized: {args.model_name}")
+    print_on_main(f" Optimizer: Adam with cosine decay")
 
     # Step 6: Training loop
     print(f"\n[5/6] Starting training...")
@@ -314,7 +312,7 @@ def main():
                 )
 
     print("\n" + "=" * 60)
-    print("✓ Training completed!")
+    print(" Training completed!")
     print("=" * 60)
 
 
