@@ -403,15 +403,6 @@ class TTTTransformerLM(nn.Module):
         # Fast weights: TTT layer (adaptive)
         self.ttt_layer = TTTLayer(config=self.ttt_config)
 
-        # LM head for converting adapted hidden states to logits
-        vocab_size = self.base_model.config.vocab_size
-        self.lm_head = nn.Dense(
-            features=vocab_size,
-            use_bias=False,
-            dtype=self.base_config.dtype,
-            name="lm_head_projection",
-        )
-
     def __call__(
         self,
         input_ids: jnp.ndarray,
@@ -458,8 +449,11 @@ class TTTTransformerLM(nn.Module):
                 enable_internal_updates=False,  # Disable internal TTT updates for baselines
             )
 
-            # Project adapted hidden states to vocabulary logits
-            logits = self.lm_head(adapted_hidden)
+            # Project adapted hidden states to vocabulary logits using pretrained embedding
+            # Use weight tying: logits = hidden @ embedding.T
+            # Get the token embedding from the base model (wte = word token embeddings)
+            embedding = self.base_model.params['transformer']['wte']['embedding']
+            logits = jnp.dot(adapted_hidden, embedding.T)  # [batch, seq_len, vocab_size]
 
             return {
                 "logits": logits,
