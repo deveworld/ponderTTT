@@ -9,9 +9,11 @@ from flax.training import train_state
 import optax
 
 from src.ponderttt.utils.checkpointing import (
-    save_checkpoint,
-    load_checkpoint,
+    finalize_checkpointing,
     get_latest_checkpoint_step,
+    load_checkpoint,
+    save_checkpoint,
+    wait_for_checkpoints,
 )
 
 def test_basic_save_load():
@@ -48,6 +50,7 @@ def test_basic_save_load():
             state={"params": params, "opt_state": opt_state},
             metadata=metadata,
         )
+        wait_for_checkpoints()  # Wait for async save to complete
         print("   ✓ Checkpoint saved")
 
         # Check latest step
@@ -102,6 +105,7 @@ def test_multiple_checkpoints():
                 state={"params": params, "opt_state": opt_state},
                 metadata={"step_num": step, "value": step * 10},
             )
+        wait_for_checkpoints()  # Wait for async saves to complete
         print("   ✓ All checkpoints saved")
 
         # Get latest
@@ -165,6 +169,7 @@ def test_resume_simulation():
                 "results": results,
             },
         )
+        wait_for_checkpoints()  # Wait for async save to complete
         print("   ✓ Checkpoint saved (interrupted)")
 
         # Simulate resume
