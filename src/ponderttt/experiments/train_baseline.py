@@ -24,6 +24,11 @@ from transformers import PreTrainedTokenizer
 from ..data import create_data_iterator, get_tokenizer
 from ..models import TTTConfig, load_ttt_model
 from ..utils import init_rng, next_rng
+from ..utils.checkpointing import (
+    get_latest_checkpoint_step,
+    load_checkpoint,
+    save_checkpoint,
+)
 from .config import get_1b_config, get_125m_config, get_350m_config
 
 
@@ -63,6 +68,17 @@ def parse_args():
         default=42,
         help="Random seed",
     )
+    parser.add_argument(
+        "--checkpoint_every",
+        type=int,
+        default=10,
+        help="Save checkpoint every N chunks",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from latest checkpoint if available",
+    )
 
     return parser.parse_args()
 
@@ -83,10 +99,35 @@ def action_to_cost(action: str) -> float:
     mapping = {
         "SKIP": 1.0,
         "UPDATE_1": 3.0,
-        "UPDATE_2": 5.0,
+        "UPDATE_2": 6.0,
         "UPDATE_4": 12.0,
     }
     return mapping[action]
+
+
+def get_checkpoint_dir(output_dir: str, model_scale: str, action: str) -> Path:
+    """Get checkpoint directory path."""
+    return Path(output_dir) / model_scale / action / "checkpoints"
+
+
+def try_load_checkpoint(checkpoint_dir: Path):
+    """Try to load latest checkpoint. Returns None if no checkpoint exists."""
+    try:
+        if not checkpoint_dir.exists():
+            return None
+
+        latest_step = get_latest_checkpoint_step(checkpoint_dir)
+        if latest_step is None:
+            return None
+
+        print(f"\nFound checkpoint at step {latest_step}")
+        checkpoint = load_checkpoint(checkpoint_dir, latest_step)
+        print(f"Successfully loaded checkpoint from step {latest_step}")
+        return checkpoint
+
+    except Exception as e:
+        print(f"Warning: Failed to load checkpoint: {e}")
+        return None
 
 
 def main():
@@ -123,8 +164,11 @@ def main():
     # Create data iterator from The Stack dataset
     print("Creating data iterator...")
     import math
+
     num_chunks_per_seq = config.model.max_seq_length // config.model.chunk_size
-    num_batches_needed = math.ceil(args.max_chunks / (num_chunks_per_seq * config.training.batch_size))
+    num_batches_needed = math.ceil(
+        args.max_chunks / (num_chunks_per_seq * config.training.batch_size)
+    )
     num_examples_needed = int(num_batches_needed * config.training.batch_size * 1.5)
 
     print(f"Downloading {num_examples_needed} examples for {args.max_chunks} chunks...")
@@ -158,10 +202,14 @@ def main():
 
     # Initialize model parameters
     rng_key = next_rng()
-    rng_key = jax.random.PRNGKey(config.seed) if not isinstance(rng_key, jax.Array) else rng_key
+    rng_key = (
+        jax.random.PRNGKey(config.seed)
+        if not isinstance(rng_key, jax.Array)
+        else rng_key
+    )
     dummy_input = jnp.ones((1, config.model.max_seq_length), dtype=jnp.int32)
     variables = model.init(rng_key, dummy_input, deterministic=True)
-    params = variables['params']
+    params = variables["params"]
 
     print("\nModel architecture:")
     print(f"  Slow weights: {config.model.model_name} (frozen)")
@@ -205,19 +253,58 @@ def main():
     # Save base TTT parameters (will be restored for each batch)
     base_params = state.params
 
+    # Checkpoint management
+    checkpoint_dir = get_checkpoint_dir(args.output_dir, args.model_scale, args.action)
+
+    # Try to resume from checkpoint
+    if args.resume:
+        checkpoint = try_load_checkpoint(checkpoint_dir)
+        if checkpoint is not None:
+            # Restore state
+            state = state.replace(
+                params=checkpoint["state"]["params"],
+                opt_state=checkpoint["state"]["opt_state"],
+            )
+            base_params = state.params
+
+            # Restore progress
+            chunk_count = checkpoint["metadata"]["chunk_count"]
+            total_cost = checkpoint["metadata"]["total_cost"]
+            total_loss = checkpoint["metadata"]["total_loss"]
+            results = checkpoint["metadata"]["results"]
+
+            print(f"Resumed from chunk {chunk_count}")
+            print(f"Resuming with {args.max_chunks - chunk_count} chunks remaining")
+
+            # Skip already-processed batches to maintain data consistency
+            num_chunks_per_batch = num_chunks_per_seq * config.training.batch_size
+            batches_to_skip = chunk_count // num_chunks_per_batch
+
+            if batches_to_skip > 0:
+                print(f"Skipping {batches_to_skip} already-processed batches...")
+                for _ in range(batches_to_skip):
+                    try:
+                        next(data_iter)
+                    except StopIteration:
+                        print("Warning: Reached end of data while skipping batches")
+                        break
+                print(f"✓ Skipped {batches_to_skip} batches\n")
+            else:
+                print()
+
     # Define loss function for TTT updates
     def compute_loss(params, batch):
         """Compute language modeling loss with TTT layer."""
         outputs, _ = model.apply(
-            {'params': params},
-            batch['input_ids'],
-            attention_mask=batch['attention_mask'],
+            {"params": params},
+            batch["input_ids"],
+            attention_mask=batch["attention_mask"],
             deterministic=True,
             use_ttt=(num_steps > 0),  # Skip TTT for SKIP action
         )
 
-        logits = outputs['logits']
-        labels = batch['input_ids'][:, 1:]
+        logits = outputs["logits"]
+        labels = batch["input_ids"][:, 1:]
         logits = logits[:, :-1]
 
         vocab_size = logits.shape[-1]
@@ -226,7 +313,7 @@ def main():
             labels.reshape(-1),
         )
 
-        mask = batch['attention_mask'][:, 1:]
+        mask = batch["attention_mask"][:, 1:]
         loss = loss * mask.reshape(-1)
         loss = jnp.sum(loss) / jnp.sum(mask)
 
@@ -251,7 +338,9 @@ def main():
         loss = compute_loss(params, batch)
         return loss
 
-    with tqdm(total=args.max_chunks, desc="Processing chunks") as pbar:
+    with tqdm(
+        total=args.max_chunks, initial=chunk_count, desc="Processing chunks"
+    ) as pbar:
         for _batch_idx, batch in enumerate(data_iter):
             if chunk_count >= args.max_chunks:
                 break
@@ -288,19 +377,45 @@ def main():
                 total_loss += float(sequence_loss)
                 chunk_count += 1
 
-                results["chunks"].append({
-                    "chunk_id": chunk_count,
-                    "chunk_position": i,
-                    "loss": float(sequence_loss),
-                    "cost": chunk_cost,
-                    "action": args.action,
-                })
+                results["chunks"].append(
+                    {
+                        "chunk_id": chunk_count,
+                        "chunk_position": i,
+                        "loss": float(sequence_loss),
+                        "cost": chunk_cost,
+                        "action": args.action,
+                    }
+                )
+
+                # Save checkpoint periodically
+                if chunk_count % args.checkpoint_every == 0:
+                    try:
+                        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                        save_checkpoint(
+                            checkpoint_dir=checkpoint_dir,
+                            step=chunk_count,
+                            state={
+                                "params": state.params,
+                                "opt_state": state.opt_state,
+                            },
+                            metadata={
+                                "chunk_count": chunk_count,
+                                "total_cost": total_cost,
+                                "total_loss": total_loss,
+                                "results": results,
+                            },
+                        )
+                        pbar.write(f"Checkpoint saved at chunk {chunk_count}")
+                    except Exception as e:
+                        pbar.write(f"Warning: Checkpoint save failed: {e}")
 
                 pbar.update(1)
-                pbar.set_postfix({
-                    "loss": f"{sequence_loss:.4f}",
-                    "avg_cost": f"{total_cost/chunk_count:.2f}×",
-                })
+                pbar.set_postfix(
+                    {
+                        "loss": f"{sequence_loss:.4f}",
+                        "avg_cost": f"{total_cost / chunk_count:.2f}×",
+                    }
+                )
 
     # Compute final statistics
     avg_loss = total_loss / chunk_count

@@ -96,7 +96,7 @@ This runs:
 **Available Actions**:
 - `--action SKIP`: No TTT updates (1× cost)
 - `--action UPDATE_1`: 1 TTT step (3× cost)
-- `--action UPDATE_2`: 2 TTT steps (5× cost)
+- `--action UPDATE_2`: 2 TTT steps (6× cost)
 - `--action UPDATE_4`: 4 TTT steps (12× cost)
 
 **Note**: GPU required for production training. CPU is too slow for real experiments.
@@ -229,7 +229,7 @@ ponderttt/
 |----------|-----------|------|---------------------|
 | SKIP     |     0     |  1×  | Easy chunks         |
 | UPDATE_1 |     1     |  3×  | Moderate difficulty |
-| UPDATE_2 |     2     |  5×  | Difficult chunks    |
+| UPDATE_2 |     2     |  6×  | Difficult chunks    |
 | UPDATE_4 |     4     |  12× | Very difficult      |
 
 ### Feature Space (32D)
@@ -296,7 +296,7 @@ See [PLAN.md](PLAN.md) for detailed research plan and [PROJECT_STATUS.md](PROJEC
 - TPU-ready training scripts (not yet tested on hardware)
 - CPU validation complete
 - Bug fixes (chunk size, dropout, dynamic slicing, etc.)
-- Cost calculations validated (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
+- Cost calculations validated (SKIP=1×, UPDATE_1=3×, UPDATE_2=6×, UPDATE_4=12×)
 
 ### Phase 2: Real Data & GPU (Current - Partially Blocked)
 - **UNBLOCKED**: The Stack v2 dataset access approved

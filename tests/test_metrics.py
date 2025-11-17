@@ -72,8 +72,8 @@ class TestFLOPs:
         """Test FLOPs with mixed actions."""
         actions = ['SKIP', 'UPDATE_1', 'UPDATE_2']
         flops = compute_flops(actions, base_flops=1.0)
-        # SKIP=1.0, UPDATE_1=3.0, UPDATE_2=5.0, total=9.0
-        assert flops == 9.0
+        # SKIP=1.0, UPDATE_1=3.0, UPDATE_2=6.0, total=10.0
+        assert flops == 10.0
 
     def test_update_4_action(self):
         """Test FLOPs with UPDATE_4 action."""

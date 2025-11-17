@@ -2,7 +2,6 @@
 Feature extraction for policy network.
 """
 
-
 import jax
 import jax.numpy as jnp
 
@@ -94,7 +93,9 @@ class FeatureExtractor:
         # Concatenate all features
         all_features = jnp.concatenate(features, axis=-1)
 
-        assert all_features.shape[-1] == 32, f"Expected 32 features, got {all_features.shape[-1]}"
+        assert all_features.shape[-1] == 32, (
+            f"Expected 32 features, got {all_features.shape[-1]}"
+        )
 
         return all_features
 
@@ -113,12 +114,15 @@ class FeatureExtractor:
         mean_perplexity = jnp.exp(-jnp.mean(jnp.log(max_probs + 1e-10), axis=-1))
         max_perplexity = jnp.exp(-jnp.min(jnp.log(max_probs + 1e-10), axis=-1))
 
-        return jnp.stack([
-            mean_entropy,
-            max_entropy,
-            jnp.log(mean_perplexity + 1e-10),
-            jnp.log(max_perplexity + 1e-10),
-        ], axis=-1)
+        return jnp.stack(
+            [
+                mean_entropy,
+                max_entropy,
+                jnp.log(mean_perplexity + 1e-10),
+                jnp.log(max_perplexity + 1e-10),
+            ],
+            axis=-1,
+        )
 
     def _extract_activations(self, hidden_states: list[jnp.ndarray]) -> jnp.ndarray:
         """Extract activation statistics (6D)."""
@@ -128,19 +132,24 @@ class FeatureExtractor:
         # Statistics
         mean_act = jnp.mean(last_hidden, axis=(1, 2))
         std_act = jnp.std(last_hidden, axis=(1, 2))
-        sparsity = jnp.mean((jnp.abs(last_hidden) < 0.01).astype(jnp.float32), axis=(1, 2))
+        sparsity = jnp.mean(
+            (jnp.abs(last_hidden) < 0.01).astype(jnp.float32), axis=(1, 2)
+        )
         max_act = jnp.max(last_hidden, axis=(1, 2))
         min_act = jnp.min(last_hidden, axis=(1, 2))
         range_act = max_act - min_act
 
-        return jnp.stack([
-            mean_act,
-            std_act,
-            sparsity,
-            max_act,
-            min_act,
-            range_act,
-        ], axis=-1)
+        return jnp.stack(
+            [
+                mean_act,
+                std_act,
+                sparsity,
+                max_act,
+                min_act,
+                range_act,
+            ],
+            axis=-1,
+        )
 
     def _extract_attention(self, attentions: list[jnp.ndarray]) -> jnp.ndarray:
         """Extract attention pattern features (4D)."""
@@ -156,17 +165,22 @@ class FeatureExtractor:
         max_entropy = jnp.max(entropy, axis=-1)
 
         # Range
-        attn_range = jnp.mean(jnp.max(last_attn, axis=-1) - jnp.min(last_attn, axis=-1), axis=(1, 2))
+        attn_range = jnp.mean(
+            jnp.max(last_attn, axis=-1) - jnp.min(last_attn, axis=-1), axis=(1, 2)
+        )
 
         # Sparsity
         sparsity = jnp.mean((last_attn < 0.01).astype(jnp.float32), axis=(1, 2, 3))
 
-        return jnp.stack([
-            mean_entropy,
-            max_entropy,
-            attn_range,
-            sparsity,
-        ], axis=-1)
+        return jnp.stack(
+            [
+                mean_entropy,
+                max_entropy,
+                attn_range,
+                sparsity,
+            ],
+            axis=-1,
+        )
 
     def _extract_code_metrics(
         self,
@@ -180,13 +194,19 @@ class FeatureExtractor:
         # Diversity metric (replaces unique token ratio for JIT compatibility)
         # Use standard deviation as a proxy for token diversity
         # Higher std = more diverse tokens
-        token_diversity = jnp.std(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+        token_diversity = (
+            jnp.std(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+        )
 
         # Repetition (adjacent duplicates)
-        repeated = jnp.mean((input_ids[:, 1:] == input_ids[:, :-1]).astype(jnp.float32), axis=-1)
+        repeated = jnp.mean(
+            (input_ids[:, 1:] == input_ids[:, :-1]).astype(jnp.float32), axis=-1
+        )
 
         # Token ID statistics
-        avg_token_id = jnp.mean(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+        avg_token_id = (
+            jnp.mean(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+        )
         std_token_id = jnp.std(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
 
         # Prediction confidence
@@ -201,7 +221,9 @@ class FeatureExtractor:
         top_k_diversity = jnp.mean(top_k_entropy, axis=-1)
 
         # Token variation
-        token_diffs = jnp.abs(input_ids[:, 1:].astype(jnp.float32) - input_ids[:, :-1].astype(jnp.float32))
+        token_diffs = jnp.abs(
+            input_ids[:, 1:].astype(jnp.float32) - input_ids[:, :-1].astype(jnp.float32)
+        )
         token_variation = jnp.std(token_diffs, axis=-1) / self.vocab_size
 
         # Prediction uncertainty (std of top-k probabilities)
@@ -209,16 +231,19 @@ class FeatureExtractor:
         pred_uncertainty = jnp.std(top_k_probs, axis=-1)
         pred_uncertainty = jnp.mean(pred_uncertainty, axis=-1)
 
-        return jnp.stack([
-            token_diversity,
-            repeated,
-            avg_token_id,
-            std_token_id,
-            pred_uncertainty,  # Fixed: was duplicate token_diversity
-            pred_confidence,
-            top_k_diversity,
-            token_variation,
-        ], axis=-1)
+        return jnp.stack(
+            [
+                token_diversity,
+                repeated,
+                avg_token_id,
+                std_token_id,
+                pred_uncertainty,  # Fixed: was duplicate token_diversity
+                pred_confidence,
+                top_k_diversity,
+                token_variation,
+            ],
+            axis=-1,
+        )
 
     def _extract_history(
         self,
@@ -249,28 +274,31 @@ class FeatureExtractor:
         position = jnp.arange(batch_size).astype(jnp.float32) / batch_size
 
         # Diversity (using std as proxy for JIT compatibility)
-        token_diversity = jnp.std(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+        token_diversity = (
+            jnp.std(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+        )
 
         # Compression ratio (using diversity as proxy)
         compression = token_diversity
 
-        return jnp.stack([
-            seq_length,
-            jnp.log(avg_freq + 1.0),
-            jnp.log(max_freq + 1.0),
-            position,
-            token_diversity,
-            compression,
-        ], axis=-1)
+        return jnp.stack(
+            [
+                seq_length,
+                jnp.log(avg_freq + 1.0),
+                jnp.log(max_freq + 1.0),
+                position,
+                token_diversity,
+                compression,
+            ],
+            axis=-1,
+        )
 
     def update_history(self, difficulty: float, cost: float):
         """Update EMA history."""
         self.difficulty_ema = (
             self.ema_alpha * difficulty + (1 - self.ema_alpha) * self.difficulty_ema
         )
-        self.cost_ema = (
-            self.ema_alpha * cost + (1 - self.ema_alpha) * self.cost_ema
-        )
+        self.cost_ema = self.ema_alpha * cost + (1 - self.ema_alpha) * self.cost_ema
 
     def reset_history(self):
         """Reset history."""

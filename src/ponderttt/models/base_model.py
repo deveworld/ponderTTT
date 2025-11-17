@@ -16,6 +16,7 @@ from transformers import AutoTokenizer, FlaxAutoModelForCausalLM
 @dataclass
 class ModelConfig:
     """Configuration for base model."""
+
     model_name: str = "gpt2"
     dtype: jnp.dtype = jnp.float32
     gradient_checkpointing: bool = False
@@ -67,17 +68,17 @@ def apply_sharding_to_params(params, mesh: jax.sharding.Mesh):
             return NamedSharding(mesh, P())
 
         # Large embeddings: shard along vocabulary dimension (axis 0)
-        if 'embed' in name.lower() and param.ndim >= 2:
+        if "embed" in name.lower() and param.ndim >= 2:
             # vocab_size × embed_dim: shard vocab dimension
-            return NamedSharding(mesh, P('batch', None))
+            return NamedSharding(mesh, P("batch", None))
 
         # Large weight matrices: shard along output dimension (axis 1)
-        elif ('kernel' in name.lower() or 'weight' in name.lower()) and param.ndim >= 2:
+        elif ("kernel" in name.lower() or "weight" in name.lower()) and param.ndim >= 2:
             # input_dim × output_dim: shard output dimension
-            return NamedSharding(mesh, P(None, 'batch'))
+            return NamedSharding(mesh, P(None, "batch"))
 
         # Biases, LayerNorm scales, and other 1D parameters: replicate
-        elif 'bias' in name.lower() or 'scale' in name.lower() or param.ndim < 2:
+        elif "bias" in name.lower() or "scale" in name.lower() or param.ndim < 2:
             return NamedSharding(mesh, P())
 
         # Default: replicate for safety
@@ -89,7 +90,7 @@ def apply_sharding_to_params(params, mesh: jax.sharding.Mesh):
         if isinstance(subtree, dict):
             return {k: shard_tree(path + [k], v) for k, v in subtree.items()}
         elif isinstance(subtree, jnp.ndarray):
-            param_name = '.'.join(path)
+            param_name = ".".join(path)
             sharding = get_sharding_for_param(param_name, subtree)
 
             # Use device_put for placement
@@ -114,6 +115,7 @@ class TransformerLM(nn.Module):
     Attributes:
         config: Model configuration
     """
+
     config: ModelConfig
 
     def setup(self):
@@ -157,14 +159,14 @@ class TransformerLM(nn.Module):
         )
 
         result = {
-            'logits': outputs.logits,
+            "logits": outputs.logits,
         }
 
         if output_hidden_states:
-            result['hidden_states'] = outputs.hidden_states
+            result["hidden_states"] = outputs.hidden_states
 
         if output_attentions:
-            result['attentions'] = outputs.attentions
+            result["attentions"] = outputs.attentions
 
         return result
 
@@ -198,7 +200,7 @@ class TransformerLM(nn.Module):
             deterministic=True,
         )
 
-        logits = outputs['logits']
+        logits = outputs["logits"]
 
         # Compute cross-entropy loss
         vocab_size = logits.shape[-1]
@@ -214,7 +216,7 @@ class TransformerLM(nn.Module):
 
         # Mask padding tokens
         if attention_mask is not None:
-            mask_flat = attention_mask[:, 1:].reshape(-1)
+            mask_flat = attention_mask.reshape(-1)
             loss = loss * mask_flat
             loss = jnp.sum(loss) / jnp.sum(mask_flat)
         else:
@@ -224,8 +226,8 @@ class TransformerLM(nn.Module):
         perplexity = jnp.exp(loss)
 
         metrics = {
-            'loss': loss,
-            'perplexity': perplexity,
+            "loss": loss,
+            "perplexity": perplexity,
         }
 
         return loss, metrics
@@ -270,7 +272,7 @@ def load_model(
 
 def initialize_sharded_model(
     model: TransformerLM,
-    rng: jax.Array, # jax.random.PRNGKey
+    rng: jax.Array,  # jax.random.PRNGKey
     input_shape: tuple[int, int],
 ) -> Any:
     """
@@ -289,7 +291,7 @@ def initialize_sharded_model(
 
     # Initialize parameters
     variables = model.init(rng, dummy_input)
-    params = variables['params']
+    params = variables["params"]
 
     # Apply sharding if configured
     if model.config.shard_params and model.config.mesh is not None:
@@ -340,9 +342,11 @@ def inspect_sharding(params, max_params: int = 20) -> None:
                 inspect_tree(path + [k], v, count)
         elif isinstance(subtree, jnp.ndarray):
             if count[0] < max_params:
-                param_name = '.'.join(path)
+                param_name = ".".join(path)
                 shape = subtree.shape
-                sharding = subtree.sharding if hasattr(subtree, 'sharding') else "unknown"
+                sharding = (
+                    subtree.sharding if hasattr(subtree, "sharding") else "unknown"
+                )
 
                 # Extract PartitionSpec if available
                 if isinstance(sharding, NamedSharding):
@@ -355,7 +359,9 @@ def inspect_sharding(params, max_params: int = 20) -> None:
                 print(f"  {param_name:60s} {str(shape):20s} -> {spec_str}")
                 count[0] += 1
             elif count[0] == max_params:
-                print(f"  ... ({sum(1 for _ in jax.tree_util.tree_leaves(params)) - max_params} more parameters)")
+                print(
+                    f"  ... ({sum(1 for _ in jax.tree_util.tree_leaves(params)) - max_params} more parameters)"
+                )
                 count[0] += 1
 
     inspect_tree([], params)
@@ -380,6 +386,7 @@ class TTTTransformerLM(nn.Module):
         base_config: Configuration for base model
         ttt_config: Configuration for TTT layer
     """
+
     base_config: ModelConfig
     ttt_config: Any  # TTTConfig from ttt_layer
 
@@ -402,7 +409,7 @@ class TTTTransformerLM(nn.Module):
             features=vocab_size,
             use_bias=False,
             dtype=self.base_config.dtype,
-            name='lm_head_projection'
+            name="lm_head_projection",
         )
 
     def __call__(
@@ -455,14 +462,14 @@ class TTTTransformerLM(nn.Module):
             logits = self.lm_head(adapted_hidden)
 
             return {
-                'logits': logits,
-                'ttt_stats': ttt_stats,
+                "logits": logits,
+                "ttt_stats": ttt_stats,
             }
         else:
             # SKIP: Use base model logits directly (no TTT adaptation)
             return {
-                'logits': base_outputs.logits,
-                'ttt_stats': None,
+                "logits": base_outputs.logits,
+                "ttt_stats": None,
             }
 
 

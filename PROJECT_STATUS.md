@@ -64,7 +64,7 @@ PonderTTT is a complete implementation of an adaptive test-time training framewo
 |--------|-------|------|----------|
 | SKIP | 0 | 1× | Easy chunks (boilerplate) |
 | UPDATE_1 | 1 | 3× | Moderately difficult |
-| UPDATE_2 | 2 | 5× | Difficult chunks |
+| UPDATE_2 | 2 | 6× | Difficult chunks |
 | UPDATE_4 | 4 | 12× | Very difficult chunks |
 
 ## Feature Space (32D)
@@ -91,7 +91,7 @@ uv run python -m ponderttt.experiments.train_baseline --action UPDATE_4
 
 **Validated Components**:
 - Code architecture complete
-- Cost tracking implemented (SKIP=1×, UPDATE_1=3×, UPDATE_2=5×, UPDATE_4=12×)
+- Cost tracking implemented (SKIP=1×, UPDATE_1=3×, UPDATE_2=6×, UPDATE_4=12×)
 - All components integrated end-to-end
 - Data pipeline connected to The Stack v2
 - Ready for GPU training

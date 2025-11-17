@@ -50,12 +50,12 @@ def save_checkpoint(
 
     # Prepare checkpoint
     checkpoint = {
-        'state': state,
-        'step': step,
+        "state": state,
+        "step": step,
     }
 
     if metadata is not None:
-        checkpoint['metadata'] = metadata
+        checkpoint["metadata"] = metadata
 
     # Save
     checkpointer.save(

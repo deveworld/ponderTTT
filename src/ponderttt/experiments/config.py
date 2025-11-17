@@ -8,6 +8,7 @@ from dataclasses import dataclass
 @dataclass
 class ExperimentModelConfig:
     """Configuration for model hyperparameters in experiments."""
+
     model_name: str = "gpt2"
     lora_rank: int = 64
     hidden_dim: int = 768
@@ -22,6 +23,7 @@ class ExperimentModelConfig:
 @dataclass
 class TrainingConfig:
     """Configuration for training."""
+
     batch_size: int = 16
     learning_rate: float = 3e-4
     num_train_examples: int = 5000
@@ -54,6 +56,7 @@ class TrainingConfig:
 @dataclass
 class ExperimentConfig:
     """Complete experiment configuration."""
+
     model: ExperimentModelConfig
     training: TrainingConfig
 
@@ -65,7 +68,7 @@ class ExperimentConfig:
     # Device configuration
     use_tpu: bool = False
     mesh_shape: tuple = (8, 1)
-    mesh_axes: tuple = ('batch', 'model')
+    mesh_axes: tuple = ("batch", "model")
 
 
 def get_125m_config() -> ExperimentConfig:

@@ -32,6 +32,7 @@ class PIDController:
         integral: Integral state
         previous_error: Previous error for derivative
     """
+
     kp: float = 0.1
     ki: float = 0.01
     kd: float = 0.01
@@ -135,9 +136,9 @@ class PIDLagrangianPPO:
         # Evaluate actions with current policy
         policy_outputs = policy_fn(params, features, actions)
 
-        log_probs = policy_outputs['log_prob']
-        values = policy_outputs['value']
-        entropy = policy_outputs['entropy']
+        log_probs = policy_outputs["log_prob"]
+        values = policy_outputs["value"]
+        entropy = policy_outputs["entropy"]
 
         # Lagrangian adjustment (subtract lambda * cost from advantages)
         lambda_value = self.pid.lambda_value
@@ -146,7 +147,10 @@ class PIDLagrangianPPO:
         # PPO clipped surrogate objective (with Lagrangian constraint)
         ratio = jnp.exp(log_probs - old_log_probs)
         surr1 = ratio * adjusted_advantages
-        surr2 = jnp.clip(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adjusted_advantages
+        surr2 = (
+            jnp.clip(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
+            * adjusted_advantages
+        )
         policy_loss = -jnp.mean(jnp.minimum(surr1, surr2))
 
         # Value loss
@@ -166,11 +170,11 @@ class PIDLagrangianPPO:
         approx_kl = jnp.mean((ratio - 1) - jnp.log(ratio))
 
         metrics: dict[str, jnp.ndarray | float] = {
-            'policy_loss': policy_loss,
-            'value_loss': value_loss,
-            'entropy': jnp.mean(entropy),
-            'approx_kl': approx_kl,
-            'lambda': lambda_value,
+            "policy_loss": policy_loss,
+            "value_loss": value_loss,
+            "entropy": jnp.mean(entropy),
+            "approx_kl": approx_kl,
+            "lambda": lambda_value,
         }
 
         return total_loss, metrics
@@ -228,12 +232,12 @@ def ppo_update_step(
         return ppo.compute_ppo_loss(
             params=params,
             policy_fn=state.apply_fn,
-            features=batch['features'],
-            actions=batch['actions'],
-            old_log_probs=batch['old_log_probs'],
-            advantages=batch['advantages'],
-            returns=batch['returns'],
-            costs=batch['costs'],
+            features=batch["features"],
+            actions=batch["actions"],
+            old_log_probs=batch["old_log_probs"],
+            advantages=batch["advantages"],
+            returns=batch["returns"],
+            costs=batch["costs"],
         )
 
     # Compute gradients
@@ -242,6 +246,6 @@ def ppo_update_step(
     # Apply gradients
     state = state.apply_gradients(grads=grads)
 
-    metrics['loss'] = loss
+    metrics["loss"] = loss
 
     return state, metrics

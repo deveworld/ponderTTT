@@ -16,6 +16,7 @@ from .fast_weights import FastWeightModule, compute_fast_weight_update
 @dataclass
 class TTTConfig:
     """Configuration for TTT layer."""
+
     hidden_dim: int = 768
     num_heads: int = 12
     head_dim: int = 64
@@ -35,6 +36,7 @@ class TTTLayer(nn.Module):
     Attributes:
         config: TTT configuration
     """
+
     config: TTTConfig
 
     @nn.compact
@@ -64,10 +66,7 @@ class TTTLayer(nn.Module):
 
         # Query, Key, Value projections
         qkv = nn.Dense(
-            features=3 * hidden_dim,
-            use_bias=False,
-            dtype=cfg.dtype,
-            name='qkv_proj'
+            features=3 * hidden_dim, use_bias=False, dtype=cfg.dtype, name="qkv_proj"
         )(x)
         q, k, v = jnp.split(qkv, 3, axis=-1)
 
@@ -79,19 +78,19 @@ class TTTLayer(nn.Module):
         # Initialize fast weights
         k_flat_dim = cfg.num_heads * cfg.head_dim
         w0 = self.param(
-            'fast_w0',
+            "fast_w0",
             nn.initializers.normal(stddev=0.02),
             (k_flat_dim, cfg.ttt_hidden_dim),
             cfg.dtype,
         )
         w1 = self.param(
-            'fast_w1',
+            "fast_w1",
             nn.initializers.normal(stddev=0.02),
             (cfg.ttt_hidden_dim, hidden_dim),
             cfg.dtype,
         )
         w2 = self.param(
-            'fast_w2',
+            "fast_w2",
             nn.initializers.normal(stddev=0.02),
             (k_flat_dim, cfg.ttt_hidden_dim),
             cfg.dtype,
@@ -113,12 +112,14 @@ class TTTLayer(nn.Module):
             # Scale down before final projection
             activated = activated / jnp.sqrt(cfg.ttt_hidden_dim)
             v_transformed = jnp.dot(activated, w1)
-            v_transformed = v_transformed.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
+            v_transformed = v_transformed.reshape(
+                batch_size, seq_len, cfg.num_heads, cfg.head_dim
+            )
 
             # Apply query to get final output
-            output = jnp.einsum('bshd,bthd->bst', q, v_transformed)
+            output = jnp.einsum("bshd,bshd->bsh", q, v_transformed)
 
-            ttt_stats = {'ttt_loss': 0.0, 'num_chunks': 0}
+            ttt_stats = {"ttt_loss": 0.0, "num_chunks": 0}
 
         else:
             # PONDERTTT MODE: Self-supervised internal TTT updates
@@ -136,22 +137,24 @@ class TTTLayer(nn.Module):
                 k_chunk = jax.lax.dynamic_slice(
                     k,
                     (0, start_idx, 0, 0),
-                    (batch_size, cfg.chunk_size, cfg.num_heads, cfg.head_dim)
+                    (batch_size, cfg.chunk_size, cfg.num_heads, cfg.head_dim),
                 )
                 v_chunk = jax.lax.dynamic_slice(
                     v,
                     (0, start_idx, 0, 0),
-                    (batch_size, cfg.chunk_size, cfg.num_heads, cfg.head_dim)
+                    (batch_size, cfg.chunk_size, cfg.num_heads, cfg.head_dim),
                 )
 
                 # Perform TTT update with gradient descent
-                chunk_output, chunk_loss, updated_w0, updated_w1, updated_w2 = self._ttt_update_chunk(
-                    k_chunk,
-                    v_chunk,
-                    current_w0,
-                    current_w1,
-                    current_w2,
-                    learning_rate,
+                chunk_output, chunk_loss, updated_w0, updated_w1, updated_w2 = (
+                    self._ttt_update_chunk(
+                        k_chunk,
+                        v_chunk,
+                        current_w0,
+                        current_w1,
+                        current_w2,
+                        learning_rate,
+                    )
                 )
 
                 new_carry = (updated_w0, updated_w1, updated_w2)
@@ -168,21 +171,20 @@ class TTTLayer(nn.Module):
             # Concatenate chunks
             output = jnp.concatenate(chunk_outputs, axis=1)
             ttt_stats = {
-                'ttt_loss': float(jnp.mean(chunk_losses)),
-                'num_chunks': int(num_chunks),
+                "ttt_loss": float(jnp.mean(chunk_losses)),
+                "num_chunks": int(num_chunks),
             }
 
             # Apply query to get final output
-            output = jnp.einsum('bshd,bthd->bst', q, output.reshape(
-                batch_size, seq_len, cfg.num_heads, cfg.head_dim
-            ))
+            output = jnp.einsum(
+                "bshd,bshd->bsh",
+                q,
+                output.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim),
+            )
 
         # Output projection
         output = nn.Dense(
-            features=hidden_dim,
-            use_bias=False,
-            dtype=cfg.dtype,
-            name='output_proj'
+            features=hidden_dim, use_bias=False, dtype=cfg.dtype, name="output_proj"
         )(output)
 
         # Dropout
@@ -215,10 +217,7 @@ class TTTLayer(nn.Module):
 
         # QKV projections
         qkv = nn.Dense(
-            features=3 * hidden_dim,
-            use_bias=False,
-            dtype=cfg.dtype,
-            name='qkv_proj'
+            features=3 * hidden_dim, use_bias=False, dtype=cfg.dtype, name="qkv_proj"
         )(x)
         q, k, v = jnp.split(qkv, 3, axis=-1)
 
@@ -230,19 +229,19 @@ class TTTLayer(nn.Module):
         # Get fast weight parameters (but don't update them internally)
         k_flat_dim = cfg.num_heads * cfg.head_dim
         w0 = self.param(
-            'fast_w0',
+            "fast_w0",
             nn.initializers.normal(stddev=0.02),
             (k_flat_dim, cfg.ttt_hidden_dim),
             cfg.dtype,
         )
         w1 = self.param(
-            'fast_w1',
+            "fast_w1",
             nn.initializers.normal(stddev=0.02),
             (cfg.ttt_hidden_dim, hidden_dim),
             cfg.dtype,
         )
         w2 = self.param(
-            'fast_w2',
+            "fast_w2",
             nn.initializers.normal(stddev=0.02),
             (k_flat_dim, cfg.ttt_hidden_dim),
             cfg.dtype,
@@ -250,21 +249,27 @@ class TTTLayer(nn.Module):
 
         # Simple feedforward transformation (no internal updates)
         k_flat = k.reshape(batch_size, seq_len, k_flat_dim)
-        gate = nn.silu(jnp.dot(k_flat, w0))
-        hidden = jnp.dot(k_flat, w2)
+
+        # Scale down inputs to prevent activation explosion
+        k_flat_normalized = k_flat / jnp.sqrt(k_flat_dim)
+
+        gate = nn.silu(jnp.dot(k_flat_normalized, w0))
+        hidden = jnp.dot(k_flat_normalized, w2)
         activated = gate * hidden
+
+        # Scale down before final projection
+        activated = activated / jnp.sqrt(cfg.ttt_hidden_dim)
         v_transformed = jnp.dot(activated, w1)
-        v_transformed = v_transformed.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
+        v_transformed = v_transformed.reshape(
+            batch_size, seq_len, cfg.num_heads, cfg.head_dim
+        )
 
         # Apply query to get final output
-        output = jnp.einsum('bshd,bthd->bst', q, v_transformed)
+        output = jnp.einsum("bshd,bshd->bsh", q, v_transformed)
 
         # Output projection
         output = nn.Dense(
-            features=hidden_dim,
-            use_bias=False,
-            dtype=cfg.dtype,
-            name='output_proj'
+            features=hidden_dim, use_bias=False, dtype=cfg.dtype, name="output_proj"
         )(output)
 
         # Dropout
@@ -322,17 +327,9 @@ class TTTLayer(nn.Module):
             mse_loss = jnp.mean((v_pred - v_flat) ** 2)
             return mse_loss
 
-        # Compute gradients using jax.grad
-        grad_w0_fn = jax.grad(loss_fn, argnums=0)
-        grad_w1_fn = jax.grad(loss_fn, argnums=1)
-        grad_w2_fn = jax.grad(loss_fn, argnums=2)
-
-        grad_w0 = grad_w0_fn(w0, w1, w2)
-        grad_w1 = grad_w1_fn(w0, w1, w2)
-        grad_w2 = grad_w2_fn(w0, w1, w2)
-
-        # Compute loss for logging
-        loss = loss_fn(w0, w1, w2)
+        # Compute gradients efficiently using single backward pass
+        loss, grads = jax.value_and_grad(loss_fn, argnums=(0, 1, 2))(w0, w1, w2)
+        grad_w0, grad_w1, grad_w2 = grads
 
         # Update weights using gradient descent
         updated_w0 = compute_fast_weight_update(grad_w0, w0, learning_rate)
@@ -358,6 +355,7 @@ class ChunkedTTTLayer(nn.Module):
         config: TTT configuration
         learning_rate: Fast weight learning rate
     """
+
     config: TTTConfig
     learning_rate: float
 
@@ -383,19 +381,19 @@ class ChunkedTTTLayer(nn.Module):
 
         # Initialize fast weights
         w0 = self.param(
-            'fast_w0',
+            "fast_w0",
             nn.initializers.normal(stddev=0.02),
             (hidden_dim, cfg.ttt_hidden_dim),
             cfg.dtype,
         )
         w1 = self.param(
-            'fast_w1',
+            "fast_w1",
             nn.initializers.normal(stddev=0.02),
             (cfg.ttt_hidden_dim, hidden_dim),
             cfg.dtype,
         )
         w2 = self.param(
-            'fast_w2',
+            "fast_w2",
             nn.initializers.normal(stddev=0.02),
             (hidden_dim, cfg.ttt_hidden_dim),
             cfg.dtype,
@@ -419,9 +417,7 @@ class ChunkedTTTLayer(nn.Module):
 
             # Extract chunk using dynamic_slice (JIT-compatible)
             x_chunk = jax.lax.dynamic_slice(
-                x,
-                (0, start_idx, 0),
-                (batch_size, cfg.chunk_size, hidden_dim)
+                x, (0, start_idx, 0), (batch_size, cfg.chunk_size, hidden_dim)
             )
 
             # Forward pass with fast weights
@@ -433,15 +429,20 @@ class ChunkedTTTLayer(nn.Module):
             )
 
             # Self-supervised loss (reconstruct input)
-            chunk_loss = jnp.mean((chunk_output - x_chunk) ** 2)
+            def loss_fn(w0, w1, w2):
+                output = fast_weight_fn(x_chunk, w0=w0, w1=w1, w2=w2)
+                return jnp.mean((output - x_chunk) ** 2)
+
+            chunk_loss, grads = jax.value_and_grad(loss_fn, argnums=(0, 1, 2))(
+                current_w0, current_w1, current_w2
+            )
+            grad_w0, grad_w1, grad_w2 = grads
             accumulated_loss = accumulated_loss + chunk_loss
 
-            # Update fast weights (simplified gradient descent)
-            # In practice, use jax.grad for proper gradients
-            grad_scale = self.learning_rate * chunk_loss
-            updated_w0 = current_w0 * (1.0 - grad_scale)
-            updated_w1 = current_w1 * (1.0 - grad_scale)
-            updated_w2 = current_w2 * (1.0 - grad_scale)
+            # Update fast weights using gradient descent
+            updated_w0 = current_w0 - self.learning_rate * grad_w0
+            updated_w1 = current_w1 - self.learning_rate * grad_w1
+            updated_w2 = current_w2 - self.learning_rate * grad_w2
 
             new_carry = (updated_w0, updated_w1, updated_w2, accumulated_loss)
             return new_carry, chunk_output
@@ -458,8 +459,8 @@ class ChunkedTTTLayer(nn.Module):
 
         output = jnp.concatenate(chunk_outputs, axis=1)
         stats = {
-            'ttt_loss': total_loss / num_chunks,
-            'num_chunks': num_chunks,
+            "ttt_loss": total_loss / num_chunks,
+            "num_chunks": num_chunks,
         }
 
         return output, stats

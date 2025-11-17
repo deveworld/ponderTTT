@@ -20,12 +20,13 @@ class TrainState(train_state.TrainState):
         batch_stats: Batch statistics for normalization (if using BatchNorm)
         dropout_rng: RNG key for dropout
     """
+
     batch_stats: FrozenDict[str, Any] | None = None
     dropout_rng: jax.Array | None = None
 
 
 def create_train_state(
-    rng: jax.Array, # jax.random.PRNGKey
+    rng: jax.Array,  # jax.random.PRNGKey
     model: Any,
     learning_rate: float,
     input_shape: tuple,
@@ -51,8 +52,8 @@ def create_train_state(
         jnp.ones(input_shape, dtype=jnp.float32),
     )
 
-    params = variables['params']
-    batch_stats = variables.get('batch_stats', None)
+    params = variables["params"]
+    batch_stats = variables.get("batch_stats", None)
 
     # Create optimizer
     tx = optax.adam(learning_rate)
@@ -75,6 +76,7 @@ class TTTTrainer:
         model: Flax model
         learning_rate: Learning rate for TTT updates
     """
+
     model: Any
     learning_rate: float = 1e-4
 
@@ -99,15 +101,15 @@ class TTTTrainer:
         def loss_fn(params):
             # Forward pass
             outputs = state.apply_fn(
-                {'params': params},
-                batch['input_ids'],
-                attention_mask=batch['attention_mask'],
+                {"params": params},
+                batch["input_ids"],
+                attention_mask=batch["attention_mask"],
                 deterministic=False,
             )
 
             # Compute loss (language modeling)
-            logits = outputs['logits']
-            labels = batch['input_ids'][:, 1:]
+            logits = outputs["logits"]
+            labels = batch["input_ids"][:, 1:]
             logits = logits[:, :-1]
 
             # Cross-entropy loss
@@ -118,14 +120,14 @@ class TTTTrainer:
             )
 
             # Mask padding
-            if 'attention_mask' in batch:
-                mask = batch['attention_mask'][:, 1:]
+            if "attention_mask" in batch:
+                mask = batch["attention_mask"][:, 1:]
                 loss = loss * mask.reshape(-1)
                 loss = jnp.sum(loss) / jnp.sum(mask)
             else:
                 loss = jnp.mean(loss)
 
-            return loss, {'loss': loss}
+            return loss, {"loss": loss}
 
         # Compute gradients
         (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
@@ -170,14 +172,14 @@ class TTTTrainer:
             metrics: Evaluation metrics
         """
         outputs = state.apply_fn(
-            {'params': state.params},
-            batch['input_ids'],
-            attention_mask=batch['attention_mask'],
+            {"params": state.params},
+            batch["input_ids"],
+            attention_mask=batch["attention_mask"],
             deterministic=True,
         )
 
-        logits = outputs['logits']
-        labels = batch['input_ids'][:, 1:]
+        logits = outputs["logits"]
+        labels = batch["input_ids"][:, 1:]
         logits = logits[:, :-1]
 
         vocab_size = logits.shape[-1]
@@ -186,8 +188,8 @@ class TTTTrainer:
             labels.reshape(-1),
         )
 
-        if 'attention_mask' in batch:
-            mask = batch['attention_mask'][:, 1:]
+        if "attention_mask" in batch:
+            mask = batch["attention_mask"][:, 1:]
             loss = loss * mask.reshape(-1)
             loss = jnp.sum(loss) / jnp.sum(mask)
         else:
@@ -196,8 +198,8 @@ class TTTTrainer:
         perplexity = jnp.exp(loss)
 
         return {
-            'loss': loss,
-            'perplexity': perplexity,
+            "loss": loss,
+            "perplexity": perplexity,
         }
 
     def eval_step(
