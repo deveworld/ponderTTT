@@ -392,24 +392,45 @@ def main():
             if chunk_count >= args.max_chunks:
                 break
 
-            # Start from base parameters for each batch (batch independence)
-            batch_params = base_params
-            batch_opt_state = state.opt_state
+            # Process each sequence independently
+            # θ_fast accumulates within a sequence, but resets between sequences
+            batch_sz = batch["input_ids"].shape[0]
 
-            if num_steps == 0:
-                # SKIP: No TTT, just evaluate with frozen base model
-                sequence_loss = evaluate(batch_params, batch)
-            else:
-                # UPDATE: Adapt TTT fast weights N times on full sequence
-                current_params = batch_params
-                current_opt_state = batch_opt_state
-                for _ in range(num_steps):
-                    current_params, current_opt_state, _ = ttt_update_step(
-                        current_params, current_opt_state, batch
-                    )
+            # Store losses for each sequence in the batch
+            sequence_losses = []
 
-                # Evaluate with adapted fast weights
-                sequence_loss = evaluate(current_params, batch)
+            for seq_idx in range(batch_sz):
+                # Extract single sequence from batch
+                seq_batch = {
+                    "input_ids": batch["input_ids"][seq_idx:seq_idx+1],
+                    "attention_mask": batch["attention_mask"][seq_idx:seq_idx+1],
+                    "chunks": batch["chunks"][seq_idx:seq_idx+1],
+                }
+
+                # Start from base parameters for each sequence (sequence independence)
+                seq_params = base_params
+                seq_opt_state = state.opt_state
+
+                if num_steps == 0:
+                    # SKIP: No TTT, just evaluate with frozen base model
+                    seq_loss = evaluate(seq_params, seq_batch)
+                else:
+                    # UPDATE: Adapt θ_fast N times per chunk across the sequence
+                    # θ_fast accumulates across chunks within this sequence
+                    current_params = seq_params
+                    current_opt_state = seq_opt_state
+
+                    # Apply N gradient steps on the full sequence
+                    # This updates θ_fast which persists across chunks in the sequence
+                    for _ in range(num_steps):
+                        current_params, current_opt_state, _ = ttt_update_step(
+                            current_params, current_opt_state, seq_batch
+                        )
+
+                    # Evaluate with adapted fast weights
+                    seq_loss = evaluate(current_params, seq_batch)
+
+                sequence_losses.append(seq_loss)
 
             # Record results per chunk (for fair comparison)
             chunks = batch["chunks"]
@@ -417,13 +438,14 @@ def main():
 
             # Process all sequences in the batch
             for seq_idx in range(batch_sz):
+                seq_loss = sequence_losses[seq_idx]
                 for chunk_idx in range(num_chunks):
                     if chunk_count >= args.max_chunks:
                         break
 
                     chunk_cost = action_to_cost(args.action)
                     total_cost += chunk_cost
-                    total_loss += float(sequence_loss)
+                    total_loss += float(seq_loss)
                     chunk_count += 1
 
                     results["chunks"].append(
@@ -431,7 +453,7 @@ def main():
                             "chunk_id": chunk_count,
                             "sequence_idx": seq_idx,
                             "chunk_position": chunk_idx,
-                            "loss": float(sequence_loss),
+                            "loss": float(seq_loss),
                             "cost": chunk_cost,
                             "action": args.action,
                         }
