@@ -102,25 +102,30 @@ class TTTLayer(nn.Module):
             # Just apply fast weight transformation once
             k_flat = k.reshape(batch_size, seq_len, k_flat_dim)
 
-            # Scale down inputs to prevent activation explosion
-            k_flat_normalized = k_flat / jnp.sqrt(k_flat_dim)
+            # Normalize input to stable range
+            k_flat_normalized = k_flat / jnp.sqrt(jnp.float32(k_flat_dim))
 
+            # SwiGLU-style gating (similar to official TTT)
             gate = nn.silu(jnp.dot(k_flat_normalized, w0))
             hidden = jnp.dot(k_flat_normalized, w2)
             activated = gate * hidden
 
-            # Scale down before final projection
-            activated = activated / jnp.sqrt(cfg.ttt_hidden_dim)
+            # Normalize before final projection
+            activated = activated / jnp.sqrt(jnp.float32(cfg.ttt_hidden_dim))
             v_transformed = jnp.dot(activated, w1)
             v_transformed = v_transformed.reshape(
                 batch_size, seq_len, cfg.num_heads, cfg.head_dim
             )
 
-            # Apply query to get final output and flatten to hidden_dim
+            # Apply query attention-like mechanism
             # output: [batch, seq, num_heads, head_dim]
-            output = q * v_transformed
+            ttt_output = q * v_transformed
             # Flatten multi-head back to hidden_dim: [batch, seq, hidden_dim]
-            output = output.reshape(batch_size, seq_len, hidden_dim)
+            ttt_output = ttt_output.reshape(batch_size, seq_len, hidden_dim)
+
+            # CRITICAL: Add skip connection (residual) like in transformers
+            # This ensures output is in the same range as input
+            output = x + ttt_output
 
             ttt_stats = {"ttt_loss": 0.0, "num_chunks": 0}
 
@@ -172,18 +177,21 @@ class TTTLayer(nn.Module):
             )
 
             # Concatenate chunks
-            output = jnp.concatenate(chunk_outputs, axis=1)
+            ttt_output = jnp.concatenate(chunk_outputs, axis=1)
             ttt_stats = {
                 "ttt_loss": float(jnp.mean(chunk_losses)),
                 "num_chunks": int(num_chunks),
             }
 
             # Apply query to get final output and flatten to hidden_dim
-            output_reshaped = output.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
+            output_reshaped = ttt_output.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
             # output: [batch, seq, num_heads, head_dim]
-            output = q * output_reshaped
+            ttt_output = q * output_reshaped
             # Flatten multi-head back to hidden_dim: [batch, seq, hidden_dim]
-            output = output.reshape(batch_size, seq_len, hidden_dim)
+            ttt_output = ttt_output.reshape(batch_size, seq_len, hidden_dim)
+
+            # CRITICAL: Add skip connection (residual) like in transformers
+            output = x + ttt_output
 
         # Output projection
         output = nn.Dense(
@@ -253,30 +261,34 @@ class TTTLayer(nn.Module):
         # Simple feedforward transformation (no internal updates)
         k_flat = k.reshape(batch_size, seq_len, k_flat_dim)
 
-        # Scale down inputs to prevent activation explosion
-        k_flat_normalized = k_flat / jnp.sqrt(k_flat_dim)
+        # Normalize input to stable range
+        k_flat_normalized = k_flat / jnp.sqrt(jnp.float32(k_flat_dim))
 
+        # SwiGLU-style gating
         gate = nn.silu(jnp.dot(k_flat_normalized, w0))
         hidden = jnp.dot(k_flat_normalized, w2)
         activated = gate * hidden
 
-        # Scale down before final projection
-        activated = activated / jnp.sqrt(cfg.ttt_hidden_dim)
+        # Normalize before final projection
+        activated = activated / jnp.sqrt(jnp.float32(cfg.ttt_hidden_dim))
         v_transformed = jnp.dot(activated, w1)
         v_transformed = v_transformed.reshape(
             batch_size, seq_len, cfg.num_heads, cfg.head_dim
         )
 
-        # Apply query to get final output and flatten to hidden_dim
+        # Apply query attention-like mechanism
         # output: [batch, seq, num_heads, head_dim]
-        output = q * v_transformed
+        ttt_output = q * v_transformed
         # Flatten multi-head back to hidden_dim: [batch, seq, hidden_dim]
-        output = output.reshape(batch_size, seq_len, hidden_dim)
+        ttt_output = ttt_output.reshape(batch_size, seq_len, hidden_dim)
 
         # Output projection
-        output = nn.Dense(
+        ttt_output = nn.Dense(
             features=hidden_dim, use_bias=False, dtype=cfg.dtype, name="output_proj"
-        )(output)
+        )(ttt_output)
+
+        # CRITICAL: Add skip connection (residual)
+        output = x + ttt_output
 
         # Dropout
         if not deterministic:
