@@ -57,10 +57,11 @@ def save_checkpoint(
     if metadata is not None:
         checkpoint["metadata"] = metadata
 
-    # Save
+    # Save (overwrite if exists)
     checkpointer.save(
         checkpoint_dir / f"checkpoint_{step}",
         checkpoint,
+        force=True,  # Allow overwriting existing checkpoints
     )
 
     if process_index == 0:
