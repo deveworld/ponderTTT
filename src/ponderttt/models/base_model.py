@@ -403,22 +403,15 @@ class TTTTransformerLM(nn.Module):
         # Store the pretrained model's module (for forward pass)
         self.base_model = pretrained_model
 
-        # Extract embedding weights - we'll need this for weight tying
-        embedding_weights = pretrained_model.params['transformer']['wte']['embedding']
-        self.vocab_size = embedding_weights.shape[0]
-        self.hidden_size = embedding_weights.shape[1]
+        # Extract embedding weights from pretrained model
+        # This will be used for weight tying with LM head
+        # We store this in setup() so it's available during __call__
+        self._embedding_weights = pretrained_model.params['transformer']['wte']['embedding']
+        self.vocab_size = self._embedding_weights.shape[0]
+        self.hidden_size = self._embedding_weights.shape[1]
 
         # Fast weights: TTT layer (adaptive)
         self.ttt_layer = TTTLayer(config=self.ttt_config)
-
-        # Create word token embedding layer (wte) as a proper Flax module
-        # Initialize it with pretrained weights for weight tying
-        self.wte = nn.Embed(
-            num_embeddings=self.vocab_size,
-            features=self.hidden_size,
-            embedding_init=lambda key, shape, dtype: embedding_weights,
-            dtype=self.base_config.dtype,
-        )
 
         # LM head for projecting to vocabulary (will use weight tying with embedding)
         # Following official TTT: lm_head is a Dense layer that we'll apply with shared kernel
@@ -478,14 +471,9 @@ class TTTTransformerLM(nn.Module):
             # Project adapted hidden states to vocabulary logits
             # Use weight tying with pretrained embedding (following official TTT implementation)
             # Official TTT pattern: shared_kernel = self.model.variables["params"]["wte"]["embedding"].T
-            # We access the embedding from our wte module's variables
-            # In Flax, self.variables["params"]["wte"]["embedding"] gives us the embedding weights
-            shared_embedding = self.variables["params"]["wte"]["embedding"]
-            # Apply lm_head with shared embedding weights (weight tying)
-            # This follows the exact pattern from official TTT:
-            # lm_logits = self.lm_head.apply({"params": {"kernel": shared_kernel}}, hidden_states)
+            # We use the embedding weights stored from the pretrained model
             logits = self.lm_head.apply(
-                {"params": {"kernel": shared_embedding.T}},
+                {"params": {"kernel": self._embedding_weights.T}},
                 adapted_hidden
             )
 
