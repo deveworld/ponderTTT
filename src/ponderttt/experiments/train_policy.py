@@ -347,6 +347,11 @@ def main():
 
     print(f"\nResults saved to: {output_file}")
 
+    # Wait for any pending checkpoint saves to complete
+    print("\nFinalizing checkpoints...")
+    finalize_checkpointing()
+    print("Done.")
+
 
 if __name__ == "__main__":
     main()

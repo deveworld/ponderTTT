@@ -1,12 +1,17 @@
 """
-Checkpointing utilities using Orbax with multi-host support.
+Checkpointing utilities using Orbax with multi-host support and async saving.
 """
 
+import threading
 from pathlib import Path
 from typing import Any
 
 import jax
 import orbax.checkpoint as ocp
+
+# Global list to track async save threads
+_save_threads = []
+_save_lock = threading.Lock()
 
 
 def save_checkpoint(
@@ -17,7 +22,7 @@ def save_checkpoint(
     save_on_all_hosts: bool = False,
 ):
     """
-    Save checkpoint using Orbax with multi-host support.
+    Save checkpoint asynchronously using background thread.
 
     Args:
         checkpoint_dir: Directory to save checkpoint
@@ -30,8 +35,11 @@ def save_checkpoint(
     Note:
         For replicated parameters (data parallel), use save_on_all_hosts=False
         For sharded parameters (FSDP), use save_on_all_hosts=True
+
+        Saves are asynchronous - a background thread handles the I/O.
+        Call wait_for_checkpoints() to ensure all saves complete.
     """
-    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir = Path(checkpoint_dir).resolve()
 
     # In multi-host setup, coordinate saves
     try:
@@ -46,26 +54,53 @@ def save_checkpoint(
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    checkpointer = ocp.PyTreeCheckpointer()
+    def _save_thread():
+        """Background thread that performs the actual save."""
+        checkpointer = ocp.PyTreeCheckpointer()
 
-    # Prepare checkpoint
-    checkpoint = {
-        "state": state,
-        "step": step,
-    }
+        # Prepare checkpoint
+        checkpoint = {
+            "state": state,
+            "step": step,
+        }
 
-    if metadata is not None:
-        checkpoint["metadata"] = metadata
+        if metadata is not None:
+            checkpoint["metadata"] = metadata
 
-    # Save (overwrite if exists)
-    checkpointer.save(
-        checkpoint_dir / f"checkpoint_{step}",
-        checkpoint,
-        force=True,  # Allow overwriting existing checkpoints
-    )
+        # Save (this blocks in the background thread, not main thread)
+        checkpointer.save(
+            checkpoint_dir / f"checkpoint_{step}",
+            checkpoint,
+            force=True,
+        )
+
+    # Start save in background thread
+    thread = threading.Thread(target=_save_thread, daemon=False)
+    thread.start()
+
+    with _save_lock:
+        _save_threads.append(thread)
 
     if process_index == 0:
         print(f" Checkpoint saved at step {step}")
+
+
+def wait_for_checkpoints():
+    """Wait for all pending checkpoint saves to complete."""
+    global _save_threads
+    with _save_lock:
+        threads_to_wait = list(_save_threads)
+
+    for thread in threads_to_wait:
+        thread.join()
+
+    with _save_lock:
+        _save_threads.clear()
+
+
+def finalize_checkpointing():
+    """Finalize all checkpointing operations and cleanup."""
+    wait_for_checkpoints()
 
 
 def load_checkpoint(
@@ -82,7 +117,7 @@ def load_checkpoint(
     Returns:
         Checkpoint dictionary
     """
-    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir = Path(checkpoint_dir).resolve()
 
     checkpointer = ocp.PyTreeCheckpointer()
 
@@ -117,7 +152,7 @@ def get_latest_checkpoint_step(checkpoint_dir: str | Path) -> int | None:
     Returns:
         Latest step number, or None if no checkpoints
     """
-    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir = Path(checkpoint_dir).resolve()
 
     # Exclude temporary files
     checkpoints = [
