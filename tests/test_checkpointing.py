@@ -8,10 +8,11 @@ import jax.numpy as jnp
 from flax.training import train_state
 import optax
 
-from src.ponderttt.utils.checkpointing import (
-    save_checkpoint,
-    load_checkpoint,
+from ponderttt.utils.checkpointing import (
+    finalize_checkpointing,
     get_latest_checkpoint_step,
+    load_checkpoint,
+    save_checkpoint,
 )
 
 def test_basic_save_load():
@@ -48,18 +49,18 @@ def test_basic_save_load():
             state={"params": params, "opt_state": opt_state},
             metadata=metadata,
         )
-        print("   ✓ Checkpoint saved")
+        print("   Checkpoint saved")
 
         # Check latest step
         print("\n2. Getting latest checkpoint step...")
         latest = get_latest_checkpoint_step(checkpoint_dir)
-        print(f"   ✓ Latest step: {latest}")
+        print(f"   Latest step: {latest}")
         assert latest == 42, f"Expected 42, got {latest}"
 
         # Load checkpoint
         print("\n3. Loading checkpoint...")
         loaded = load_checkpoint(checkpoint_dir, step=42)
-        print("   ✓ Checkpoint loaded")
+        print("   Checkpoint loaded")
 
         # Verify contents
         print("\n4. Verifying loaded data...")
@@ -72,10 +73,10 @@ def test_basic_save_load():
         # Verify params shape
         assert loaded["state"]["params"]["layer1"]["weights"].shape == (3, 3)
         assert loaded["state"]["params"]["layer1"]["bias"].shape == (3,)
-        print("   ✓ All data verified")
+        print("   All data verified")
 
     print("\n" + "=" * 60)
-    print("✅ Test 1 PASSED")
+    print("Test 1 PASSED")
     print("=" * 60)
 
 
@@ -102,12 +103,12 @@ def test_multiple_checkpoints():
                 state={"params": params, "opt_state": opt_state},
                 metadata={"step_num": step, "value": step * 10},
             )
-        print("   ✓ All checkpoints saved")
+        print("   All checkpoints saved")
 
         # Get latest
         print("\n2. Getting latest checkpoint...")
         latest = get_latest_checkpoint_step(checkpoint_dir)
-        print(f"   ✓ Latest step: {latest}")
+        print(f"   Latest step: {latest}")
         assert latest == 30, f"Expected 30, got {latest}"
 
         # Load specific checkpoint
@@ -115,16 +116,16 @@ def test_multiple_checkpoints():
         loaded = load_checkpoint(checkpoint_dir, step=20)
         assert loaded["metadata"]["step_num"] == 20
         assert loaded["metadata"]["value"] == 200
-        print("   ✓ Specific checkpoint loaded correctly")
+        print("   Specific checkpoint loaded correctly")
 
         # Load latest
         print("\n4. Loading latest checkpoint...")
         loaded_latest = load_checkpoint(checkpoint_dir)
         assert loaded_latest["metadata"]["step_num"] == 30
-        print("   ✓ Latest checkpoint loaded correctly")
+        print("   Latest checkpoint loaded correctly")
 
     print("\n" + "=" * 60)
-    print("✅ Test 2 PASSED")
+    print("Test 2 PASSED")
     print("=" * 60)
 
 
@@ -165,7 +166,7 @@ def test_resume_simulation():
                 "results": results,
             },
         )
-        print("   ✓ Checkpoint saved (interrupted)")
+        print("   Checkpoint saved (interrupted)")
 
         # Simulate resume
         print("\n2. Simulating resume...")
@@ -180,15 +181,15 @@ def test_resume_simulation():
         results_resumed = checkpoint["metadata"]["results"]
         params_resumed = checkpoint["state"]["params"]
 
-        print(f"   ✓ Resumed from chunk {chunk_count_resumed}")
-        print(f"   ✓ Total loss so far: {total_loss_resumed}")
-        print(f"   ✓ Chunks processed: {len(results_resumed['chunks'])}")
+        print(f"   Resumed from chunk {chunk_count_resumed}")
+        print(f"   Total loss so far: {total_loss_resumed}")
+        print(f"   Chunks processed: {len(results_resumed['chunks'])}")
 
         # Verify resume state
         assert chunk_count_resumed == 10
         assert len(results_resumed["chunks"]) == 10
         assert abs(total_loss_resumed - sum(i * 0.1 for i in range(1, 11))) < 1e-6
-        print("   ✓ Resume state verified")
+        print("   Resume state verified")
 
         # Continue from where we left off
         print("\n3. Continuing processing (chunks 11-15)...")
@@ -197,22 +198,22 @@ def test_resume_simulation():
             total_loss_resumed += i * 0.1
             results_resumed["chunks"].append({"id": i, "loss": i * 0.1})
 
-        print(f"   ✓ Processed up to chunk {chunk_count_resumed}")
-        print(f"   ✓ Total chunks: {len(results_resumed['chunks'])}")
+        print(f"   Processed up to chunk {chunk_count_resumed}")
+        print(f"   Total chunks: {len(results_resumed['chunks'])}")
 
         # Verify final state
         assert chunk_count_resumed == 15
         assert len(results_resumed["chunks"]) == 15
-        print("   ✓ Final state verified")
+        print("   Final state verified")
 
     print("\n" + "=" * 60)
-    print("✅ Test 3 PASSED")
+    print("Test 3 PASSED")
     print("=" * 60)
 
 
 def main():
     """Run all tests."""
-    print("\n" + "🔍 Checkpointing Verification Tests")
+    print("\nCheckpointing Verification Tests")
     print("\n")
 
     try:
@@ -221,13 +222,18 @@ def main():
         test_resume_simulation()
 
         print("\n" + "=" * 60)
-        print("🎉 ALL TESTS PASSED!")
+        print("ALL TESTS PASSED!")
         print("=" * 60)
         print("\nCheckpointing implementation is working correctly!")
 
+        # Finalize async checkpointing
+        print("\nFinalizing async checkpointing...")
+        finalize_checkpointing()
+        print("Finalized")
+
     except Exception as e:
         print("\n" + "=" * 60)
-        print("❌ TEST FAILED")
+        print("TEST FAILED")
         print("=" * 60)
         print(f"\nError: {e}")
         import traceback
