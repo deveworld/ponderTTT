@@ -61,3 +61,4 @@ dmypy.json
 .ruff_cache/
 .cache/
 *.json
+output.log
