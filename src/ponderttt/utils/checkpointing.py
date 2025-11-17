@@ -2,6 +2,7 @@
 Checkpointing utilities using Orbax with multi-host support.
 """
 
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -46,26 +47,40 @@ def save_checkpoint(
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    checkpointer = ocp.PyTreeCheckpointer()
+    # Suppress Orbax async warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*_SignalingThread.join.*")
 
-    # Prepare checkpoint
-    checkpoint = {
-        "state": state,
-        "step": step,
-    }
+        checkpointer = ocp.PyTreeCheckpointer()
 
-    if metadata is not None:
-        checkpoint["metadata"] = metadata
+        # Prepare checkpoint
+        checkpoint = {
+            "state": state,
+            "step": step,
+        }
 
-    # Save (overwrite if exists)
-    checkpointer.save(
-        checkpoint_dir / f"checkpoint_{step}",
-        checkpoint,
-        force=True,  # Allow overwriting existing checkpoints
-    )
+        if metadata is not None:
+            checkpoint["metadata"] = metadata
+
+        # Save (overwrite if exists)
+        checkpointer.save(
+            checkpoint_dir / f"checkpoint_{step}",
+            checkpoint,
+            force=True,  # Allow overwriting existing checkpoints
+        )
 
     if process_index == 0:
         print(f" Checkpoint saved at step {step}")
+
+
+def wait_for_checkpoints():
+    """Wait for all pending checkpoint saves to complete. (No-op for sync checkpointer)"""
+    pass
+
+
+def finalize_checkpointing():
+    """Finalize all checkpointing operations and cleanup. (No-op for sync checkpointer)"""
+    pass
 
 
 def load_checkpoint(

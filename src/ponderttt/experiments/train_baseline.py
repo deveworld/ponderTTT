@@ -25,6 +25,7 @@ from ..data import create_data_iterator, get_tokenizer
 from ..models import TTTConfig, load_ttt_model
 from ..utils import init_rng, next_rng
 from ..utils.checkpointing import (
+    finalize_checkpointing,
     get_latest_checkpoint_step,
     load_checkpoint,
     save_checkpoint,
@@ -303,7 +304,7 @@ def main():
             use_ttt=(num_steps > 0),  # Skip TTT for SKIP action
         )
 
-        logits = outputs["logits"]
+        logits = outputs["logits"] # type: ignore
         labels = batch["input_ids"][:, 1:]
         logits = logits[:, :-1]
 
@@ -451,6 +452,11 @@ def main():
         json.dump(results, f, indent=2)
 
     print(f"\nResults saved to: {output_file}")
+
+    # Finalize async checkpointing
+    print("\nWaiting for pending checkpoints to complete...")
+    finalize_checkpointing()
+    print("All checkpoints finalized.")
 
 
 if __name__ == "__main__":
