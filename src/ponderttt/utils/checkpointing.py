@@ -86,8 +86,11 @@ def load_checkpoint(
     checkpointer = ocp.PyTreeCheckpointer()
 
     if step is None:
-        # Find latest checkpoint
-        checkpoints = list(checkpoint_dir.glob("checkpoint_*"))
+        # Find latest checkpoint (exclude temporary files)
+        checkpoints = [
+            cp for cp in checkpoint_dir.glob("checkpoint_*")
+            if not cp.name.endswith(".orbax-checkpoint-tmp")
+        ]
         if not checkpoints:
             raise ValueError(f"No checkpoints found in {checkpoint_dir}")
 

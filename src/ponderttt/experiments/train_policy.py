@@ -69,7 +69,7 @@ def parse_args():
 
 def get_checkpoint_dir(output_dir: str, model_scale: str) -> Path:
     """Get checkpoint directory path."""
-    return Path(output_dir) / model_scale / "checkpoints"
+    return Path(output_dir).resolve() / model_scale / "checkpoints"
 
 
 def try_load_checkpoint(checkpoint_dir: Path):

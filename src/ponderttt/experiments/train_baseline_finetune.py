@@ -103,7 +103,7 @@ def action_to_cost(action: str) -> float:
 
 def get_checkpoint_dir(output_dir: str, model_scale: str, action: str) -> Path:
     """Get checkpoint directory path."""
-    return Path(output_dir) / model_scale / action / "checkpoints"
+    return Path(output_dir).resolve() / model_scale / action / "checkpoints"
 
 
 def try_load_checkpoint(checkpoint_dir: Path):
