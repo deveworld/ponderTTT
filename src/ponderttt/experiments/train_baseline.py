@@ -25,6 +25,7 @@ from ..data import create_data_iterator, get_tokenizer
 from ..models import TTTConfig, load_ttt_model
 from ..utils import init_rng, next_rng
 from ..utils.checkpointing import (
+    finalize_checkpointing,
     get_latest_checkpoint_step,
     load_checkpoint,
     save_checkpoint,
