@@ -295,7 +295,7 @@ def main():
     # Define loss function for TTT updates
     def compute_loss(params, batch):
         """Compute language modeling loss with TTT layer."""
-        outputs, _ = model.apply(
+        outputs = model.apply(
             {"params": params},
             batch["input_ids"],
             attention_mask=batch["attention_mask"],
