@@ -213,14 +213,60 @@ def main():
     params = variables["params"]
 
     print("\nModel architecture:")
-    print(f"  Slow weights: {config.model.model_name} (frozen)")
-    print("  Fast weights: TTT layer (adaptive)")
+    print(f"  Slow weights (θ_slow): {config.model.model_name} (frozen)")
+    print("  Fast weights (θ_fast): TTT layer + LM head (trainable)")
     print(f"  TTT hidden dim: {config.model.ttt_hidden_dim}")
+
+    # Count parameters
+    import jax
+    def count_params(params_dict):
+        return sum(x.size for x in jax.tree_util.tree_leaves(params_dict))
+
+    params_dict = unfreeze(params)
+    total_params = count_params(params)
+    frozen_params = count_params(params_dict.get('base_model', {}))
+    trainable_params = total_params - frozen_params
+
+    print(f"\nParameters:")
+    print(f"  Total: {total_params:,}")
+    print(f"  Frozen (θ_slow): {frozen_params:,}")
+    print(f"  Trainable (θ_fast): {trainable_params:,} ({100*trainable_params/total_params:.1f}%)")
     print()
 
-    # Create optimizer (only for TTT layer parameters)
-    # Base model parameters are frozen
-    optimizer = optax.adam(config.training.learning_rate)
+    # Create optimizer with frozen base model parameters
+    # Only TTT layer and LM head (θ_fast) are trainable
+    # Base GPT-2 (θ_slow) is frozen
+
+    # Create partition spec: freeze base_model, train ttt_layer and lm_head
+    from flax.core import freeze, unfreeze
+    import optax
+
+    # Partition parameters into frozen and trainable
+    def create_mask(params):
+        """Create mask: True = trainable, False = frozen"""
+        params_dict = unfreeze(params)
+        mask = {}
+        for key in params_dict:
+            if key == 'base_model':
+                # Freeze entire base model (θ_slow)
+                mask[key] = False
+            elif key in ['ttt_layer', 'lm_head']:
+                # Train TTT layer and LM head (θ_fast)
+                mask[key] = True
+            else:
+                # Default: train other parameters
+                mask[key] = True
+        return freeze(mask)
+
+    # Create masked optimizer (only updates trainable parameters)
+    trainable_mask = create_mask(params)
+    optimizer = optax.multi_transform(
+        {
+            True: optax.adam(config.training.learning_rate),  # Trainable params
+            False: optax.set_to_zero(),  # Frozen params (no update)
+        },
+        trainable_mask
+    )
 
     # Create train state
     state = train_state.TrainState.create(

@@ -403,18 +403,17 @@ class TTTTransformerLM(nn.Module):
         # Store the pretrained model's module (for forward pass)
         self.base_model = pretrained_model
 
-        # Extract embedding weights from pretrained model
-        # This will be used for weight tying with LM head
-        # We store this in setup() so it's available during __call__
-        self._embedding_weights = pretrained_model.params['transformer']['wte']['embedding']
-        self.vocab_size = self._embedding_weights.shape[0]
-        self.hidden_size = self._embedding_weights.shape[1]
+        # Get vocabulary size for LM head
+        self.vocab_size = pretrained_model.config.vocab_size
+        self.hidden_size = pretrained_model.config.hidden_size
 
-        # Fast weights: TTT layer (adaptive)
+        # Fast weights: TTT layer (adaptive, trainable)
         self.ttt_layer = TTTLayer(config=self.ttt_config)
 
-        # LM head for projecting to vocabulary (will use weight tying with embedding)
-        # Following official TTT: lm_head is a Dense layer that we'll apply with shared kernel
+        # LM head: Independent trainable projection layer
+        # Since base model (including embedding) is frozen, we use an independent
+        # trainable LM head that can adapt to the TTT layer's learned transformations
+        # This is academically correct: θ_fast includes both TTT layer and LM head
         self.lm_head = nn.Dense(
             self.vocab_size,
             use_bias=False,
@@ -469,13 +468,10 @@ class TTTTransformerLM(nn.Module):
             )
 
             # Project adapted hidden states to vocabulary logits
-            # Use weight tying with pretrained embedding (following official TTT implementation)
-            # Official TTT pattern: shared_kernel = self.model.variables["params"]["wte"]["embedding"].T
-            # We use the embedding weights stored from the pretrained model
-            logits = self.lm_head.apply(
-                {"params": {"kernel": self._embedding_weights.T}},
-                adapted_hidden
-            )
+            # Use independent trainable LM head (part of θ_fast)
+            # This is academically correct: LM head learns to map TTT-adapted
+            # hidden states to vocabulary, adapting as TTT layer learns
+            logits = self.lm_head(adapted_hidden)
 
             return {
                 "logits": logits,
