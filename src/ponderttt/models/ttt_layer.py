@@ -116,8 +116,11 @@ class TTTLayer(nn.Module):
                 batch_size, seq_len, cfg.num_heads, cfg.head_dim
             )
 
-            # Apply query to get final output
-            output = jnp.einsum("bshd,bshd->bsh", q, v_transformed)
+            # Apply query to get final output and flatten to hidden_dim
+            # output: [batch, seq, num_heads, head_dim]
+            output = q * v_transformed
+            # Flatten multi-head back to hidden_dim: [batch, seq, hidden_dim]
+            output = output.reshape(batch_size, seq_len, hidden_dim)
 
             ttt_stats = {"ttt_loss": 0.0, "num_chunks": 0}
 
@@ -175,12 +178,12 @@ class TTTLayer(nn.Module):
                 "num_chunks": int(num_chunks),
             }
 
-            # Apply query to get final output
-            output = jnp.einsum(
-                "bshd,bshd->bsh",
-                q,
-                output.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim),
-            )
+            # Apply query to get final output and flatten to hidden_dim
+            output_reshaped = output.reshape(batch_size, seq_len, cfg.num_heads, cfg.head_dim)
+            # output: [batch, seq, num_heads, head_dim]
+            output = q * output_reshaped
+            # Flatten multi-head back to hidden_dim: [batch, seq, hidden_dim]
+            output = output.reshape(batch_size, seq_len, hidden_dim)
 
         # Output projection
         output = nn.Dense(
@@ -264,8 +267,11 @@ class TTTLayer(nn.Module):
             batch_size, seq_len, cfg.num_heads, cfg.head_dim
         )
 
-        # Apply query to get final output
-        output = jnp.einsum("bshd,bshd->bsh", q, v_transformed)
+        # Apply query to get final output and flatten to hidden_dim
+        # output: [batch, seq, num_heads, head_dim]
+        output = q * v_transformed
+        # Flatten multi-head back to hidden_dim: [batch, seq, hidden_dim]
+        output = output.reshape(batch_size, seq_len, hidden_dim)
 
         # Output projection
         output = nn.Dense(
