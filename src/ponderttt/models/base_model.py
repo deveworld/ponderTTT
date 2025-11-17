@@ -394,19 +394,36 @@ class TTTTransformerLM(nn.Module):
         """Initialize slow and fast weight components."""
         from .ttt_layer import TTTLayer
 
-        # Slow weights: Pretrained transformer (frozen)
-        self.base_model = FlaxAutoModelForCausalLM.from_pretrained(
+        # Load pretrained transformer (will be frozen during training)
+        pretrained_model = FlaxAutoModelForCausalLM.from_pretrained(
             self.base_config.model_name,
             dtype=self.base_config.dtype,
         )
 
+        # Store the pretrained model's module (for forward pass)
+        self.base_model = pretrained_model
+
+        # Extract embedding weights - we'll need this for weight tying
+        embedding_weights = pretrained_model.params['transformer']['wte']['embedding']
+        self.vocab_size = embedding_weights.shape[0]
+        self.hidden_size = embedding_weights.shape[1]
+
         # Fast weights: TTT layer (adaptive)
         self.ttt_layer = TTTLayer(config=self.ttt_config)
 
+        # Create word token embedding layer (wte) as a proper Flax module
+        # Initialize it with pretrained weights for weight tying
+        self.wte = nn.Embed(
+            num_embeddings=self.vocab_size,
+            features=self.hidden_size,
+            embedding_init=lambda key, shape, dtype: embedding_weights,
+            dtype=self.base_config.dtype,
+        )
+
         # LM head for projecting to vocabulary (will use weight tying with embedding)
-        vocab_size = self.base_model.config.vocab_size
+        # Following official TTT: lm_head is a Dense layer that we'll apply with shared kernel
         self.lm_head = nn.Dense(
-            vocab_size,
+            self.vocab_size,
             use_bias=False,
             dtype=self.base_config.dtype,
             kernel_init=nn.initializers.normal(stddev=0.02),
@@ -460,9 +477,13 @@ class TTTTransformerLM(nn.Module):
 
             # Project adapted hidden states to vocabulary logits
             # Use weight tying with pretrained embedding (following official TTT implementation)
-            # Get the token embedding from the base model (wte = word token embeddings)
-            shared_embedding = self.base_model.params['transformer']['wte']['embedding']
+            # Official TTT pattern: shared_kernel = self.model.variables["params"]["wte"]["embedding"].T
+            # We access the embedding from our wte module's variables
+            # In Flax, self.variables["params"]["wte"]["embedding"] gives us the embedding weights
+            shared_embedding = self.variables["params"]["wte"]["embedding"]
             # Apply lm_head with shared embedding weights (weight tying)
+            # This follows the exact pattern from official TTT:
+            # lm_logits = self.lm_head.apply({"params": {"kernel": shared_kernel}}, hidden_states)
             logits = self.lm_head.apply(
                 {"params": {"kernel": shared_embedding.T}},
                 adapted_hidden
