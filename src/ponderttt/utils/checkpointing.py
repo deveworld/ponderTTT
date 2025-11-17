@@ -2,6 +2,7 @@
 Checkpointing utilities using Orbax with multi-host support and async saving.
 """
 
+import copy
 import threading
 from pathlib import Path
 from typing import Any
@@ -54,18 +55,23 @@ def save_checkpoint(
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    # Make deep copies of data to avoid race conditions
+    # (data might change in main thread while background thread is saving)
+    state_copy = copy.deepcopy(state)
+    metadata_copy = copy.deepcopy(metadata) if metadata is not None else None
+
     def _save_thread():
         """Background thread that performs the actual save."""
         checkpointer = ocp.PyTreeCheckpointer()
 
-        # Prepare checkpoint
+        # Prepare checkpoint using the copied data
         checkpoint = {
-            "state": state,
+            "state": state_copy,
             "step": step,
         }
 
-        if metadata is not None:
-            checkpoint["metadata"] = metadata
+        if metadata_copy is not None:
+            checkpoint["metadata"] = metadata_copy
 
         # Save (this blocks in the background thread, not main thread)
         checkpointer.save(
