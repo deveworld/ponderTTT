@@ -118,7 +118,11 @@ def get_latest_checkpoint_step(checkpoint_dir: str | Path) -> int | None:
     """
     checkpoint_dir = Path(checkpoint_dir)
 
-    checkpoints = list(checkpoint_dir.glob("checkpoint_*"))
+    # Exclude temporary files
+    checkpoints = [
+        cp for cp in checkpoint_dir.glob("checkpoint_*")
+        if not cp.name.endswith(".orbax-checkpoint-tmp")
+    ]
     if not checkpoints:
         return None
 
