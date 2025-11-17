@@ -4,7 +4,6 @@ Fast weight adaptation using LoRA-style low-rank updates.
 Inspired by LaCT's fast weight mechanism.
 """
 
-
 import flax.linen as nn
 import jax.numpy as jnp
 
@@ -21,6 +20,7 @@ class LoRALinear(nn.Module):
         alpha: Scaling factor
         dtype: Data type
     """
+
     features: int
     rank: int = 64
     alpha: float = 1.0
@@ -41,13 +41,13 @@ class LoRALinear(nn.Module):
 
         # Low-rank matrices
         lora_A = self.param(
-            'lora_A',
+            "lora_A",
             nn.initializers.normal(stddev=0.02),
             (in_features, self.rank),
             self.dtype,
         )
         lora_B = self.param(
-            'lora_B',
+            "lora_B",
             nn.initializers.zeros,
             (self.rank, self.features),
             self.dtype,
@@ -72,6 +72,7 @@ class FastWeightModule(nn.Module):
         output_dim: Output dimension
         dtype: Data type
     """
+
     hidden_dim: int
     output_dim: int
     dtype: jnp.dtype = jnp.float32
@@ -99,21 +100,21 @@ class FastWeightModule(nn.Module):
         # Initialize fast weights if not provided
         if w0 is None:
             w0 = self.param(
-                'w0',
+                "w0",
                 nn.initializers.normal(stddev=0.02),
                 (in_dim, self.hidden_dim),
                 self.dtype,
             )
         if w1 is None:
             w1 = self.param(
-                'w1',
+                "w1",
                 nn.initializers.normal(stddev=0.02),
                 (self.hidden_dim, self.output_dim),
                 self.dtype,
             )
         if w2 is None:
             w2 = self.param(
-                'w2',
+                "w2",
                 nn.initializers.normal(stddev=0.02),
                 (in_dim, self.hidden_dim),
                 self.dtype,
@@ -185,8 +186,10 @@ def newton_schulz_orthogonalize(
         X = jnp.swapaxes(X, -2, -1)
 
     # Ensure spectral norm <= 1
-    norm = jnp.linalg.norm(X, axis=(-2, -1), keepdims=True)
-    X = X / (norm + 1e-7)
+    # Compute spectral norm (largest singular value) using SVD
+    s = jnp.linalg.svd(X, compute_uv=False, full_matrices=False)
+    spectral_norm = jnp.max(s, axis=-1, keepdims=True)[..., None]
+    X = X / (spectral_norm + 1e-7)
 
     # Newton-Schulz iterations
     coeffs = [

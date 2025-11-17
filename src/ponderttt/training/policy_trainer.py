@@ -23,6 +23,7 @@ class PolicyTrainer:
         ppo: PID-Lagrangian PPO algorithm
         rollout_length: Length of rollout for data collection
     """
+
     ppo: PIDLagrangianPPO
     rollout_length: int = 256
 
@@ -31,7 +32,7 @@ class PolicyTrainer:
         policy_state: TrainState,
         ttt_model: Any,
         data_iterator: Iterator,
-        rng: jax.Array, # jax.random.PRNGKey
+        rng: jax.Array,  # jax.random.PRNGKey
     ) -> dict[str, jnp.ndarray]:
         """
         Collect rollout using current policy.
@@ -63,25 +64,27 @@ class PolicyTrainer:
                 break
 
             # Extract features (simplified - in practice, use proper feature extraction)
-            features = jnp.mean(batch['chunks'], axis=(1, 2))  # [batch, chunk_size] -> [batch]
+            features = jnp.mean(
+                batch["chunks"], axis=(1, 2)
+            )  # [batch, chunk_size] -> [batch]
             features = features[:, None]  # [batch, 1]
 
             # Get policy action
             rng, action_rng = jax.random.split(rng)
             policy_outputs = policy_state.apply_fn(
-                {'params': policy_state.params},
+                {"params": policy_state.params},
                 features,
-                rngs={'action': action_rng},
+                rngs={"action": action_rng},
             )
 
-            action = policy_outputs['action']
-            log_prob = policy_outputs['log_prob']
-            value = policy_outputs['value']
+            action = policy_outputs["action"]
+            log_prob = policy_outputs["log_prob"]
+            value = policy_outputs["value"]
 
             # Perform TTT with selected action
             # (Simplified - in practice, use actual TTT update)
             reward = jnp.ones_like(action).astype(jnp.float32)  # Placeholder
-            cost = jnp.array([1.0, 3.0, 5.0, 12.0])[action]  # Cost per action
+            cost = jnp.array([1.0, 3.0, 6.0, 12.0])[action]  # Cost per action
 
             # Store experience
             features_list.append(features)
@@ -96,24 +99,24 @@ class PolicyTrainer:
 
         # Convert to arrays
         rollout = {
-            'features': jnp.concatenate(features_list, axis=0),
-            'actions': jnp.concatenate(actions_list, axis=0),
-            'old_log_probs': jnp.concatenate(log_probs_list, axis=0),
-            'rewards': jnp.concatenate(rewards_list, axis=0),
-            'costs': jnp.concatenate(costs_list, axis=0),
-            'values': jnp.concatenate(values_list, axis=0),
-            'dones': jnp.concatenate(dones_list, axis=0),
+            "features": jnp.concatenate(features_list, axis=0),
+            "actions": jnp.concatenate(actions_list, axis=0),
+            "old_log_probs": jnp.concatenate(log_probs_list, axis=0),
+            "rewards": jnp.concatenate(rewards_list, axis=0),
+            "costs": jnp.concatenate(costs_list, axis=0),
+            "values": jnp.concatenate(values_list, axis=0),
+            "dones": jnp.concatenate(dones_list, axis=0),
         }
 
         # Compute advantages and returns
         advantages, returns = compute_gae(
-            rewards=rollout['rewards'],
-            values=rollout['values'],
-            dones=rollout['dones'],
+            rewards=rollout["rewards"],
+            values=rollout["values"],
+            dones=rollout["dones"],
         )
 
-        rollout['advantages'] = advantages
-        rollout['returns'] = returns
+        rollout["advantages"] = advantages
+        rollout["returns"] = returns
 
         return rollout
 
@@ -137,7 +140,7 @@ class PolicyTrainer:
             updated_state: Updated policy state
             metrics: Training metrics
         """
-        num_samples = len(rollout['features'])
+        num_samples = len(rollout["features"])
 
         all_metrics = []
 
@@ -150,12 +153,9 @@ class PolicyTrainer:
 
             # Mini-batch updates
             for i in range(0, num_samples, batch_size):
-                batch_idx = perm[i:i + batch_size]
+                batch_idx = perm[i : i + batch_size]
 
-                batch = {
-                    key: value[batch_idx]
-                    for key, value in rollout.items()
-                }
+                batch = {key: value[batch_idx] for key, value in rollout.items()}
 
                 # PPO update
                 policy_state, metrics = ppo_update_step(
@@ -173,9 +173,9 @@ class PolicyTrainer:
         }
 
         # Update PID controller
-        avg_cost = jnp.mean(rollout['costs'])
+        avg_cost = jnp.mean(rollout["costs"])
         self.ppo = self.ppo.update_pid(float(avg_cost))
-        avg_metrics['avg_cost'] = float(avg_cost)
-        avg_metrics['budget_used'] = float(jnp.sum(rollout['costs']))
+        avg_metrics["avg_cost"] = float(avg_cost)
+        avg_metrics["budget_used"] = float(jnp.sum(rollout["costs"]))
 
         return policy_state, avg_metrics

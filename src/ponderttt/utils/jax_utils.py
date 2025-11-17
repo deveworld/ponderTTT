@@ -129,7 +129,7 @@ def create_mesh(
 
 def create_data_sharding(
     mesh: Mesh,
-    batch_axis: str = 'batch',
+    batch_axis: str = "batch",
 ) -> NamedSharding:
     """
     Create sharding specification for data batches.
@@ -146,7 +146,7 @@ def create_data_sharding(
 
 def create_fsdp_sharding(
     mesh: Mesh,
-    fsdp_axis: str = 'fsdp',
+    fsdp_axis: str = "fsdp",
 ) -> NamedSharding:
     """
     Create FSDP sharding specification for model parameters.
@@ -209,7 +209,7 @@ def create_sharding_constraint(
 def shard_batch(
     batch: Any,
     mesh: Mesh,
-    batch_axis: str = 'batch',
+    batch_axis: str = "batch",
 ) -> Any:
     """
     Shard a batch across devices.
@@ -312,9 +312,7 @@ def cross_entropy_loss(
 
     # Gather log probs for true labels
     token_log_probs = jnp.take_along_axis(
-        log_probs,
-        jnp.expand_dims(labels, -1),
-        axis=-1
+        log_probs, jnp.expand_dims(labels, -1), axis=-1
     ).squeeze(-1)
 
     # Mask and average

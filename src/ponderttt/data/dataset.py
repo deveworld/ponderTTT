@@ -55,13 +55,13 @@ class CodeDataset:
         # Setup S3 client for unsigned requests (no AWS credentials needed)
         # Add timeouts to prevent hanging on slow downloads
         self.s3_client = boto3.client(
-            's3',
-            region_name='us-east-1',
+            "s3",
+            region_name="us-east-1",
             config=Config(
                 signature_version=UNSIGNED,
                 connect_timeout=5,
                 read_timeout=10,
-            )
+            ),
         )
 
         # Load dataset in streaming mode (The Stack v2 dedup)
@@ -79,16 +79,22 @@ class CodeDataset:
                 host_id = jax.process_index()
 
                 if num_hosts > 1:
-                    if hasattr(self.dataset, "shard") and not isinstance(self.dataset, (dict,)):
+                    if hasattr(self.dataset, "shard") and not isinstance(
+                        self.dataset, (dict,)
+                    ):
                         self.dataset = self.dataset.shard(
                             num_shards=num_hosts,
                             index=host_id,
                         )
                         if host_id == 0:
                             print(f"Dataset sharded across {num_hosts} hosts")
-                            print(f"  Host {host_id} processing shard {host_id}/{num_hosts}")
+                            print(
+                                f"  Host {host_id} processing shard {host_id}/{num_hosts}"
+                            )
                     elif host_id == 0:
-                        print("Dataset implementation does not support sharding; proceeding without host sharding.")
+                        print(
+                            "Dataset implementation does not support sharding; proceeding without host sharding."
+                        )
             except (RuntimeError, ValueError):
                 # JAX distributed not initialized, single host mode
                 pass
@@ -107,12 +113,17 @@ class CodeDataset:
 
         s3_url = f"s3://softwareheritage/content/{blob_id}"
         try:
-            with closing(cast(BinaryIO, smart_open(
-                s3_url,
-                "rb",
-                compression=".gz",
-                transport_params={"client": self.s3_client}
-            ))) as f:
+            with closing(
+                cast(
+                    BinaryIO,
+                    smart_open(
+                        s3_url,
+                        "rb",
+                        compression=".gz",
+                        transport_params={"client": self.s3_client},
+                    ),
+                )
+            ) as f:
                 content = f.read().decode(src_encoding)
             return content
         except Exception:
@@ -130,10 +141,7 @@ class CodeDataset:
             Processed example dict or None if failed
         """
         # Download actual content from S3
-        text = self._download_content(
-            example["blob_id"],
-            example["src_encoding"]
-        )
+        text = self._download_content(example["blob_id"], example["src_encoding"])
 
         # Skip empty or failed downloads
         if not text or len(text.strip()) == 0:
@@ -153,7 +161,7 @@ class CodeDataset:
 
         # Create chunks
         num_chunks = self.seq_length // self.chunk_size
-        chunks = input_ids[:num_chunks * self.chunk_size].reshape(
+        chunks = input_ids[: num_chunks * self.chunk_size].reshape(
             num_chunks, self.chunk_size
         )
 
@@ -288,7 +296,9 @@ def create_data_iterator(
             }
 
             # Collect results with progress bar
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading"):
+            for future in tqdm(
+                as_completed(futures), total=len(futures), desc="Downloading"
+            ):
                 result = future.result()
                 if result is not None:
                     processed_examples.append(result)
@@ -309,11 +319,13 @@ def create_data_iterator(
             batch["chunks"].append(example["chunks"])
 
             if len(batch["input_ids"]) == batch_size:
-                cached_batches.append({
-                    "input_ids": jnp.array(batch["input_ids"]),
-                    "attention_mask": jnp.array(batch["attention_mask"]),
-                    "chunks": jnp.array(batch["chunks"]),
-                })
+                cached_batches.append(
+                    {
+                        "input_ids": jnp.array(batch["input_ids"]),
+                        "attention_mask": jnp.array(batch["attention_mask"]),
+                        "chunks": jnp.array(batch["chunks"]),
+                    }
+                )
                 batch = {"input_ids": [], "attention_mask": [], "chunks": []}
 
         print(f"Created {len(cached_batches)} batches ready for training")

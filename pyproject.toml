@@ -45,3 +45,7 @@ dev = [
     "ruff>=0.14.5",
     "ty>=0.0.1a26",
 ]
+
+[tool.pyright]
+exclude = [".venv/**", "dist/**"]
+include = ["src/**"]

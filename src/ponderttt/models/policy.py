@@ -12,6 +12,7 @@ import jax.numpy as jnp
 @dataclass
 class PolicyConfig:
     """Configuration for policy network."""
+
     feature_dim: int = 32
     hidden_dim: int = 128
     num_actions: int = 4  # SKIP, UPDATE_1, UPDATE_2, UPDATE_4
@@ -28,6 +29,7 @@ class PolicyNetwork(nn.Module):
     Attributes:
         config: Policy configuration
     """
+
     config: PolicyConfig
 
     @nn.compact
@@ -65,10 +67,12 @@ class PolicyNetwork(nn.Module):
         x = nn.Dropout(rate=cfg.dropout_rate)(x, deterministic=deterministic)
 
         # Actor head (policy)
-        action_logits = nn.Dense(features=cfg.num_actions, dtype=cfg.dtype, name='actor')(x)
+        action_logits = nn.Dense(
+            features=cfg.num_actions, dtype=cfg.dtype, name="actor"
+        )(x)
 
         # Critic head (value)
-        value = nn.Dense(features=1, dtype=cfg.dtype, name='critic')(x)
+        value = nn.Dense(features=1, dtype=cfg.dtype, name="critic")(x)
         value = jnp.squeeze(value, axis=-1)
 
         # Compute action probabilities
@@ -79,30 +83,28 @@ class PolicyNetwork(nn.Module):
             action = jnp.argmax(action_probs, axis=-1)
         else:
             # Sample from categorical distribution
-            key = self.make_rng('action')
+            key = self.make_rng("action")
             action = jax.random.categorical(key, action_logits, axis=-1)
 
         # Compute log probability of selected action
         log_probs = jax.nn.log_softmax(action_logits, axis=-1)
         selected_log_prob = jnp.take_along_axis(
-            log_probs,
-            action[:, None],
-            axis=-1
+            log_probs, action[:, None], axis=-1
         ).squeeze(-1)
 
         # Compute entropy
         entropy = -jnp.sum(action_probs * log_probs, axis=-1)
 
         result = {
-            'action': action,
-            'log_prob': selected_log_prob,
-            'value': value,
-            'entropy': entropy,
+            "action": action,
+            "log_prob": selected_log_prob,
+            "value": value,
+            "entropy": entropy,
         }
 
         if return_logits:
-            result['logits'] = action_logits
-            result['probs'] = action_probs
+            result["logits"] = action_logits
+            result["probs"] = action_probs
 
         return result
 
@@ -126,20 +128,22 @@ class PolicyNetwork(nn.Module):
         # Forward pass (deterministic=True for evaluation)
         x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(features)
         x = nn.relu(x)
+        x = nn.Dropout(rate=cfg.dropout_rate)(x, deterministic=True)
         x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(x)
         x = nn.relu(x)
+        x = nn.Dropout(rate=cfg.dropout_rate)(x, deterministic=True)
 
         # Get action logits and value
-        action_logits = nn.Dense(features=cfg.num_actions, dtype=cfg.dtype, name='actor')(x)
-        value = nn.Dense(features=1, dtype=cfg.dtype, name='critic')(x)
+        action_logits = nn.Dense(
+            features=cfg.num_actions, dtype=cfg.dtype, name="actor"
+        )(x)
+        value = nn.Dense(features=1, dtype=cfg.dtype, name="critic")(x)
         value = jnp.squeeze(value, axis=-1)
 
         # Compute log probability of given actions
         log_probs = jax.nn.log_softmax(action_logits, axis=-1)
         selected_log_prob = jnp.take_along_axis(
-            log_probs,
-            actions[:, None],
-            axis=-1
+            log_probs, actions[:, None], axis=-1
         ).squeeze(-1)
 
         # Compute entropy
@@ -147,9 +151,9 @@ class PolicyNetwork(nn.Module):
         entropy = -jnp.sum(action_probs * log_probs, axis=-1)
 
         return {
-            'log_prob': selected_log_prob,
-            'value': value,
-            'entropy': entropy,
+            "log_prob": selected_log_prob,
+            "value": value,
+            "entropy": entropy,
         }
 
 
@@ -166,10 +170,10 @@ def action_to_cost(action: int) -> jnp.ndarray:
     Based on PLAN.md:
     - SKIP: 1× (forward only)
     - UPDATE_1: 3× (1 fwd + 2 bwd)
-    - UPDATE_2: 5× (2 fwd + 4 bwd)
+    - UPDATE_2: 6× (2 fwd + 4 bwd)
     - UPDATE_4: 12× (4 fwd + 8 bwd)
     """
-    costs = jnp.array([1.0, 3.0, 5.0, 12.0])
+    costs = jnp.array([1.0, 3.0, 6.0, 12.0])
     return costs[action]
 
 

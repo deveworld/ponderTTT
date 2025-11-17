@@ -31,11 +31,11 @@ def compute_pass_at_k(
 
     numerator = 1.0
     for i in range(k):
-        numerator *= (n - c - i)
+        numerator *= n - c - i
 
     denominator = 1.0
     for i in range(k):
-        denominator *= (n - i)
+        denominator *= n - i
 
     return 1.0 - (numerator / denominator)
 
@@ -57,7 +57,7 @@ def compute_flops(
     action_costs = {
         "SKIP": 1.0,
         "UPDATE_1": 3.0,
-        "UPDATE_2": 5.0,
+        "UPDATE_2": 6.0,
         "UPDATE_4": 12.0,
     }
 
@@ -130,8 +130,8 @@ def compute_pareto_frontier(
 
         if is_pareto:
             pareto_methods.append(method)
-            pareto_quality.append(q)
-            pareto_costs.append(c)
+            pareto_quality.append(float(q))
+            pareto_costs.append(float(c))
 
     # Sort by cost
     sorted_indices = np.argsort(pareto_costs)
@@ -163,7 +163,9 @@ def compute_action_statistics(
     }
 
     # Compute entropy of action distribution
-    probs = [counter.get(a, 0) / total for a in ["SKIP", "UPDATE_1", "UPDATE_2", "UPDATE_4"]]
+    probs = [
+        counter.get(a, 0) / total for a in ["SKIP", "UPDATE_1", "UPDATE_2", "UPDATE_4"]
+    ]
     entropy = -sum(p * np.log(p + 1e-10) for p in probs if p > 0)
 
     stats["entropy"] = float(entropy)

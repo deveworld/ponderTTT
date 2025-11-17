@@ -10,6 +10,7 @@ from dataclasses import dataclass
 @dataclass
 class CodeProblem:
     """A single code generation problem."""
+
     task_id: str
     prompt: str
     canonical_solution: str
@@ -34,6 +35,7 @@ class HumanEvalBenchmark:
         """Load HumanEval problems."""
         try:
             from datasets import load_dataset
+
             dataset = load_dataset("openai_humaneval", split="test")
 
             for example in dataset:
@@ -48,7 +50,9 @@ class HumanEvalBenchmark:
                     self.problems.append(problem)
 
         except Exception as e:
-            warnings.warn(f"Failed to load HumanEval: {e}. Using placeholder.", stacklevel=2)
+            warnings.warn(
+                f"Failed to load HumanEval: {e}. Using placeholder.", stacklevel=2
+            )
             # Create placeholder problems for testing
             for i in range(5):
                 self.problems.append(
@@ -86,7 +90,8 @@ class HumanEvalBenchmark:
         """
         warnings.warn(
             "Execution-based evaluation requires a safe sandbox. "
-            "This is a placeholder implementation.", stacklevel=2
+            "This is a placeholder implementation.",
+            stacklevel=2,
         )
 
         # Placeholder: return dummy scores
@@ -114,6 +119,7 @@ class MBPPBenchmark:
         """Load MBPP problems."""
         try:
             from datasets import load_dataset
+
             dataset = load_dataset("mbpp", split="test")
 
             for example in dataset:
@@ -136,7 +142,7 @@ class MBPPBenchmark:
                         task_id=f"mbpp/{i}",
                         prompt=f"Write a function to compute {i}",
                         canonical_solution=f"def solution(n):\n    return n + {i}",
-                        test_code=f"assert solution(1) == {1+i}",
+                        test_code=f"assert solution(1) == {1 + i}",
                         entry_point="solution",
                     )
                 )
@@ -166,7 +172,8 @@ class MBPPBenchmark:
         """
         warnings.warn(
             "Execution-based evaluation requires a safe sandbox. "
-            "This is a placeholder implementation.", stacklevel=2
+            "This is a placeholder implementation.",
+            stacklevel=2,
         )
 
         return {
@@ -190,7 +197,8 @@ class ClassEvalBenchmark:
         self.problems: list[CodeProblem] = []
         warnings.warn(
             "ClassEval dataset is not yet publicly available on HuggingFace. "
-            "Using placeholder.", stacklevel=2
+            "Using placeholder.",
+            stacklevel=2,
         )
         self._load_problems()
 
@@ -245,7 +253,9 @@ class BenchmarkSuite:
             include_mbpp: Include MBPP
             include_classeval: Include ClassEval
         """
-        self.benchmarks = {}
+        self.benchmarks: dict[
+            str, HumanEvalBenchmark | MBPPBenchmark | ClassEvalBenchmark
+        ] = {}
 
         if include_humaneval:
             self.benchmarks["humaneval"] = HumanEvalBenchmark()
