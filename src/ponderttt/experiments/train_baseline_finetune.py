@@ -21,6 +21,7 @@ from ..models import TTTConfig, TTTLayer
 from ..training import TTTTrainer, TrainState
 from ..utils import init_rng, next_rng
 from ..utils.checkpointing import (
+    finalize_checkpointing,
     get_latest_checkpoint_step,
     load_checkpoint,
     save_checkpoint,
