@@ -323,56 +323,62 @@ def main():
 
                 # Count as num_chunks for fair comparison
                 chunks = batch["chunks"]
-                batch_size, num_chunks, chunk_size = chunks.shape
+                batch_sz, num_chunks, chunk_sz = chunks.shape
 
-                for i in range(num_chunks):
+                # Process all sequences in the batch
+                for seq_idx in range(batch_sz):
+                    for chunk_idx in range(num_chunks):
+                        if chunk_count >= args.max_chunks:
+                            break
+
+                        chunk_cost = action_to_cost(args.action)
+                        total_cost += chunk_cost
+                        total_loss += float(sequence_loss)
+                        chunk_count += 1
+
+                        results["chunks"].append(
+                            {
+                                "chunk_id": chunk_count,
+                                "sequence_idx": seq_idx,
+                                "chunk_position": chunk_idx,
+                                "loss": float(sequence_loss),
+                                "cost": chunk_cost,
+                                "action": args.action,
+                            }
+                        )
+
+                        # Save checkpoint periodically
+                        if chunk_count % args.checkpoint_every == 0:
+                            try:
+                                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                                save_checkpoint(
+                                    checkpoint_dir=checkpoint_dir,
+                                    step=chunk_count,
+                                    state={
+                                        "params": unfreeze(state.params),
+                                        "opt_state": state.opt_state,
+                                    },
+                                    metadata={
+                                        "chunk_count": chunk_count,
+                                        "total_cost": total_cost,
+                                        "total_loss": total_loss,
+                                        "results": results,
+                                    },
+                                )
+                                pbar.write(f"Checkpoint saved at chunk {chunk_count}")
+                            except Exception as e:
+                                pbar.write(f"Warning: Checkpoint save failed: {e}")
+
+                        pbar.update(1)
+                        pbar.set_postfix(
+                            {
+                                "loss": f"{sequence_loss:.4f}",
+                                "avg_cost": f"{total_cost / chunk_count:.2f}×",
+                            }
+                        )
+
                     if chunk_count >= args.max_chunks:
                         break
-
-                    chunk_cost = action_to_cost(args.action)
-                    total_cost += chunk_cost
-                    total_loss += float(sequence_loss)
-                    chunk_count += 1
-
-                    results["chunks"].append(
-                        {
-                            "chunk_id": chunk_count,
-                            "chunk_position": i,
-                            "loss": float(sequence_loss),
-                            "cost": chunk_cost,
-                            "action": args.action,
-                        }
-                    )
-
-                    # Save checkpoint periodically
-                    if chunk_count % args.checkpoint_every == 0:
-                        try:
-                            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-                            save_checkpoint(
-                                checkpoint_dir=checkpoint_dir,
-                                step=chunk_count,
-                                state={
-                                    "params": unfreeze(state.params),
-                                    "opt_state": state.opt_state,
-                                },
-                                metadata={
-                                    "chunk_count": chunk_count,
-                                    "total_cost": total_cost,
-                                    "total_loss": total_loss,
-                                    "results": results,
-                                },
-                            )
-                            pbar.write(f"Checkpoint saved at chunk {chunk_count}")
-                        except Exception as e:
-                            pbar.write(f"Warning: Checkpoint save failed: {e}")
-
-                    pbar.update(1)
-                    pbar.set_postfix(
-                        {
-                            "loss": f"{sequence_loss:.4f}",
-                            "avg_cost": f"{total_cost / chunk_count:.2f}×",
-                        }
-                    )
             else:
                 # UPDATE: Adapt on full sequences
                 # Start from base model for each batch
@@ -393,56 +399,62 @@ def main():
 
                 # Count cost per chunk for fair comparison
                 chunks = batch["chunks"]
-                batch_size, num_chunks, chunk_size = chunks.shape
+                batch_sz, num_chunks, chunk_sz = chunks.shape
 
-                for i in range(num_chunks):
+                # Process all sequences in the batch
+                for seq_idx in range(batch_sz):
+                    for chunk_idx in range(num_chunks):
+                        if chunk_count >= args.max_chunks:
+                            break
+
+                        chunk_cost = action_to_cost(args.action)
+                        total_cost += chunk_cost
+                        total_loss += float(sequence_loss)
+                        chunk_count += 1
+
+                        results["chunks"].append(
+                            {
+                                "chunk_id": chunk_count,
+                                "sequence_idx": seq_idx,
+                                "chunk_position": chunk_idx,
+                                "loss": float(sequence_loss),
+                                "cost": chunk_cost,
+                                "action": args.action,
+                            }
+                        )
+
+                        # Save checkpoint periodically
+                        if chunk_count % args.checkpoint_every == 0:
+                            try:
+                                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                                save_checkpoint(
+                                    checkpoint_dir=checkpoint_dir,
+                                    step=chunk_count,
+                                    state={
+                                        "params": unfreeze(state.params),
+                                        "opt_state": state.opt_state,
+                                    },
+                                    metadata={
+                                        "chunk_count": chunk_count,
+                                        "total_cost": total_cost,
+                                        "total_loss": total_loss,
+                                        "results": results,
+                                    },
+                                )
+                                pbar.write(f"Checkpoint saved at chunk {chunk_count}")
+                            except Exception as e:
+                                pbar.write(f"Warning: Checkpoint save failed: {e}")
+
+                        pbar.update(1)
+                        pbar.set_postfix(
+                            {
+                                "loss": f"{sequence_loss:.4f}",
+                                "avg_cost": f"{total_cost / chunk_count:.2f}×",
+                            }
+                        )
+
                     if chunk_count >= args.max_chunks:
                         break
-
-                    chunk_cost = action_to_cost(args.action)
-                    total_cost += chunk_cost
-                    total_loss += float(sequence_loss)
-                    chunk_count += 1
-
-                    results["chunks"].append(
-                        {
-                            "chunk_id": chunk_count,
-                            "chunk_position": i,
-                            "loss": float(sequence_loss),
-                            "cost": chunk_cost,
-                            "action": args.action,
-                        }
-                    )
-
-                    # Save checkpoint periodically
-                    if chunk_count % args.checkpoint_every == 0:
-                        try:
-                            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-                            save_checkpoint(
-                                checkpoint_dir=checkpoint_dir,
-                                step=chunk_count,
-                                state={
-                                    "params": unfreeze(state.params),
-                                    "opt_state": state.opt_state,
-                                },
-                                metadata={
-                                    "chunk_count": chunk_count,
-                                    "total_cost": total_cost,
-                                    "total_loss": total_loss,
-                                    "results": results,
-                                },
-                            )
-                            pbar.write(f"Checkpoint saved at chunk {chunk_count}")
-                        except Exception as e:
-                            pbar.write(f"Warning: Checkpoint save failed: {e}")
-
-                    pbar.update(1)
-                    pbar.set_postfix(
-                        {
-                            "loss": f"{sequence_loss:.4f}",
-                            "avg_cost": f"{total_cost / chunk_count:.2f}×",
-                        }
-                    )
 
     # Compute final statistics
     avg_loss = total_loss / chunk_count
