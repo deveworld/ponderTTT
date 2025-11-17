@@ -21,7 +21,6 @@ from ..models import TTTConfig, TTTLayer
 from ..training import TTTTrainer, TrainState
 from ..utils import init_rng, next_rng
 from ..utils.checkpointing import (
-    finalize_checkpointing,
     get_latest_checkpoint_step,
     load_checkpoint,
     save_checkpoint,
@@ -485,11 +484,6 @@ def main():
         json.dump(results, f, indent=2)
 
     print(f"\nResults saved to: {output_file}")
-
-    # Finalize async checkpointing
-    print("\nWaiting for pending checkpoints to complete...")
-    finalize_checkpointing()
-    print("All checkpoints finalized.")
 
 
 if __name__ == "__main__":

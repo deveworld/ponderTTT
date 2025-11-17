@@ -2,12 +2,7 @@
 Utility functions for PonderTTT.
 """
 
-from .checkpointing import (
-    finalize_checkpointing,
-    load_checkpoint,
-    save_checkpoint,
-    wait_for_checkpoints,
-)
+from .checkpointing import load_checkpoint, save_checkpoint
 from .features import FeatureExtractor, extract_features
 from .jax_utils import (
     JaxRNG,
@@ -36,8 +31,6 @@ __all__ = [
     # Checkpointing
     "save_checkpoint",
     "load_checkpoint",
-    "wait_for_checkpoints",
-    "finalize_checkpointing",
     # JAX distributed utilities
     "JaxRNG",
     "initialize_jax_distributed",
