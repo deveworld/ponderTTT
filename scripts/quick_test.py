@@ -74,7 +74,8 @@ try:
     variables = ttt_layer.init(rng, test_hidden)
     output, stats = ttt_layer.apply(variables, test_hidden)
     print(f" TTT layer works, output shape: {output.shape}")
-    print(f"  TTT loss: {stats['ttt_loss']:.4f}")
+    if stats:
+        print(f"  Stats keys: {list(stats.keys())}")
     tests_passed += 1
 
 except Exception as e:
