@@ -99,12 +99,19 @@ class TTTTrainer:
         """
 
         def loss_fn(params):
+            # Extract embedding kernel for weight tying
+            embedding_kernel = None
+            if "base_model" in params and "transformer" in params["base_model"]:
+                if "wte" in params["base_model"]["transformer"]:
+                    embedding_kernel = params["base_model"]["transformer"]["wte"]["embedding"]
+
             # Forward pass
             outputs = state.apply_fn(
                 {"params": params},
                 batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 deterministic=False,
+                embedding_kernel=embedding_kernel,
             )
 
             # Compute loss (language modeling)
@@ -171,11 +178,18 @@ class TTTTrainer:
         Returns:
             metrics: Evaluation metrics
         """
+        # Extract embedding kernel for weight tying
+        embedding_kernel = None
+        if "base_model" in state.params and "transformer" in state.params["base_model"]:
+            if "wte" in state.params["base_model"]["transformer"]:
+                embedding_kernel = state.params["base_model"]["transformer"]["wte"]["embedding"]
+
         outputs = state.apply_fn(
             {"params": state.params},
             batch["input_ids"],
             attention_mask=batch["attention_mask"],
             deterministic=True,
+            embedding_kernel=embedding_kernel,
         )
 
         logits = outputs["logits"]
