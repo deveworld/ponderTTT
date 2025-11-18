@@ -15,9 +15,13 @@ class ExperimentModelConfig:
     num_heads: int = 12
     head_dim: int = 64
     ttt_hidden_dim: int = 2048
-    chunk_size: int = 512  # Must be <= model's max_position_embeddings (1024 for GPT-2)
+    mini_batch_size: int = 16  # Official TTT uses 16 (changed from chunk_size=512)
+    chunk_size: int = 512  # For compatibility, but TTT uses mini_batch_size
     max_seq_length: int = 1024  # GPT-2 maximum
     dropout_rate: float = 0.1
+    ttt_base_lr: float = 1.0  # Base learning rate for TTT
+    rope_theta: float = 10000.0  # RoPE theta
+    conv_width: int = 4  # Causal convolution kernel width
 
 
 @dataclass
