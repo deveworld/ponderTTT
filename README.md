@@ -80,10 +80,15 @@ uv pip install -e .
 
 HuggingFace is removing JAX/Flax support in Transformers v5. Our dependency is pinned to v4.x to ensure compatibility. See [transformers#40822](https://github.com/huggingface/transformers/issues/40822) for details.
 
-If you need to use a newer version in the future, consider:
-1. Migrating to PyTorch backend (requires significant refactoring)
-2. Using JAX-native pretrained models (e.g., from `flax-community`)
-3. Implementing GPT-2 directly in Flax (removes Transformers dependency)
+**Future Migration Options** (when needed):
+1. **Native Flax GPT-2** (Recommended for TPU): Implement GPT-2 in pure Flax/JAX
+   - Reference: [Google's GPT-2 JAX/TPU guide](https://developers.googleblog.com/en/train-gpt2-model-with-jax-on-tpu/)
+   - Uses NNX (Flax's new interface) + Orbax checkpointing
+   - Optimal for TPU deployment
+2. **PyTorch Migration**: Convert entire codebase to PyTorch
+   - Enables latest Transformers features
+   - Requires 2-3 weeks refactoring
+3. **Community Models**: Use JAX-native checkpoints from `flax-community`
 
 ## Quick Start
 
