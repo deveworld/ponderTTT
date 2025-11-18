@@ -410,16 +410,9 @@ class TTTTransformerLM(nn.Module):
         # Fast weights: TTT layer (adaptive, trainable)
         self.ttt_layer = TTTLayer(config=self.ttt_config)
 
-        # LM head: Independent trainable projection
-        # NOTE: Official TTT uses weight tying (tie_word_embeddings=True)
-        # However, implementing weight tying with Flax and HuggingFace pretrained models
-        # requires complex parameter manipulation that may not work with JIT compilation.
-        #
-        # For now, we use an independent LM head. This adds ~38.6M parameters for GPT-2.
-        # Future work: Implement proper weight tying following official TTT.
-        #
-        # Academic note: This is a known limitation documented in REMAINING_ISSUES.md
-        self.tie_word_embeddings = False  # TODO: Implement proper weight tying
+        # LM head with weight tying (following official TTT-LM-JAX)
+        # Weight tying shares embedding weights with LM head to reduce parameters
+        self.tie_word_embeddings = True
 
         self.lm_head = nn.Dense(
             self.vocab_size,
@@ -434,6 +427,7 @@ class TTTTransformerLM(nn.Module):
         attention_mask: jnp.ndarray | None = None,
         deterministic: bool = True,
         use_ttt: bool = True,
+        embedding_kernel: jnp.ndarray | None = None,
     ) -> dict:
         """
         Forward pass combining slow and fast weights.
@@ -446,6 +440,7 @@ class TTTTransformerLM(nn.Module):
             attention_mask: Attention mask [batch, seq_len]
             deterministic: Whether to use dropout
             use_ttt: Whether to apply TTT layer (False for SKIP baseline)
+            embedding_kernel: Embedding weights for weight tying [vocab_size, hidden_dim]
 
         Returns:
             Dictionary with:
@@ -473,8 +468,14 @@ class TTTTransformerLM(nn.Module):
                 enable_internal_updates=True,  # Enable TTT updates (official implementation)
             )
 
-            # Project adapted hidden states to vocabulary logits
-            logits = self.lm_head(adapted_hidden)
+            # Project adapted hidden states to vocabulary logits with weight tying
+            if self.tie_word_embeddings and embedding_kernel is not None:
+                # Use shared embedding weights for LM head
+                # Following official TTT-LM-JAX implementation (model.py:932-934)
+                shared_kernel = embedding_kernel.T  # [hidden_dim, vocab_size]
+                logits = self.lm_head.apply({"params": {"kernel": shared_kernel}}, adapted_hidden)
+            else:
+                logits = self.lm_head(adapted_hidden)
 
             return {
                 "logits": logits,
