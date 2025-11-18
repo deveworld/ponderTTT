@@ -162,6 +162,7 @@ uv run python -m ponderttt.experiments.train_policy \
 1. **The Stack Dataset**: Gated, requires HuggingFace approval for access **RESOLVED** - Using The Stack v2
 2. **GPU Resources**: CPU too slow for production training
 3. **Real Benchmarks**: HumanEval/MBPP need real code training data
+4. **⚠️ Transformers v5 Deprecation**: JAX/Flax support removed in v5 - **MITIGATED** - Version pinned to v4.x (<5.0.0)
 
 ### Implementation Details (v0.2.0)
 1. **chunk_size**: 512 for GPT-2 compatibility (max_position_embeddings=1024)

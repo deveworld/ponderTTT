@@ -74,6 +74,17 @@ uv pip install -e .
 
 **Note**: CPU validation confirmed working. Use for development and testing only.
 
+### Important: HuggingFace Transformers Version
+
+⚠️ **This project requires Transformers v4.x** (pinned to `<5.0.0`)
+
+HuggingFace is removing JAX/Flax support in Transformers v5. Our dependency is pinned to v4.x to ensure compatibility. See [transformers#40822](https://github.com/huggingface/transformers/issues/40822) for details.
+
+If you need to use a newer version in the future, consider:
+1. Migrating to PyTorch backend (requires significant refactoring)
+2. Using JAX-native pretrained models (e.g., from `flax-community`)
+3. Implementing GPT-2 directly in Flax (removes Transformers dependency)
+
 ## Quick Start
 
 ### 1. Run Baseline Experiments (Requires GPU)
