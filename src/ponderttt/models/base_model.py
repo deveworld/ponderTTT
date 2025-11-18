@@ -410,10 +410,17 @@ class TTTTransformerLM(nn.Module):
         # Fast weights: TTT layer (adaptive, trainable)
         self.ttt_layer = TTTLayer(config=self.ttt_config)
 
-        # LM head: Independent trainable projection layer
-        # Since base model (including embedding) is frozen, we use an independent
-        # trainable LM head that can adapt to the TTT layer's learned transformations
-        # This is academically correct: θ_fast includes both TTT layer and LM head
+        # LM head: Independent trainable projection
+        # NOTE: Official TTT uses weight tying (tie_word_embeddings=True)
+        # However, implementing weight tying with Flax and HuggingFace pretrained models
+        # requires complex parameter manipulation that may not work with JIT compilation.
+        #
+        # For now, we use an independent LM head. This adds ~38.6M parameters for GPT-2.
+        # Future work: Implement proper weight tying following official TTT.
+        #
+        # Academic note: This is a known limitation documented in REMAINING_ISSUES.md
+        self.tie_word_embeddings = False  # TODO: Implement proper weight tying
+
         self.lm_head = nn.Dense(
             self.vocab_size,
             use_bias=False,
@@ -457,20 +464,16 @@ class TTTTransformerLM(nn.Module):
         hidden_states = base_outputs.hidden_states[-1]  # [batch, seq_len, hidden_dim]
 
         if use_ttt:
-            # Apply TTT layer WITHOUT internal self-supervised updates
-            # Pass enable_internal_updates=False to disable self-supervised learning
-            # TTT layer is just a learnable feedforward transformation
+            # Apply TTT layer with full test-time training
+            # This now includes self-supervised learning (XV - XK)
             adapted_hidden, ttt_stats = self.ttt_layer(
                 hidden_states,
                 mask=attention_mask,
                 deterministic=deterministic,
-                enable_internal_updates=False,  # Disable internal TTT updates for baselines
+                enable_internal_updates=True,  # Enable TTT updates (official implementation)
             )
 
             # Project adapted hidden states to vocabulary logits
-            # Use independent trainable LM head (part of θ_fast)
-            # This is academically correct: LM head learns to map TTT-adapted
-            # hidden states to vocabulary, adapting as TTT layer learns
             logits = self.lm_head(adapted_hidden)
 
             return {
