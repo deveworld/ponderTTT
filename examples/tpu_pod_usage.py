@@ -5,7 +5,7 @@ This example demonstrates how to initialize and use PonderTTT models
 on Google Cloud TPU Pods (v4-64) with proper parameter sharding.
 """
 
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp

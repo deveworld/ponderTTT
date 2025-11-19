@@ -34,6 +34,7 @@ import jax
 import jax.numpy as jnp
 import argparse
 from functools import partial
+from jax.experimental.pjit import pjit
 
 from ponderttt.utils import (
     initialize_jax_distributed,
@@ -167,11 +168,14 @@ def check_parameter_sharding(mesh):
 
         from jax.sharding import NamedSharding, PartitionSpec as P
 
-        param_sharding = NamedSharding(mesh, P('batch', None))
-        sharded_params = jax.tree_util.tree_map(
-            lambda x: jax.device_put(x, param_sharding),
-            params,
-        )
+        def _shard_array(x):
+            if x.ndim >= 2:
+                spec = P('batch', *([None] * (x.ndim - 1)))
+            else:
+                spec = P()
+            return jax.device_put(x, NamedSharding(mesh, spec))
+
+        sharded_params = jax.tree_util.tree_map(_shard_array, params)
 
         print_on_main(" PASS: Parameters sharded successfully")
 
@@ -236,25 +240,28 @@ def check_collective_ops(mesh):
     print_on_main("=" * 80)
 
     try:
-        # Create a value unique to each process
-        local_value = jnp.array([float(jax.process_index())])
+        from jax.sharding import NamedSharding, PartitionSpec as P
 
-        # AllReduce (sum across all processes)
-        @jax.jit
+        mesh_size = mesh.shape['batch']
+        sharding = NamedSharding(mesh, P('batch'))
+        local_value = (
+            jnp.ones((mesh_size,), dtype=jnp.float32) * float(jax.process_index())
+        )
+
+        @partial(
+            pjit,
+            in_shardings=NamedSharding(mesh, P('batch')),
+            out_shardings=NamedSharding(mesh, P('batch')),
+        )
         def allreduce_sum(x):
             return jax.lax.psum(x, axis_name='batch')
 
         with mesh:
-            # Shard the value
-            from jax.sharding import NamedSharding, PartitionSpec as P
-            sharding = NamedSharding(mesh, P('batch'))
             sharded_value = jax.device_put(local_value, sharding)
-
-            # Perform allreduce
             result = allreduce_sum(sharded_value)
 
         expected = sum(range(jax.process_count()))
-        actual = float(result[0])
+        actual = float(jax.device_get(result)[0])
 
         if abs(actual - expected) < 1e-6:
             print_on_main(" PASS: AllReduce works correctly")
