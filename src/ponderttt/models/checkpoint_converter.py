@@ -118,7 +118,7 @@ def _load_weights_from_state_dict(model: GPT2LMHeadModel, state_dict: dict[str, 
     # LM head (only if not using weight tying)
     if not model.tie_word_embeddings and "lm_head.weight" in state_dict:
         lm_head_weight = state_dict["lm_head.weight"].numpy()
-        model.lm_head.kernel.value = jnp.array(lm_head_weight)  # No transpose needed
+        model.lm_head.kernel.value = jnp.array(lm_head_weight).T
 
 
 def save_checkpoint(
