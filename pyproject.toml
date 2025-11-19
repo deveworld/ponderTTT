@@ -1,6 +1,6 @@
 [project]
 name = "ponderttt"
-version = "0.2.0"
+version = "0.3.0"
 description = "Adaptive Budget-Constrained Test-Time Training for Code Generation"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -22,9 +22,6 @@ dependencies = [
     "einops>=0.8.1",
     "ml_collections>=1.1.0",
     # Data and tokenization
-    # Pin to v4.x: JAX/Flax support removed in v5
-    # See: https://github.com/huggingface/transformers/issues/40822
-    "transformers>=4.57.1,<5.0.0",
     "datasets>=4.4.1",
     "tokenizers>=0.22.1",
     "boto3>=1.40.74",
@@ -36,6 +33,8 @@ dependencies = [
     "wandb>=0.23.0",
     # Scientific computing
     "scipy>=1.16.3",
+    # For one-time checkpoint conversion from HuggingFace
+    "transformers>=4.57.1",
 ]
 
 [dependency-groups]

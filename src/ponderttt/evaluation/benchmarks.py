@@ -5,6 +5,9 @@ Code generation benchmarks (HumanEval, MBPP, ClassEval).
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Iterable
+
+from .metrics import compute_pass_at_k
 
 
 @dataclass
@@ -75,30 +78,37 @@ class HumanEvalBenchmark:
 
     def evaluate(
         self,
-        generate_fn: Callable[[str], list[str]],
+        generate_fn: Callable[[str], Iterable[str]],
         k: int = 100,
     ) -> dict[str, float]:
-        """
-        Evaluate model on HumanEval.
+        scores = []
+        attempts_per_problem: list[int] = []
 
-        Args:
-            generate_fn: Function that takes prompt and returns k completions
-            k: Number of samples per problem
+        for problem in self.problems:
+            samples = list(generate_fn(problem.prompt))
+            if not samples:
+                attempts_per_problem.append(0)
+                scores.append(0.0)
+                continue
 
-        Returns:
-            Dictionary with pass@k scores
-        """
-        warnings.warn(
-            "Execution-based evaluation requires a safe sandbox. "
-            "This is a placeholder implementation.",
-            stacklevel=2,
-        )
+            total = min(k, len(samples))
+            correct = 0
+            for completion in samples[:total]:
+                if _check_solution(problem, completion):
+                    correct += 1
 
-        # Placeholder: return dummy scores
+            attempts_per_problem.append(total)
+            scores.append(
+                compute_pass_at_k(total, correct, min(k, total)) if total > 0 else 0.0
+            )
+
+        if not scores:
+            return {"pass@k": 0.0, "num_problems": 0, "avg_attempts": 0.0}
+
         return {
-            "pass@1": 0.0,
-            "pass@10": 0.0,
-            "pass@100": 0.0,
+            "pass@k": float(sum(scores) / len(scores)),
+            "num_problems": len(scores),
+            "avg_attempts": float(sum(attempts_per_problem) / len(attempts_per_problem)),
         }
 
 
@@ -157,29 +167,37 @@ class MBPPBenchmark:
 
     def evaluate(
         self,
-        generate_fn: Callable[[str], list[str]],
+        generate_fn: Callable[[str], Iterable[str]],
         k: int = 100,
     ) -> dict[str, float]:
-        """
-        Evaluate model on MBPP.
+        scores = []
+        attempts_per_problem: list[int] = []
 
-        Args:
-            generate_fn: Function that takes prompt and returns k completions
-            k: Number of samples per problem
+        for problem in self.problems:
+            samples = list(generate_fn(problem.prompt))
+            if not samples:
+                attempts_per_problem.append(0)
+                scores.append(0.0)
+                continue
 
-        Returns:
-            Dictionary with pass@k scores
-        """
-        warnings.warn(
-            "Execution-based evaluation requires a safe sandbox. "
-            "This is a placeholder implementation.",
-            stacklevel=2,
-        )
+            total = min(k, len(samples))
+            correct = 0
+            for completion in samples[:total]:
+                if _check_solution(problem, completion):
+                    correct += 1
+
+            attempts_per_problem.append(total)
+            scores.append(
+                compute_pass_at_k(total, correct, min(k, total)) if total > 0 else 0.0
+            )
+
+        if not scores:
+            return {"pass@k": 0.0, "num_problems": 0, "avg_attempts": 0.0}
 
         return {
-            "pass@1": 0.0,
-            "pass@10": 0.0,
-            "pass@100": 0.0,
+            "pass@k": float(sum(scores) / len(scores)),
+            "num_problems": len(scores),
+            "avg_attempts": float(sum(attempts_per_problem) / len(attempts_per_problem)),
         }
 
 
@@ -226,12 +244,36 @@ class ClassEvalBenchmark:
 
     def evaluate(
         self,
-        generate_fn: Callable[[str], list[str]],
+        generate_fn: Callable[[str], Iterable[str]],
         k: int = 100,
     ) -> dict[str, float]:
-        """Evaluate model on ClassEval."""
-        warnings.warn("ClassEval evaluation not yet implemented.", stacklevel=2)
-        return {"pass@1": 0.0}
+        scores = []
+        attempts = []
+        for problem in self.problems:
+            samples = list(generate_fn(problem.prompt))
+            if not samples:
+                attempts.append(0)
+                scores.append(0.0)
+                continue
+
+            total = min(k, len(samples))
+            correct = 0
+            for completion in samples[:total]:
+                if _check_solution(problem, completion):
+                    correct += 1
+            attempts.append(total)
+            scores.append(
+                compute_pass_at_k(total, correct, min(k, total)) if total > 0 else 0.0
+            )
+
+        if not scores:
+            return {"pass@k": 0.0, "num_problems": 0, "avg_attempts": 0.0}
+
+        return {
+            "pass@k": float(sum(scores) / len(scores)),
+            "num_problems": len(scores),
+            "avg_attempts": float(sum(attempts) / len(attempts)),
+        }
 
 
 class BenchmarkSuite:
@@ -292,3 +334,16 @@ class BenchmarkSuite:
     def get_benchmark(self, name: str):
         """Get specific benchmark by name."""
         return self.benchmarks.get(name)
+
+
+def _check_solution(problem: CodeProblem, completion: str) -> bool:
+    """Execute completion+tests to determine correctness."""
+    namespace: dict[str, object] = {}
+    source = f"{problem.prompt}\n{completion}\n"
+
+    try:
+        exec(compile(source, "<completion>", "exec"), namespace, namespace)  # noqa: S102
+        exec(compile(problem.test_code, "<tests>", "exec"), namespace, namespace)  # noqa: S102
+        return True
+    except Exception:
+        return False

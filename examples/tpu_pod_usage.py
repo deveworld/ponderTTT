@@ -5,17 +5,15 @@ This example demonstrates how to initialize and use PonderTTT models
 on Google Cloud TPU Pods (v4-64) with proper parameter sharding.
 """
 
-from typing import Any, cast
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
-from ponderttt.models import (
-    load_model,
-    initialize_sharded_model,
-)
-from ponderttt.utils import initialize_jax_distributed, create_mesh
-from transformers import PreTrainedTokenizer
+
+from ponderttt.data import get_tokenizer
+from ponderttt.models import load_ttt_model
+from ponderttt.utils import create_mesh, initialize_jax_distributed
 
 # Step 1: Initialize JAX for multi-host distributed training
 initialize_jax_distributed()
@@ -34,39 +32,31 @@ print(f"Created mesh: {mesh}")
 print(f"Mesh shape: {mesh.shape}")
 print(f"Mesh axis names: {mesh.axis_names}")
 
-# Step 3: Load model with sharding support
-model, tokenizer_raw = load_model(
-    model_name="gpt2",  # or "codegen-350M-multi", "gpt2-medium", etc.
-    dtype=jnp.float32,
-    mesh=mesh,
-    shard_params=True,  # Enable parameter sharding
+# Step 3: Load model (NNX) and tokenizer
+model, config = load_ttt_model(
+    model_name="gpt2",
+    seed=42,
+    load_pretrained=False,
 )
-tokenizer = cast(PreTrainedTokenizer, tokenizer_raw)
+model.train()
+tokenizer = get_tokenizer("gpt2")
 
-print(f" Model loaded: {model.config.model_name}")
+print(f" Model loaded: {config.n_layer} layers, hidden {config.n_embd}")
 
-# Step 4: Initialize model parameters with sharding
-rng = jax.random.PRNGKey(42)
-params = initialize_sharded_model(
-    model=model,
-    rng=rng,
-    input_shape=(2, 1024),  # (batch_size, seq_length)
-)
+# Step 4: Prepare input and shard across mesh
+input_text = "def fibonacci(n):\n    if n <= 1:\n        return n"
+encoded = tokenizer.encode(input_text)
+token_ids = encoded.ids[: config.n_positions]
+if len(token_ids) < config.n_positions:
+    token_ids += [tokenizer.token_to_id("<|pad|>")] * (config.n_positions - len(token_ids))
+input_ids = jnp.array([token_ids], dtype=jnp.int32)
 
-print(" Parameters initialized and sharded")
-print(f"Parameter structure: {jax.tree_util.tree_map(lambda x: x.shape, params)}")
+input_sharding = NamedSharding(mesh, P("batch", None))
+sharded_input = jax.device_put(input_ids[:, :512], input_sharding)
 
-# Step 5: Example forward pass
-input_text = "def fibonacci(n):"
-input_ids = tokenizer.encode(input_text, return_tensors="jax")
-
-# Shard input data across devices
-input_sharding = NamedSharding(mesh, P('batch', None))
-sharded_input = jax.device_put(input_ids, input_sharding)
-
-# Forward pass
-outputs = cast(dict[str, Any], model.apply({'params': params}, sharded_input))
-logits = outputs['logits']
+# Forward pass (TTT disabled for inference demo)
+outputs = cast(dict[str, Any], model(sharded_input, use_ttt=False))
+logits = outputs["logits"]
 
 print(" Forward pass complete")
 print(f"Input shape: {sharded_input.shape}")
@@ -76,9 +66,5 @@ print(f"Output logits shape: {logits.shape}")
 print("\nSharding verification:")
 print(f"Input sharding: {sharded_input.sharding}")
 print(f"Output sharding: {logits.sharding}")
-
-# Check parameter sharding
-param_sample = jax.tree_util.tree_leaves(params)[0]
-print(f"Parameter sharding example: {param_sample.sharding}")
 
 print("\n TPU Pod sharding example complete!")

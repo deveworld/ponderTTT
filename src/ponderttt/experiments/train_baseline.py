@@ -1,41 +1,34 @@
 """
-Train baseline TTT models with fixed action schedules.
+Train baseline TTT models with fixed action schedules (NNX version).
 
 Implements the architecture from PLAN.md:
 - Slow weights (θ_slow): Frozen pretrained model
 - Fast weights (θ_fast): Adaptive TTT layer weights
 
 Usage:
-    python -m ponderttt.experiments.train_baseline_ttt --model_scale 125m --action UPDATE_1
+    python -m ponderttt.experiments.train_baseline --model_scale 125m --action UPDATE_1
 """
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import cast
 
 import jax
-import jax.numpy as jnp
 import optax
-from flax.training import train_state
+from flax import nnx
+from tokenizers import Tokenizer
 from tqdm import tqdm
-from transformers import PreTrainedTokenizer
 
 from ..data import create_data_iterator, get_tokenizer
-from ..models import TTTConfig, load_ttt_model
-from ..utils import init_rng, next_rng
-from ..utils.checkpointing import (
-    finalize_checkpointing,
-    get_latest_checkpoint_step,
-    load_checkpoint,
-    save_checkpoint,
-)
-from .config import get_1b_config, get_125m_config, get_350m_config
+from ..models import load_ttt_model
+from .training_utils import run_chunk_step
 
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Train baseline TTT model")
+    parser = argparse.ArgumentParser(description="Train baseline TTT model (NNX)")
 
     parser.add_argument(
         "--model_scale",
@@ -48,37 +41,48 @@ def parse_args():
         "--action",
         type=str,
         choices=["SKIP", "UPDATE_1", "UPDATE_2", "UPDATE_4"],
-        default="UPDATE_1",
-        help="Fixed action to use for all chunks",
+        required=True,
+        help="Fixed action to use throughout training",
     )
     parser.add_argument(
-        "--max_chunks",
-        type=int,
-        default=100,
-        help="Maximum number of chunks to process",
+        "--max_chunks", type=int, default=100, help="Maximum number of chunks to process"
+    )
+    parser.add_argument(
+        "--learning_rate", type=float, default=3e-4, help="Learning rate"
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="outputs/baselines_ttt",
+        default="outputs/baselines_nnx",
         help="Output directory",
     )
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed",
+        "--seed", type=int, default=42, help="Random seed"
     )
     parser.add_argument(
-        "--checkpoint_every",
-        type=int,
-        default=10,
-        help="Save checkpoint every N chunks",
-    )
-    parser.add_argument(
-        "--resume",
+        "--load_pretrained",
         action="store_true",
-        help="Resume from latest checkpoint if available",
+        default=True,
+        help="Load pretrained GPT-2 weights (default: True, use --no-load-pretrained to disable)"
+    )
+    parser.add_argument(
+        "--no-load-pretrained",
+        action="store_false",
+        dest="load_pretrained",
+        help="Don't load pretrained weights (use random initialization)"
+    )
+    parser.add_argument(
+        "--fast_weight_type",
+        type=str,
+        choices=["ttt", "lora"],
+        default="ttt",
+        help="Type of fast weights: 'ttt' (TTT Layer) or 'lora' (LoRA)"
+    )
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=64,
+        help="LoRA rank (only used if fast_weight_type='lora')"
     )
 
     return parser.parse_args()
@@ -86,445 +90,252 @@ def parse_args():
 
 def action_to_steps(action: str) -> int:
     """Convert action name to number of TTT steps."""
-    mapping = {
-        "SKIP": 0,
-        "UPDATE_1": 1,
-        "UPDATE_2": 2,
-        "UPDATE_4": 4,
-    }
+    mapping = {"SKIP": 0, "UPDATE_1": 1, "UPDATE_2": 2, "UPDATE_4": 4}
     return mapping[action]
 
 
 def action_to_cost(action: str) -> float:
-    """Convert action name to computational cost."""
-    mapping = {
-        "SKIP": 1.0,
-        "UPDATE_1": 3.0,
-        "UPDATE_2": 6.0,
-        "UPDATE_4": 12.0,
-    }
+    """Convert action name to computational cost multiplier."""
+    mapping = {"SKIP": 1.0, "UPDATE_1": 3.0, "UPDATE_2": 6.0, "UPDATE_4": 12.0}
     return mapping[action]
 
 
-def get_checkpoint_dir(output_dir: str, model_scale: str, action: str) -> Path:
-    """Get checkpoint directory path."""
-    return Path(output_dir).resolve() / model_scale / action / "checkpoints"
+def get_model_name(model_scale: str) -> str:
+    """Convert model scale to HuggingFace model name."""
+    mapping = {
+        "125m": "gpt2",
+        "350m": "gpt2-medium",
+        "1b": "gpt2-large",
+    }
+    return mapping[model_scale]
 
 
-def try_load_checkpoint(checkpoint_dir: Path):
-    """Try to load latest checkpoint. Returns None if no checkpoint exists."""
-    try:
-        if not checkpoint_dir.exists():
-            return None
-
-        latest_step = get_latest_checkpoint_step(checkpoint_dir)
-        if latest_step is None:
-            return None
-
-        print(f"\nFound checkpoint at step {latest_step}")
-        checkpoint = load_checkpoint(checkpoint_dir, latest_step)
-        print(f"Successfully loaded checkpoint from step {latest_step}")
-        return checkpoint
-
-    except Exception as e:
-        print(f"Warning: Failed to load checkpoint: {e}")
-        return None
+def count_params(model: nnx.Module) -> int:
+    """Count total parameters in NNX model."""
+    state = nnx.state(model)
+    return sum(x.size for x in jax.tree.leaves(state))
 
 
 def main():
-    """Main training function."""
     args = parse_args()
 
     print("=" * 60)
-    print("PonderTTT Baseline Training (TTT Architecture)")
+    print("PonderTTT Baseline Training (NNX)")
     print("=" * 60)
     print(f"Model scale: {args.model_scale}")
     print(f"Action: {args.action}")
     print(f"Max chunks: {args.max_chunks}")
     print(f"Output dir: {args.output_dir}")
-    print()
 
-    # Get configuration
-    if args.model_scale == "125m":
-        config = get_125m_config()
-    elif args.model_scale == "350m":
-        config = get_350m_config()
-    else:
-        config = get_1b_config()
+    # Create output directory
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    config.seed = args.seed
-    config.output_dir = args.output_dir
+    # Get model configuration
+    model_name = get_model_name(args.model_scale)
+    num_ttt_steps = action_to_steps(args.action)
+    cost_multiplier = action_to_cost(args.action)
+    use_ttt = (num_ttt_steps > 0)
 
-    # Initialize RNG
-    init_rng(config.seed)
+    print("\nConfiguration:")
+    print(f"  Model: {model_name}")
+    print(f"  TTT steps: {num_ttt_steps}")
+    print(f"  Cost multiplier: {cost_multiplier}x")
+    print(f"  Use TTT: {use_ttt}")
 
     # Load tokenizer
-    print("Loading tokenizer...")
-    tokenizer = cast(PreTrainedTokenizer, get_tokenizer(config.model.model_name))
+    print("\nLoading tokenizer...")
+    tokenizer = cast(Tokenizer, get_tokenizer(model_name))
 
-    # Create data iterator from The Stack dataset
+    # Create data iterator
     print("Creating data iterator...")
-    import math
+    batch_size = 4  # Small batch for CPU/testing
+    seq_length = 2048
+    chunk_size = 512
 
-    num_chunks_per_seq = config.model.max_seq_length // config.model.chunk_size
-    num_batches_needed = math.ceil(
-        args.max_chunks / (num_chunks_per_seq * config.training.batch_size)
-    )
-    num_examples_needed = int(num_batches_needed * config.training.batch_size * 1.5)
-
-    print(f"Downloading {num_examples_needed} examples for {args.max_chunks} chunks...")
+    chunks_per_sequence = seq_length // chunk_size
+    examples_needed = math.ceil(args.max_chunks / max(chunks_per_sequence, 1))
 
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         split="train",
-        batch_size=config.training.batch_size,
-        seq_length=config.model.max_seq_length,
-        chunk_size=config.model.chunk_size,
-        max_examples=num_examples_needed,
+        batch_size=batch_size,
+        seq_length=seq_length,
+        chunk_size=chunk_size,
+        max_examples=examples_needed * batch_size,
     )
 
-    # Initialize TTT model
-    print("Initializing TTT model...")
-    ttt_config = TTTConfig(
-        hidden_dim=config.model.hidden_dim,
-        num_heads=config.model.num_heads,
-        head_dim=config.model.head_dim,
-        ttt_hidden_dim=config.model.ttt_hidden_dim,
-        chunk_size=config.model.chunk_size,
-        max_seq_length=config.model.max_seq_length,
-        dtype=jnp.float32,
-    )
+    # Initialize model
+    print(f"\nInitializing model with {args.fast_weight_type.upper()} fast weights...")
 
-    model, _ = load_ttt_model(
-        model_name=config.model.model_name,
-        ttt_config=ttt_config,
-        dtype=jnp.float32,
-    )
+    # Prepare config based on fast weight type
+    if args.fast_weight_type == "lora":
+        from ponderttt.models import LoRAConfig
+        lora_config = LoRAConfig(
+            hidden_dim=768 if args.model_scale == "125m" else 1024 if args.model_scale == "350m" else 1280,
+            rank=args.lora_rank,
+            alpha=float(args.lora_rank),
+            dropout_rate=0.1,
+        )
+        print(f"  LoRA rank: {args.lora_rank}")
+        model, config = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="lora",
+            lora_config=lora_config,
+            seed=args.seed,
+            load_pretrained=args.load_pretrained
+        )
+    else:
+        model, config = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=args.seed,
+            load_pretrained=args.load_pretrained
+        )
 
-    # Initialize model parameters
-    rng_key = next_rng()
-    rng_key = (
-        jax.random.PRNGKey(config.seed)
-        if not isinstance(rng_key, jax.Array)
-        else rng_key
-    )
-    dummy_input = jnp.ones((1, config.model.max_seq_length), dtype=jnp.int32)
-    variables = model.init(rng_key, dummy_input, deterministic=True)
-    params = variables["params"]
+    # Set to training mode
+    model.train()
 
-    print("\nModel architecture:")
-    print(f"  Slow weights (θ_slow): {config.model.model_name} (frozen)")
-    print("  Fast weights (θ_fast): TTT layer + LM head (trainable)")
-    print(f"  TTT hidden dim: {config.model.ttt_hidden_dim}")
+    print(f"✓ Model loaded: {config.n_layer} layers, {config.n_embd} dim")
+    print(f"  Fast weight type: {args.fast_weight_type}")
+    total_params = count_params(model)
+    print(f"  Total parameters: {total_params:,}")
 
-    # Count parameters
-    import jax
-    def count_params(params_dict):
-        return sum(x.size for x in jax.tree_util.tree_leaves(params_dict))
+    # Create optimizer (only optimize TTT layer parameters)
+    print("\nCreating optimizer...")
 
-    params_dict = unfreeze(params)
-    total_params = count_params(params)
-    frozen_params = count_params(params_dict.get('base_model', {}))
-    trainable_params = total_params - frozen_params
+    # Extract TTT layer parameters only (freeze slow weights)
+    # Following PLAN.md: θ_slow (frozen), θ_fast (trainable)
+    trainable_params = model.get_trainable_params()
+    trainable_param_count = sum(x.size for x in jax.tree.leaves(trainable_params))
 
-    print(f"\nParameters:")
-    print(f"  Total: {total_params:,}")
-    print(f"  Frozen (θ_slow): {frozen_params:,}")
-    print(f"  Trainable (θ_fast): {trainable_params:,} ({100*trainable_params/total_params:.1f}%)")
-    print()
+    print(f"  Total parameters: {total_params:,}")
+    print(f"  Trainable parameters (TTT layer only): {trainable_param_count:,}")
+    print(f"  Frozen parameters (base model): {total_params - trainable_param_count:,}")
 
-    # Create optimizer with frozen base model parameters
-    # Only TTT layer and LM head (θ_fast) are trainable
-    # Base GPT-2 (θ_slow) is frozen
-
-    # Create partition spec: freeze base_model, train ttt_layer and lm_head
-    from flax.core import freeze, unfreeze
-    import optax
-
-    # Partition parameters into frozen and trainable
-    def create_mask(params):
-        """Create mask: True = trainable, False = frozen"""
-        params_dict = unfreeze(params)
-        mask = {}
-        for key in params_dict:
-            if key == 'base_model':
-                # Freeze entire base model (θ_slow)
-                mask[key] = False
-            elif key in ['ttt_layer', 'lm_head']:
-                # Train TTT layer and LM head (θ_fast)
-                mask[key] = True
-            else:
-                # Default: train other parameters
-                mask[key] = True
-        return freeze(mask)
-
-    # Create masked optimizer (only updates trainable parameters)
-    trainable_mask = create_mask(params)
-    optimizer = optax.multi_transform(
-        {
-            True: optax.adam(config.training.learning_rate),  # Trainable params
-            False: optax.set_to_zero(),  # Frozen params (no update)
-        },
-        trainable_mask
-    )
-
-    # Create train state
-    state = train_state.TrainState.create(
-        apply_fn=model.apply,
-        params=params,
-        tx=optimizer,
-    )
+    # Create optimizer for all parameters
+    # Base model will be frozen via stop_gradient in the model's forward pass
+    optimizer = nnx.Optimizer(model, optax.adam(args.learning_rate), wrt=nnx.All(nnx.Param))
+    print(f"✓ Optimizer: Adam (lr={args.learning_rate}, base_model frozen via stop_gradient)")
 
     # Training loop
     print("\nStarting training...")
-    print(f"Action: {args.action} ({action_to_steps(args.action)} TTT steps)")
-    print(f"Cost: {action_to_cost(args.action)}×")
-    print()
+    print(f"Processing {args.max_chunks} chunks...")
 
-    num_steps = action_to_steps(args.action)
-    total_cost = 0.0
     total_loss = 0.0
-    chunk_count = 0
+    total_perplexity = 0.0
+    total_cost = 0.0
+    chunks_processed = 0
 
-    results = {
-        "config": {
-            "model_scale": args.model_scale,
-            "action": args.action,
-            "num_steps": num_steps,
-            "cost_per_chunk": action_to_cost(args.action),
-            "architecture": "TTT (slow + fast weights)",
-        },
-        "chunks": [],
-    }
+    action_steps = action_to_steps(args.action)
+    cost_multiplier = action_to_cost(args.action)
 
-    # Save base TTT parameters (will be restored for each batch)
-    base_params = state.params
-
-    # Checkpoint management
-    checkpoint_dir = get_checkpoint_dir(args.output_dir, args.model_scale, args.action)
-
-    # Try to resume from checkpoint
-    if args.resume:
-        checkpoint = try_load_checkpoint(checkpoint_dir)
-        if checkpoint is not None:
-            # Restore state
-            state = state.replace(
-                params=checkpoint["state"]["params"],
-                opt_state=checkpoint["state"]["opt_state"],
-            )
-            base_params = state.params
-
-            # Restore progress
-            chunk_count = checkpoint["metadata"]["chunk_count"]
-            total_cost = checkpoint["metadata"]["total_cost"]
-            total_loss = checkpoint["metadata"]["total_loss"]
-            results = checkpoint["metadata"]["results"]
-
-            print(f"Resumed from chunk {chunk_count}")
-            print(f"Resuming with {args.max_chunks - chunk_count} chunks remaining")
-
-            # Skip already-processed batches to maintain data consistency
-            num_chunks_per_batch = num_chunks_per_seq * config.training.batch_size
-            batches_to_skip = chunk_count // num_chunks_per_batch
-
-            if batches_to_skip > 0:
-                print(f"Skipping {batches_to_skip} already-processed batches...")
-                for _ in range(batches_to_skip):
-                    try:
-                        next(data_iter)
-                    except StopIteration:
-                        print("Warning: Reached end of data while skipping batches")
-                        break
-                print(f"✓ Skipped {batches_to_skip} batches\n")
-            else:
-                print()
-
-    # Define loss function for TTT updates
-    def compute_loss(params, batch):
-        """Compute language modeling loss with TTT layer."""
-        outputs = model.apply(
-            {"params": params},
-            batch["input_ids"],
-            attention_mask=batch["attention_mask"],
-            deterministic=True,
-            use_ttt=(num_steps > 0),  # Skip TTT for SKIP action
-        )
-
-        logits = outputs["logits"]
-        labels = batch["input_ids"][:, 1:]
-        logits = logits[:, :-1]
-
-        vocab_size = logits.shape[-1]
-        loss = optax.softmax_cross_entropy_with_integer_labels(
-            logits.reshape(-1, vocab_size),
-            labels.reshape(-1),
-        )
-
-        mask = batch["attention_mask"][:, 1:]
-        loss = loss * mask.reshape(-1)
-        loss = jnp.sum(loss) / jnp.sum(mask)
-
-        return loss
-
-    # JIT compile for speed
-    @jax.jit
-    def ttt_update_step(params, opt_state, batch):
-        """Single TTT gradient step on fast weights."""
-        loss, grads = jax.value_and_grad(compute_loss)(params, batch)
-
-        # Update only TTT layer parameters (fast weights)
-        # Base model parameters remain frozen
-        updates, new_opt_state = optimizer.update(grads, opt_state, params)
-        new_params = optax.apply_updates(params, updates)
-
-        return new_params, new_opt_state, loss
-
-    @jax.jit
-    def evaluate(params, batch):
-        """Evaluate with current parameters."""
-        loss = compute_loss(params, batch)
-        return loss
-
-    with tqdm(
-        total=args.max_chunks, initial=chunk_count, desc="Processing chunks"
-    ) as pbar:
-        for _batch_idx, batch in enumerate(data_iter):
-            if chunk_count >= args.max_chunks:
+    with tqdm(total=args.max_chunks, desc="Training") as pbar:
+        while chunks_processed < args.max_chunks:
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                print("\nData iterator exhausted")
                 break
 
-            # Process each sequence independently
-            # θ_fast accumulates within a sequence, but resets between sequences
-            batch_sz = batch["input_ids"].shape[0]
-
-            # Store losses for each sequence in the batch
-            sequence_losses = []
-
-            for seq_idx in range(batch_sz):
-                # Extract single sequence from batch
-                seq_batch = {
-                    "input_ids": batch["input_ids"][seq_idx:seq_idx+1],
-                    "attention_mask": batch["attention_mask"][seq_idx:seq_idx+1],
-                    "chunks": batch["chunks"][seq_idx:seq_idx+1],
-                }
-
-                # Start from base parameters for each sequence (sequence independence)
-                seq_params = base_params
-                seq_opt_state = state.opt_state
-
-                if num_steps == 0:
-                    # SKIP: No TTT, just evaluate with frozen base model
-                    seq_loss = evaluate(seq_params, seq_batch)
-                else:
-                    # UPDATE: Adapt θ_fast N times per chunk across the sequence
-                    # θ_fast accumulates across chunks within this sequence
-                    current_params = seq_params
-                    current_opt_state = seq_opt_state
-
-                    # Apply N gradient steps on the full sequence
-                    # This updates θ_fast which persists across chunks in the sequence
-                    for _ in range(num_steps):
-                        current_params, current_opt_state, _ = ttt_update_step(
-                            current_params, current_opt_state, seq_batch
-                        )
-
-                    # Evaluate with adapted fast weights
-                    seq_loss = evaluate(current_params, seq_batch)
-
-                sequence_losses.append(seq_loss)
-
-            # Record results per chunk (for fair comparison)
-            chunks = batch["chunks"]
-            batch_sz, num_chunks, chunk_sz = chunks.shape
-
-            # Process all sequences in the batch
-            for seq_idx in range(batch_sz):
-                seq_loss = sequence_losses[seq_idx]
-                for chunk_idx in range(num_chunks):
-                    if chunk_count >= args.max_chunks:
-                        break
-
-                    chunk_cost = action_to_cost(args.action)
-                    total_cost += chunk_cost
-                    total_loss += float(seq_loss)
-                    chunk_count += 1
-
-                    results["chunks"].append(
-                        {
-                            "chunk_id": chunk_count,
-                            "sequence_idx": seq_idx,
-                            "chunk_position": chunk_idx,
-                            "loss": float(seq_loss),
-                            "cost": chunk_cost,
-                            "action": args.action,
-                        }
-                    )
-
-                    # Save checkpoint periodically
-                    if chunk_count % args.checkpoint_every == 0:
-                        try:
-                            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-                            save_checkpoint(
-                                checkpoint_dir=checkpoint_dir,
-                                step=chunk_count,
-                                state={
-                                    "params": state.params,
-                                    "opt_state": state.opt_state,
-                                },
-                                metadata={
-                                    "chunk_count": chunk_count,
-                                    "total_cost": total_cost,
-                                    "total_loss": total_loss,
-                                    "results": results,
-                                },
-                            )
-                            pbar.write(f"Checkpoint saved at chunk {chunk_count}")
-                        except Exception as e:
-                            pbar.write(f"Warning: Checkpoint save failed: {e}")
-
-                    pbar.update(1)
-                    pbar.set_postfix(
-                        {
-                            "loss": f"{sequence_loss:.4f}",
-                            "avg_cost": f"{total_cost / chunk_count:.2f}×",
-                        }
-                    )
-
-                if chunk_count >= args.max_chunks:
+            num_chunks_available = batch["chunks"].shape[1]
+            for chunk_idx in range(num_chunks_available):
+                if chunks_processed >= args.max_chunks:
                     break
 
-    # Compute final statistics
-    avg_loss = total_loss / chunk_count
-    avg_cost = total_cost / chunk_count
+                chunk_batch = {
+                    "input_ids": batch["chunks"][:, chunk_idx, :],
+                    "attention_mask": batch["chunk_attention_mask"][:, chunk_idx, :],
+                }
 
+                if action_steps == 0:
+                    metrics = run_chunk_step(
+                        model,
+                        None,
+                        chunk_batch,
+                        use_ttt=False,
+                        apply_update=False,
+                    )
+                else:
+                    metrics = None
+                    for _ in range(action_steps):
+                        metrics = run_chunk_step(
+                            model,
+                            optimizer,
+                            chunk_batch,
+                            use_ttt=True,
+                            apply_update=True,
+                        )
+
+                assert metrics is not None
+                total_loss += metrics["loss"]
+                total_perplexity += metrics["perplexity"]
+                total_cost += cost_multiplier
+                chunks_processed += 1
+
+                pbar.set_postfix(
+                    {
+                        "loss": f"{metrics['loss']:.4f}",
+                        "ppl": f"{metrics['perplexity']:.2f}",
+                    }
+                )
+                pbar.update(1)
+
+                if chunks_processed % 10 == 0:
+                    avg_loss = total_loss / chunks_processed
+                    avg_ppl = total_perplexity / chunks_processed
+                    print(f"\nChunk {chunks_processed}/{args.max_chunks}:")
+                    print(f"  Average loss: {avg_loss:.4f}")
+                    print(f"  Average perplexity: {avg_ppl:.2f}")
+                    ttt_keys = [k for k in metrics.keys() if k.startswith("ttt_")]
+                    if ttt_keys:
+                        print("  TTT stats:")
+                        for key in ttt_keys:
+                            print(f"    {key}: {metrics[key]:.4f}")
+
+    # Final results
     print("\n" + "=" * 60)
-    print("Training Complete!")
+    print("Training completed!")
     print("=" * 60)
-    print(f"Total chunks processed: {chunk_count}")
-    print(f"Average loss: {avg_loss:.4f}")
-    print(f"Average cost: {avg_cost:.2f}×")
-    print(f"Total cost: {total_cost:.2f}×")
 
-    # Save results
-    output_dir = Path(args.output_dir) / args.model_scale
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if chunks_processed > 0:
+        final_avg_loss = total_loss / chunks_processed
+        final_avg_ppl = total_perplexity / chunks_processed
 
-    results["summary"] = {
-        "total_chunks": chunk_count,
-        "avg_loss": avg_loss,
-        "avg_cost": avg_cost,
-        "total_cost": total_cost,
-    }
+        print("\nFinal metrics:")
+        print(f"  Chunks processed: {chunks_processed}")
+        print(f"  Average loss: {final_avg_loss:.4f}")
+        print(f"  Average perplexity: {final_avg_ppl:.2f}")
+        print(f"  Average cost multiplier: {total_cost / max(chunks_processed, 1):.2f}×")
 
-    output_file = output_dir / f"{args.action}.json"
-    with open(output_file, "w") as f:
-        json.dump(results, f, indent=2)
+        # Save results
+        results = {
+            'model_scale': args.model_scale,
+            'action': args.action,
+            'fast_weight_type': args.fast_weight_type,
+            'lora_rank': args.lora_rank if args.fast_weight_type == 'lora' else None,
+            'num_ttt_steps': num_ttt_steps,
+            'cost_multiplier': cost_multiplier,
+            'chunks_processed': chunks_processed,
+            'final_loss': final_avg_loss,
+            'final_perplexity': final_avg_ppl,
+            'learning_rate': args.learning_rate,
+            'seed': args.seed,
+            'total_cost': total_cost,
+            'avg_cost_per_chunk': total_cost / chunks_processed,
+        }
 
-    print(f"\nResults saved to: {output_file}")
+        # Include fast_weight_type in filename
+        suffix = f"_{args.fast_weight_type}"
+        if args.fast_weight_type == "lora":
+            suffix += f"_r{args.lora_rank}"
+        results_file = output_dir / f"results_{args.model_scale}_{args.action}{suffix}.json"
+        with open(results_file, 'w') as f:
+            json.dump(results, f, indent=2)
 
-    # Wait for any pending checkpoint saves to complete
-    print("\nFinalizing checkpoints...")
-    finalize_checkpointing()
-    print("Done.")
+        print(f"\n✓ Results saved to: {results_file}")
+    else:
+        print("\n⚠️  No chunks processed!")
 
 
 if __name__ == "__main__":

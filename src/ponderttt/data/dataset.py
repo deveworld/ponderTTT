@@ -18,7 +18,7 @@ from botocore import UNSIGNED
 from botocore.client import Config
 from datasets import load_dataset
 from smart_open import open as smart_open
-from transformers import PreTrainedTokenizer
+from tokenizers import Tokenizer
 
 
 class CodeDataset:
@@ -28,7 +28,7 @@ class CodeDataset:
     Downloads actual code content from Software Heritage S3 bucket using unsigned requests.
 
     Args:
-        tokenizer: HuggingFace tokenizer
+        tokenizer: Tokenizer from tokenizers library
         split: Dataset split ('train', 'validation', 'test')
         language: Programming language (e.g., 'Python', 'JavaScript')
         seq_length: Maximum sequence length
@@ -38,7 +38,7 @@ class CodeDataset:
 
     def __init__(
         self,
-        tokenizer: PreTrainedTokenizer,
+        tokenizer: Tokenizer,
         split: str = "train",
         language: str = "Python",
         seq_length: int = 8192,
@@ -51,6 +51,7 @@ class CodeDataset:
         self.seq_length = seq_length
         self.chunk_size = chunk_size
         self.shard_across_hosts = shard_across_hosts
+        self.pad_token_id = self.tokenizer.token_to_id("<|pad|>") or 0
 
         # Setup S3 client for unsigned requests (no AWS credentials needed)
         # Add timeouts to prevent hanging on slow downloads
@@ -147,28 +148,37 @@ class CodeDataset:
         if not text or len(text.strip()) == 0:
             return None
 
-        # Tokenize
-        encoded = self.tokenizer(
-            text,
-            truncation=True,
-            max_length=self.seq_length,
-            padding="max_length",
-            return_tensors="np",
-        )
+        # Tokenize using tokenizers library (returns encoding with attention mask)
+        encoded = self.tokenizer.encode(text)
 
-        input_ids = encoded.input_ids[0]
-        attention_mask = encoded.attention_mask[0].astype(bool)
+        input_ids = np.array(encoded.ids, dtype=np.int32)
+        attention_mask = np.array(encoded.attention_mask, dtype=bool)
 
-        # Create chunks
+        # Truncate or pad to seq_length while keeping attention mask aligned
+        if len(input_ids) > self.seq_length:
+            input_ids = input_ids[: self.seq_length]
+            attention_mask = attention_mask[: self.seq_length]
+        elif len(input_ids) < self.seq_length:
+            pad_length = self.seq_length - len(input_ids)
+            pad_ids = np.full(pad_length, self.pad_token_id, dtype=np.int32)
+            pad_mask = np.zeros(pad_length, dtype=bool)
+            input_ids = np.concatenate([input_ids, pad_ids])
+            attention_mask = np.concatenate([attention_mask, pad_mask])
+
+        # Create chunks + per-chunk attention masks
         num_chunks = self.seq_length // self.chunk_size
-        chunks = input_ids[: num_chunks * self.chunk_size].reshape(
-            num_chunks, self.chunk_size
-        )
+        seq_len = num_chunks * self.chunk_size
+        input_ids = input_ids[:seq_len]
+        attention_mask = attention_mask[:seq_len]
+
+        chunks = input_ids.reshape(num_chunks, self.chunk_size)
+        chunk_attention = attention_mask.reshape(num_chunks, self.chunk_size)
 
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "chunks": chunks,
+            "chunk_attention_mask": chunk_attention,
         }
 
     def __iter__(self) -> Iterator[dict[str, np.ndarray]]:
@@ -189,7 +199,7 @@ class CodeDataset:
 
 
 def create_data_iterator(
-    tokenizer: PreTrainedTokenizer,
+    tokenizer: Tokenizer,
     split: str = "train",
     batch_size: int = 8,
     seq_length: int = 8192,
@@ -232,6 +242,7 @@ def create_data_iterator(
             "input_ids": [],
             "attention_mask": [],
             "chunks": [],
+            "chunk_attention_mask": [],
         }
 
         count = 0
@@ -239,6 +250,7 @@ def create_data_iterator(
             batch["input_ids"].append(example["input_ids"])
             batch["attention_mask"].append(example["attention_mask"])
             batch["chunks"].append(example["chunks"])
+            batch["chunk_attention_mask"].append(example["chunk_attention_mask"])
 
             if len(batch["input_ids"]) == batch_size:
                 # Convert to JAX arrays
@@ -246,6 +258,7 @@ def create_data_iterator(
                     "input_ids": jnp.array(batch["input_ids"]),
                     "attention_mask": jnp.array(batch["attention_mask"]),
                     "chunks": jnp.array(batch["chunks"]),
+                    "chunk_attention_mask": jnp.array(batch["chunk_attention_mask"]),
                 }
 
                 # Reset batch
@@ -311,12 +324,14 @@ def create_data_iterator(
             "input_ids": [],
             "attention_mask": [],
             "chunks": [],
+            "chunk_attention_mask": [],
         }
 
         for example in processed_examples:
             batch["input_ids"].append(example["input_ids"])
             batch["attention_mask"].append(example["attention_mask"])
             batch["chunks"].append(example["chunks"])
+            batch["chunk_attention_mask"].append(example["chunk_attention_mask"])
 
             if len(batch["input_ids"]) == batch_size:
                 cached_batches.append(
@@ -324,9 +339,10 @@ def create_data_iterator(
                         "input_ids": jnp.array(batch["input_ids"]),
                         "attention_mask": jnp.array(batch["attention_mask"]),
                         "chunks": jnp.array(batch["chunks"]),
+                        "chunk_attention_mask": jnp.array(batch["chunk_attention_mask"]),
                     }
                 )
-                batch = {"input_ids": [], "attention_mask": [], "chunks": []}
+                batch = {"input_ids": [], "attention_mask": [], "chunks": [], "chunk_attention_mask": []}
 
         print(f"Created {len(cached_batches)} batches ready for training")
 

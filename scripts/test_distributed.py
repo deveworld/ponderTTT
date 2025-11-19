@@ -110,7 +110,7 @@ def test_collective_ops(mesh):
     local_data = jnp.ones(jax.local_device_count()) * jax.process_index()
 
     # pmap all-reduce
-    @jax.pmap
+    @jax.pmap(axis_name='i')
     def all_reduce_sum(x):
         return jax.lax.psum(x, 'i')
 

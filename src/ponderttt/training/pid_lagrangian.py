@@ -14,9 +14,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax.core import FrozenDict
-
-if TYPE_CHECKING:
-    from .ttt_trainer import TrainState
+from flax.training.train_state import TrainState
 
 
 @dataclass
