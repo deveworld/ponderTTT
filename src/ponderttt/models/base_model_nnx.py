@@ -34,11 +34,11 @@ class TTTTransformerLM(nnx.Module):
     Transformer Language Model with Test-Time Training layers.
 
     Combines:
-    - Slow weights (θ_slow): Frozen pretrained transformer (GPT-2)
-    - Fast weights (θ_fast): Adaptive TTT layer
+    - Slow weights (theta_slow): Frozen pretrained transformer (GPT-2)
+    - Fast weights (theta_fast): Adaptive TTT layer
 
     Following the PonderTTT architecture from PLAN.md:
-        output = forward(chunk, θ_slow + θ_fast)
+        output = forward(chunk, theta_slow + theta_fast)
     """
 
     def __init__(
@@ -152,7 +152,7 @@ class TTTTransformerLM(nnx.Module):
             Use model.train() / model.eval() to control dropout.
         """
         # Get hidden states from frozen base model
-        # Apply stop_gradient to freeze θ_slow (PLAN.md: only θ_fast is trainable)
+        # Apply stop_gradient to freeze theta_slow (PLAN.md: only theta_fast is trainable)
         hidden_states = jax.lax.stop_gradient(self.base_model(input_ids))
 
         if use_ttt:
@@ -304,7 +304,7 @@ def load_ttt_model(
         model.base_model.ln_f.scale.value = temp_model.transformer.ln_f.scale.value
         model.base_model.ln_f.bias.value = temp_model.transformer.ln_f.bias.value
 
-        print(f"✓ Loaded pretrained weights from {model_name}")
+        print(f"OK Loaded pretrained weights from {model_name}")
 
     return model, gpt2_config
 

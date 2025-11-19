@@ -47,9 +47,9 @@ try:
 
     assert "input_ids" in batch
     assert "chunks" in batch
-    print(f"✓ Data loading works (dummy batch shape: {batch['input_ids'].shape})")
+    print(f"OK Data loading works (dummy batch shape: {batch['input_ids'].shape})")
 except Exception as e:
-    print(f"✗ Data loading failed: {e}")
+    print(f"[FAIL] Data loading failed: {e}")
     raise
 
 # Test 2: Model initialization (NNX)
@@ -64,10 +64,10 @@ try:
         load_pretrained=False
     )
 
-    print(f"✓ Model initialized (GPT-2: {gpt2_config.n_layer} layers, {gpt2_config.n_embd} dim)")
+    print(f"OK Model initialized (GPT-2: {gpt2_config.n_layer} layers, {gpt2_config.n_embd} dim)")
     print(f"  Model type: {type(model).__name__}")
 except Exception as e:
-    print(f"✗ Model initialization failed: {e}")
+    print(f"[FAIL] Model initialization failed: {e}")
     raise
 
 # Test 3: Feature extraction
@@ -85,9 +85,9 @@ try:
     features = feature_extractor.extract(test_ids, test_logits)
     assert features.shape == (batch_size, 32), f"Expected shape (2, 32), got {features.shape}"
 
-    print(f"✓ Feature extraction works (shape: {features.shape})")
+    print(f"OK Feature extraction works (shape: {features.shape})")
 except Exception as e:
-    print(f"✗ Feature extraction failed: {e}")
+    print(f"[FAIL] Feature extraction failed: {e}")
     raise
 
 # Test 4: Policy network (NNX)
@@ -112,11 +112,11 @@ try:
     assert "value" in policy_output
     assert "log_prob" in policy_output
 
-    print("✓ Policy network works")
+    print("OK Policy network works")
     print(f"  Actions: {policy_output['action']}")
     print(f"  Values: {policy_output['value']}")
 except Exception as e:
-    print(f"✗ Policy network failed: {e}")
+    print(f"[FAIL] Policy network failed: {e}")
     raise
 
 # Test 5: TTT layer (NNX)
@@ -141,10 +141,10 @@ try:
     assert adapted_hidden.shape == test_hidden.shape
     assert ttt_stats is not None
 
-    print(f"✓ TTT layer works (output shape: {adapted_hidden.shape})")
+    print(f"OK TTT layer works (output shape: {adapted_hidden.shape})")
     print(f"  Stats keys: {list(ttt_stats.keys())}")
 except Exception as e:
-    print(f"✗ TTT layer failed: {e}")
+    print(f"[FAIL] TTT layer failed: {e}")
     raise
 
 # Test 6: End-to-end flow (NNX)
@@ -174,7 +174,7 @@ try:
     assert actions.shape == (batch_size,)
     assert values.shape == (batch_size,)
 
-    print("✓ End-to-end flow works!")
+    print("OK End-to-end flow works!")
     print(f"  Logits shape: {logits.shape}")
     print(f"  Features shape: {features.shape}")
     print(f"  Actions: {actions}")
@@ -182,7 +182,7 @@ try:
     print(f"  TTT stats: {list(ttt_stats.keys())}")
 
 except Exception as e:
-    print(f"✗ End-to-end flow failed: {e}")
+    print(f"[FAIL] End-to-end flow failed: {e}")
     raise
 
 # Success!

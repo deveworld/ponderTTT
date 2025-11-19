@@ -81,7 +81,7 @@ def plot_training_history(
         )
         axes[0].legend()
     axes[0].set_xlabel("Iteration")
-    axes[0].set_ylabel("Average Cost (×)")
+    axes[0].set_ylabel("Average Cost (x)")
     axes[0].set_title("Cost Over Training")
     axes[0].grid(True, alpha=0.3)
 
@@ -173,7 +173,7 @@ def plot_cost_vs_quality(
 
     plt.figure(figsize=(8, 6))
     plt.scatter(costs, losses, alpha=0.5)
-    plt.xlabel("Computational Cost (×)")
+    plt.xlabel("Computational Cost (x)")
     plt.ylabel("Loss")
     plt.title("Cost vs Quality Trade-off")
     plt.grid(True, alpha=0.3)
@@ -219,8 +219,8 @@ def plot_summary_stats(
         "",
         f"Total Chunks: {summary.get('total_chunks', 'N/A')}",
         f"Average Loss: {_fmt_float(summary.get('avg_loss', 'N/A'), '{:.4f}')}",
-        f"Average Cost: {_fmt_float(summary.get('avg_cost', 'N/A'), '{:.2f}×')}",
-        f"Total Cost: {_fmt_float(summary.get('total_cost', 'N/A'), '{:.2f}×')}",
+        f"Average Cost: {_fmt_float(summary.get('avg_cost', 'N/A'), '{:.2f}x')}",
+        f"Total Cost: {_fmt_float(summary.get('total_cost', 'N/A'), '{:.2f}x')}",
         "",
     ]
 
@@ -264,7 +264,7 @@ def main():
         results = load_results(args.results_file)
         print(f" Loaded results from {args.results_file}")
     except Exception as e:
-        print(f"✗ Failed to load results: {e}")
+        print(f"[FAIL] Failed to load results: {e}")
         return
 
     # Create output directory

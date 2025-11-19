@@ -41,10 +41,10 @@ print("\n[1/5] Testing tokenizer...")
 try:
     tokenizer = cast(Tokenizer, get_tokenizer("gpt2"))
     vocab_size = tokenizer.get_vocab_size()
-    print(f"✓ Tokenizer loaded (vocab size: {vocab_size})")
+    print(f"OK Tokenizer loaded (vocab size: {vocab_size})")
     tests_passed += 1
 except Exception as e:
-    print(f"✗ Tokenizer test failed: {e}")
+    print(f"[FAIL] Tokenizer test failed: {e}")
     tests_failed += 1
 
 # Test 2: TTT Transformer Model (NNX)
@@ -56,7 +56,7 @@ try:
         seed=42,
         load_pretrained=False
     )
-    print("✓ TTT model created")
+    print("OK TTT model created")
 
     # Forward pass
     test_input = jnp.ones((1, 64), dtype=jnp.int32)
@@ -64,12 +64,12 @@ try:
     outputs = model(test_input, use_ttt=True)
 
     assert isinstance(outputs, dict), "Expected dict output from model"
-    print(f"✓ Forward pass successful, logits shape: {outputs['logits'].shape}")
+    print(f"OK Forward pass successful, logits shape: {outputs['logits'].shape}")
     print(f"  TTT stats: {list(outputs['ttt_stats'].keys())}")
     tests_passed += 1
 
 except Exception as e:
-    print(f"✗ TTT model test failed: {e}")
+    print(f"[FAIL] TTT model test failed: {e}")
     tests_failed += 1
 
 # Test 3: TTT Layer
@@ -88,13 +88,13 @@ try:
     ttt_layer.train()  # Set to training mode
 
     output, stats = ttt_layer(test_hidden)
-    print(f"✓ TTT layer works, output shape: {output.shape}")
+    print(f"OK TTT layer works, output shape: {output.shape}")
     if stats:
         print(f"  Stats keys: {list(stats.keys())}")
     tests_passed += 1
 
 except Exception as e:
-    print(f"✗ TTT layer test failed: {e}")
+    print(f"[FAIL] TTT layer test failed: {e}")
     tests_failed += 1
 
 # Test 4: Policy Network (NNX)
@@ -110,13 +110,13 @@ try:
     rng = jax.random.PRNGKey(42)
     policy_outputs = policy(test_features, deterministic=True, rng=rng)
 
-    print("✓ Policy network works")
+    print("OK Policy network works")
     print(f"  Actions: {policy_outputs['action']}")
     print(f"  Mean value: {jnp.mean(policy_outputs['value']):.4f}")
     tests_passed += 1
 
 except Exception as e:
-    print(f"✗ Policy network test failed: {e}")
+    print(f"[FAIL] Policy network test failed: {e}")
     tests_failed += 1
 
 # Test 5: Feature Extraction
@@ -130,12 +130,12 @@ try:
     test_logits = jnp.ones((1, 5, vocab_size))
 
     features = extractor.extract(test_ids, test_logits)
-    print(f"✓ Feature extraction works, shape: {features.shape}")
+    print(f"OK Feature extraction works, shape: {features.shape}")
     assert features.shape[-1] == 32, "Features should be 32-dimensional"
     tests_passed += 1
 
 except Exception as e:
-    print(f"✗ Feature extraction test failed: {e}")
+    print(f"[FAIL] Feature extraction test failed: {e}")
     tests_failed += 1
 
 # Summary

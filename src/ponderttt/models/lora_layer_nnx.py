@@ -205,13 +205,13 @@ def count_lora_parameters(config: LoRAConfig) -> int:
     Returns:
         Number of parameters
     """
-    # Q LoRA: (hidden × rank) + (rank × hidden)
+    # Q LoRA: (hidden x rank) + (rank x hidden)
     q_params = 2 * config.hidden_dim * config.rank
 
-    # V LoRA: (hidden × rank) + (rank × hidden)
+    # V LoRA: (hidden x rank) + (rank x hidden)
     v_params = 2 * config.hidden_dim * config.rank
 
-    # Output projection: (2*hidden × hidden) + hidden
+    # Output projection: (2*hidden x hidden) + hidden
     output_params = 2 * config.hidden_dim * config.hidden_dim + config.hidden_dim
 
     total = q_params + v_params + output_params
@@ -223,10 +223,10 @@ def compare_parameters():
     """Compare parameter counts: LoRA vs TTT Layer vs Full Attention.
 
     For GPT-2 (hidden_dim=768):
-    - Full attention: 768² × 3 (Q,K,V) = 1,769,472
+    - Full attention: 768^2 x 3 (Q,K,V) = 1,769,472
     - TTT Layer: ~2M parameters (mini-batch GD)
-    - LoRA (r=64): 2 × 768 × 64 × 2 + 2×768² = 1,376,256 (22% reduction)
-    - LoRA (r=128): 2 × 768 × 128 × 2 + 2×768² = 1,572,864 (11% reduction)
+    - LoRA (r=64): 2 x 768 x 64 x 2 + 2 x 768^2 = 1,376,256 (22% reduction)
+    - LoRA (r=128): 2 x 768 x 128 x 2 + 2 x 768^2 = 1,572,864 (11% reduction)
     """
     hidden_dim = 768
 

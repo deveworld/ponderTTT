@@ -8,7 +8,7 @@ Usage:
     # Single host (8 TPU chips)
     python scripts/validate_tpu_setup.py
 
-    # Multi-host (e.g., TPU v4-64: 8 hosts × 8 chips)
+    # Multi-host (e.g., TPU v4-64: 8 hosts x 8 chips)
     # Run on ALL hosts simultaneously
     gcloud compute tpus tpu-vm ssh ponderttt-v4-64 \
         --zone=us-central2-b \
@@ -369,7 +369,7 @@ def main():
     print_on_main("=" * 80)
 
     if all_passed:
-        print_on_main("🎉 All tests passed! Your TPU setup is ready for training.")
+        print_on_main("All tests passed! Your TPU setup is ready for training.")
         print_on_main("\nNext steps:")
         print_on_main("  python scripts/train_tpu.py --multi_host --mesh_shape='64,1'")
     else:

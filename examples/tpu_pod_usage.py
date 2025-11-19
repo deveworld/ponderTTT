@@ -23,7 +23,7 @@ print(f"JAX process index: {jax.process_index()}")
 print(f"JAX local devices: {jax.local_device_count()}")
 
 # Step 2: Create device mesh for TPU Pod
-# For TPU v4-64: 8 hosts × 8 chips = 64 devices
+# For TPU v4-64: 8 hosts x 8 chips = 64 devices
 # Mesh shape: (batch=8, model=8) for data + model parallelism
 # OR: (batch=64, model=1) for pure data parallelism
 mesh = create_mesh(mesh_shape=(8, 8), axis_names=('batch', 'model'))
@@ -41,7 +41,7 @@ model, config = load_ttt_model(
 model.train()
 tokenizer = get_tokenizer("gpt2")
 
-print(f" Model loaded: {config.n_layer} layers, hidden {config.n_embd}")
+print(f"Model loaded: {config.n_layer} layers, hidden {config.n_embd}")
 
 # Step 4: Prepare input and shard across mesh
 input_text = "def fibonacci(n):\n    if n <= 1:\n        return n"
@@ -58,7 +58,7 @@ sharded_input = jax.device_put(input_ids[:, :512], input_sharding)
 outputs = cast(dict[str, Any], model(sharded_input, use_ttt=False))
 logits = outputs["logits"]
 
-print(" Forward pass complete")
+print("Forward pass complete")
 print(f"Input shape: {sharded_input.shape}")
 print(f"Output logits shape: {logits.shape}")
 
@@ -67,4 +67,4 @@ print("\nSharding verification:")
 print(f"Input sharding: {sharded_input.sharding}")
 print(f"Output sharding: {logits.sharding}")
 
-print("\n TPU Pod sharding example complete!")
+print("\nTPU Pod sharding example complete!")
