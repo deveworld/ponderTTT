@@ -155,6 +155,8 @@ class TTTTransformerLM(nnx.Module):
         # Apply stop_gradient to freeze theta_slow (PLAN.md: only theta_fast is trainable)
         hidden_states = jax.lax.stop_gradient(self.base_model(input_ids))
 
+        train_flag = self.training if hasattr(self, "training") else False
+
         if use_ttt:
             # Following official TTT-LM Block pattern (model.py Line 696-714):
             # 1. Pre-normalization
@@ -169,6 +171,7 @@ class TTTTransformerLM(nnx.Module):
                 hidden_states_normed,
                 mask=attention_mask,
                 position_ids=None,
+                train=train_flag,
             )
 
             # Residual connection (official pattern: hidden_states = hidden_states + seq_modeling_output)

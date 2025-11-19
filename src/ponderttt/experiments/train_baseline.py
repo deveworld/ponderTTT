@@ -230,6 +230,20 @@ def main():
     action_steps = action_to_steps(args.action)
     cost_multiplier = action_to_cost(args.action)
 
+    fast_graphdef, fast_state_template = nnx.split(model.fast_layer)
+
+    def clone_state(state):
+        return jax.tree_util.tree_map(
+            lambda x: x.copy() if hasattr(x, "copy") else x,
+            state,
+        )
+
+    def reset_fast_weights():
+        model.fast_layer = nnx.merge(fast_graphdef, clone_state(fast_state_template))
+        return nnx.Optimizer(model, optax.adam(args.learning_rate), wrt=nnx.All(nnx.Param))
+
+    optimizer = reset_fast_weights()
+
     with tqdm(total=args.max_chunks, desc="Training") as pbar:
         while chunks_processed < args.max_chunks:
             try:
@@ -247,6 +261,9 @@ def main():
                     "input_ids": batch["chunks"][:, chunk_idx, :],
                     "attention_mask": batch["chunk_attention_mask"][:, chunk_idx, :],
                 }
+
+                if chunk_idx == 0:
+                    optimizer = reset_fast_weights()
 
                 if action_steps == 0:
                     metrics = run_chunk_step(

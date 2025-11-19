@@ -52,7 +52,7 @@ class PolicyNetwork(nnx.Module):
         # Critic head (value)
         self.critic_head = nnx.Linear(config.hidden_dim, 1, rngs=rngs)
 
-    def forward_shared(self, features: jax.Array) -> jax.Array:
+    def forward_shared(self, features: jax.Array, train: bool = False) -> jax.Array:
         """Shared feature extraction.
 
         Args:
@@ -63,11 +63,11 @@ class PolicyNetwork(nnx.Module):
         """
         x = self.fc1(features)
         x = nnx.relu(x)
-        x = self.dropout1(x)
+        x = self.dropout1(x, deterministic=not train)
 
         x = self.fc2(x)
         x = nnx.relu(x)
-        x = self.dropout2(x)
+        x = self.dropout2(x, deterministic=not train)
 
         return x
 
@@ -101,7 +101,7 @@ class PolicyNetwork(nnx.Module):
             The 'deterministic' parameter here only controls action selection.
         """
         # Shared feature extraction
-        x = self.forward_shared(features)
+        x = self.forward_shared(features, train=not deterministic)
 
         # Actor head (policy)
         action_logits = self.actor_head(x)
@@ -160,7 +160,7 @@ class PolicyNetwork(nnx.Module):
             Dictionary with log_prob, value, entropy
         """
         # Forward pass
-        x = self.forward_shared(features)
+        x = self.forward_shared(features, train=True)
 
         # Get action logits and value
         action_logits = self.actor_head(x)

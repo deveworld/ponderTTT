@@ -124,7 +124,7 @@ def _load_weights_from_state_dict(model: GPT2LMHeadModel, state_dict: dict[str, 
 def save_checkpoint(
     model: GPT2LMHeadModel,
     checkpoint_path: Path,
-    config: Optional[GPT2Config] = None
+    config: Optional[GPT2Config] = None,
 ) -> None:
     """Save NNX model checkpoint using Orbax.
 
@@ -154,6 +154,7 @@ def save_checkpoint(
     # Save config if provided
     if config is not None:
         import json
+
         config_dict = {
             "vocab_size": config.vocab_size,
             "n_positions": config.n_positions,
@@ -162,6 +163,7 @@ def save_checkpoint(
             "n_head": config.n_head,
             "dropout": config.dropout,
             "layer_norm_epsilon": config.layer_norm_epsilon,
+            "tie_word_embeddings": model.tie_word_embeddings,
         }
         with open(checkpoint_path / "config.json", "w") as f:
             json.dump(config_dict, f, indent=2)
@@ -171,7 +173,7 @@ def save_checkpoint(
 
 def load_checkpoint(
     checkpoint_path: Path,
-    seed: int = 0
+    seed: int = 0,
 ) -> tuple[GPT2LMHeadModel, GPT2Config]:
     """Load NNX model checkpoint using Orbax.
 
@@ -193,11 +195,12 @@ def load_checkpoint(
     import json
     with open(checkpoint_path / "config.json") as f:
         config_dict = json.load(f)
+    tie_word_embeddings = config_dict.pop("tie_word_embeddings", True)
     config = GPT2Config(**config_dict)
 
     # Create model
     rngs = nnx.Rngs(seed)
-    model = GPT2LMHeadModel(config, rngs, tie_word_embeddings=True)
+    model = GPT2LMHeadModel(config, rngs, tie_word_embeddings=tie_word_embeddings)
 
     # Get model graphdef and state
     graphdef, state = nnx.split(model)
