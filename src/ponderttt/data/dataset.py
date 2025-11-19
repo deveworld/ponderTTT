@@ -273,6 +273,14 @@ def create_data_iterator(
                 if max_examples and count >= max_examples:
                     break
 
+        if batch["input_ids"]:
+            yield {
+                "input_ids": jnp.array(batch["input_ids"]),
+                "attention_mask": jnp.array(batch["attention_mask"]),
+                "chunks": jnp.array(batch["chunks"]),
+                "chunk_attention_mask": jnp.array(batch["chunk_attention_mask"]),
+            }
+
     # Cache all data upfront if enabled with parallel downloading
     if cache_data:
         # Create cache key based on parameters
@@ -305,7 +313,7 @@ def create_data_iterator(
         print(f"Processing {len(raw_examples)} examples in parallel...")
 
         # Process examples in parallel
-        processed_examples = []
+        processed_examples = [None] * len(raw_examples)
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             # Submit all processing jobs
             futures = {
@@ -317,9 +325,10 @@ def create_data_iterator(
             for future in tqdm(
                 as_completed(futures), total=len(futures), desc="Downloading"
             ):
+                idx = futures[future]
                 result = future.result()
                 if result is not None:
-                    processed_examples.append(result)
+                    processed_examples[idx] = result
 
         print(f"Successfully processed {len(processed_examples)} examples")
 
@@ -333,6 +342,8 @@ def create_data_iterator(
         }
 
         for example in processed_examples:
+            if example is None:
+                continue
             batch["input_ids"].append(example["input_ids"])
             batch["attention_mask"].append(example["attention_mask"])
             batch["chunks"].append(example["chunks"])
@@ -348,6 +359,16 @@ def create_data_iterator(
                     }
                 )
                 batch = {"input_ids": [], "attention_mask": [], "chunks": [], "chunk_attention_mask": []}
+
+        if batch["input_ids"]:
+            cached_batches.append(
+                {
+                    "input_ids": jnp.array(batch["input_ids"]),
+                    "attention_mask": jnp.array(batch["attention_mask"]),
+                    "chunks": jnp.array(batch["chunks"]),
+                    "chunk_attention_mask": jnp.array(batch["chunk_attention_mask"]),
+                }
+            )
 
         print(f"Created {len(cached_batches)} batches ready for training")
 

@@ -282,9 +282,14 @@ class TTTLayer(nnx.Module):
             XV_heads = self._split_heads(XV)
             XK_heads = self._split_heads(XK)
 
-            # Sample every mini_batch_size tokens: [0, 16, 32, 48] for 64 tokens
-            XV_last_in_mini_batch = XV_heads[:, :: self.mini_batch_size, ...]  # Already [B, n_mini_batch, num_heads, head_dim]
-            XK_last_in_mini_batch = XK_heads[:, :: self.mini_batch_size, ...]
+            # Sample last token from each mini-batch
+            last_indices = jnp.arange(
+                self.mini_batch_size - 1,
+                XV_heads.shape[1],
+                self.mini_batch_size,
+            )
+            XV_last_in_mini_batch = jnp.take(XV_heads, last_indices, axis=1)
+            XK_last_in_mini_batch = jnp.take(XK_heads, last_indices, axis=1)
 
             ssl_tgt_last_in_mini_batch = XV_last_in_mini_batch - XK_last_in_mini_batch
             ssl_tgt_mean = (XV_heads - XK_heads).mean(axis=1, keepdims=True).reshape(B, 1, self.num_heads, self.head_dim)

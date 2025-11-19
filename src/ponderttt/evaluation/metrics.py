@@ -154,6 +154,16 @@ def compute_action_statistics(
     Returns:
         Dictionary with action statistics
     """
+    if not actions:
+        return {
+            "freq_SKIP": 0.0,
+            "freq_UPDATE_1": 0.0,
+            "freq_UPDATE_2": 0.0,
+            "freq_UPDATE_4": 0.0,
+            "entropy": 0.0,
+            "num_actions": 0,
+        }
+
     counter = Counter(actions)
     total = len(actions)
 

@@ -308,15 +308,16 @@ def main():
                     logits=logits,
                     budget_remaining=budget_remaining,
                 )
-                features_mean = jnp.mean(features, axis=0, keepdims=True)
+                batch_size = chunk_batch["input_ids"].shape[0]
 
                 policy_output = policy(
-                    features_mean,
+                    features,
                     deterministic=False,
                     rng=rngs.action(),
                 )
 
-                action_idx = int(policy_output["action"][0])
+                actions = policy_output["action"]
+                action_idx = int(actions[0])
                 action_steps = step_map[action_idx]
                 cost = float(costs_map[action_idx])
 
@@ -336,18 +337,17 @@ def main():
                     loss_after = metrics["loss"]
 
                 quality_improvement = float(loss_baseline) - loss_after
-                lambda_penalty = pid.lambda_value
-                reward = quality_improvement - lambda_penalty * (cost / args.budget_limit)
+                reward = quality_improvement
                 cost_accumulator += cost
 
                 feature_extractor.update_history(float(loss_baseline), cost)
 
-                rollout_features.append(features_mean)
-                rollout_actions.append(jnp.array([action_idx], dtype=jnp.int32))
+                rollout_features.append(features)
+                rollout_actions.append(actions)
                 rollout_log_probs.append(policy_output["log_prob"])
                 rollout_values.append(policy_output["value"])
-                rollout_rewards.append(reward)
-                rollout_costs.append(cost)
+                rollout_rewards.append(jnp.full((batch_size,), reward))
+                rollout_costs.append(jnp.full((batch_size,), cost))
 
                 chunks_collected += 1
                 pbar.update(1)
@@ -368,12 +368,15 @@ def main():
             break
 
         # Convert to arrays [num_steps]
-        rollout_features_array = jnp.concatenate(rollout_features, axis=0)
-        rollout_actions_array = jnp.concatenate(rollout_actions, axis=0).flatten()
-        rollout_log_probs_array = jnp.concatenate(rollout_log_probs, axis=0).flatten()
-        rollout_values_array = jnp.concatenate(rollout_values, axis=0).flatten()
-        rollout_rewards_array = jnp.array(rollout_rewards)
-        rollout_costs_array = jnp.array(rollout_costs)
+        feature_dim = rollout_features[0].shape[-1]
+        rollout_features_array = jnp.reshape(
+            jnp.stack(rollout_features), (-1, feature_dim)
+        )
+        rollout_actions_array = jnp.reshape(jnp.stack(rollout_actions), (-1,))
+        rollout_log_probs_array = jnp.reshape(jnp.stack(rollout_log_probs), (-1,))
+        rollout_values_array = jnp.reshape(jnp.stack(rollout_values), (-1,))
+        rollout_rewards_array = jnp.reshape(jnp.stack(rollout_rewards), (-1,))
+        rollout_costs_array = jnp.reshape(jnp.stack(rollout_costs), (-1,))
 
         # Create dones array (all False for continuous rollout)
         dones_array = jnp.zeros_like(rollout_rewards_array)
@@ -435,7 +438,7 @@ def main():
         print(f"  Average reward: {avg_reward:.4f}")
         print(f"  Lambda (penalty): {pid.lambda_value:.4f}")
         print(f"  Policy loss: {loss:.4f}")
-        print(f"  Chunks collected: {len(rollout_rewards)}")
+        print(f"  Chunks collected: {chunks_collected}")
 
         # Save iteration results
         training_history.append({
@@ -444,7 +447,7 @@ def main():
             "avg_reward": avg_reward,
             "lambda": float(pid.lambda_value),
             "policy_loss": float(loss),
-            "chunks": len(rollout_rewards),
+            "chunks": chunks_collected,
         })
 
     # Final summary
