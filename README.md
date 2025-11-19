@@ -68,10 +68,10 @@ Results are saved as JSON (training history); visualize them with `python script
 Use `ponderttt.evaluation.benchmarks` to run executable pass@k tests once a policy/baseline checkpoint is ready. Provide a `generate_fn(prompt) -> Iterable[str]` that yields up to `k` completions; the suite compiles and executes them in-process.
 
 ## Project status
-- ✅ Pure NNX GPT-2 implementation with chunk-level TTT
-- ✅ Streaming data + chunk masks with dedicated padding
-- ✅ Policy training loop with real budgets, history-aware features, and fixed GAE
-- ✅ Executable benchmark suite
+- Pure NNX GPT-2 implementation with chunk-level TTT
+- Streaming data + chunk masks with dedicated padding
+- Policy training loop with real budgets, history-aware features, and fixed GAE
+- Executable benchmark suite
 - ⏳ Large-scale experiments (TPU v4-64) once hardware is available
 
 See `PLAN.md` for the research roadmap and `PROJECT_STATUS.md` for the current milestone tracker.

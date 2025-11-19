@@ -19,10 +19,10 @@ We study adaptive test-time training for code generation models. A pretrained GP
 ## 4. Milestones
 | Phase | Goals | Status |
 |-------|-------|--------|
-| Foundation | Pure NNX GPT-2, TTT layer, streaming pipeline, scripts/tests | ✅
-| Chunk semantics | Implement chunk-level updates, real budgets, executable benchmarks | ✅
-| Policy stabilization | Tune PPO, add heuristic baselines, measure compute savings | ⏳
-| Scaling | 350 M and 1 B models on TPU v4-64, statistical analysis, ablations | ⏳
+| Foundation | Pure NNX GPT-2, TTT layer, streaming pipeline, scripts/tests | Complete |
+| Chunk semantics | Implement chunk-level updates, real budgets, executable benchmarks | Complete |
+| Policy stabilization | Tune PPO, add heuristic baselines, measure compute savings | In progress |
+| Scaling | 350 M and 1 B models on TPU v4-64, statistical analysis, ablations | Planned |
 
 ## 5. Experimental protocol
 - **Datasets** – The Stack v2 Python subset for training; HumanEval/MBPP/ClassEval for evaluation.

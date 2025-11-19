@@ -50,7 +50,7 @@ logits = self.lm_head.apply(
 )
 ```
 
-**일치:** ✅ Weight tying 방식 동일 (lm_head.apply with shared kernel)
+**일치:** Weight tying 방식 동일 (lm_head.apply with shared kernel)
 
 ## 3. TTT Layer 구조
 
@@ -113,12 +113,12 @@ class TTTLayer(nn.Module):
 ```
 
 **주요 차이:**
-- ❌ **Mini-batch processing 없음**: 전체 시퀀스를 한번에 처리
-- ❌ **Causal convolution 없음**: Conv layer가 구현되지 않음
-- ❌ **RoPE 없음**: Positional encoding이 없음
-- ❌ **Learnable η 없음**: 고정된 learning rate
-- ❌ **Gating 메커니즘 없음**: 단순 feedforward
-- ⚠️  **Self-supervised updates 미구현**: enable_internal_updates=False만 동작
+- Mini-batch processing 없음: 전체 시퀀스를 한번에 처리
+- Causal convolution 없음: Conv layer가 구현되지 않음
+- RoPE 없음: Positional encoding이 없음
+- Learnable η 없음: 고정된 learning rate
+- Gating 메커니즘 없음: 단순 feedforward
+- Self-supervised updates 미구현: enable_internal_updates=False만 동작
 
 ## 4. Training Objective
 
@@ -273,8 +273,8 @@ def __call__(self, x, mask, deterministic, enable_internal_updates):
 PonderTTT의 현재 구현은 **TTT의 핵심 기능을 대부분 구현하지 않은 상태**입니다.
 
 **현재 상태:**
-- LM head: ✅ 공식과 동일하게 수정 완료
-- TTT layer: ❌ 매우 단순화된 버전 (공식의 10% 정도 구현)
+- LM head: 공식과 동일하게 수정 완료
+- TTT layer: 매우 단순화된 버전 (공식의 10% 정도 구현)
 
 **다음 단계:**
 1. 현재 baseline 실험 완료 (SKIP, UPDATE_1/2/4)
