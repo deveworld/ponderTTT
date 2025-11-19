@@ -134,9 +134,10 @@ def plot_action_distribution(
 
     # Add percentages on bars
     total = sum(action_counts.values())
-    for i, (action, count) in enumerate(action_counts.items()):
-        percentage = 100 * count / total
-        axes[0].text(i, count, f"{percentage:.1f}%", ha='center', va='bottom')
+    if total > 0:
+        for i, (action, count) in enumerate(action_counts.items()):
+            percentage = 100 * count / total
+            axes[0].text(i, count, f"{percentage:.1f}%", ha='center', va='bottom')
 
     # Plot 2: Pie chart
     colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99']
@@ -178,10 +179,11 @@ def plot_cost_vs_quality(
     plt.grid(True, alpha=0.3)
 
     # Add trend line
-    z = np.polyfit(costs, losses, 1)
-    p = np.poly1d(z)
-    plt.plot(costs, p(costs), "r--", alpha=0.8, label=f"Trend: y={z[0]:.3f}x+{z[1]:.3f}")
-    plt.legend()
+    if len(costs) >= 2:
+        z = np.polyfit(costs, losses, 1)
+        p = np.poly1d(z)
+        plt.plot(costs, p(costs), "r--", alpha=0.8, label=f"Trend: y={z[0]:.3f}x+{z[1]:.3f}")
+        plt.legend()
 
     plt.tight_layout()
     output_file = output_dir / f"cost_vs_quality.{format}"
@@ -206,14 +208,19 @@ def plot_summary_stats(
     ax.axis('off')
 
     # Create text summary
+    def _fmt_float(value, fmt):
+        if isinstance(value, (int, float)):
+            return fmt.format(value)
+        return str(value)
+
     text_lines = [
         "Training Summary",
         "=" * 40,
         "",
         f"Total Chunks: {summary.get('total_chunks', 'N/A')}",
-        f"Average Loss: {summary.get('avg_loss', 'N/A'):.4f}",
-        f"Average Cost: {summary.get('avg_cost', 'N/A'):.2f}×",
-        f"Total Cost: {summary.get('total_cost', 'N/A'):.2f}×",
+        f"Average Loss: {_fmt_float(summary.get('avg_loss', 'N/A'), '{:.4f}')}",
+        f"Average Cost: {_fmt_float(summary.get('avg_cost', 'N/A'), '{:.2f}×')}",
+        f"Total Cost: {_fmt_float(summary.get('total_cost', 'N/A'), '{:.2f}×')}",
         "",
     ]
 

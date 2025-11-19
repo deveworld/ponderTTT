@@ -1,35 +1,44 @@
 """
-Flax models for PonderTTT.
+Flax NNX models for PonderTTT.
+
+All models now use Flax NNX instead of Linen.
 """
 
-from .base_model import (
+# NNX implementations (primary)
+from .base_model_nnx import (
     ModelConfig,
-    TransformerLM,
     TTTTransformerLM,
-    apply_sharding_to_params,
     count_parameters,
-    initialize_sharded_model,
-    inspect_sharding,
-    load_model,
+    count_trainable_parameters,
     load_ttt_model,
 )
-from .fast_weights import FastWeightModule
-from .policy import PolicyConfig, PolicyNetwork
-from .ttt_layer import TTTConfig, TTTLayer
+from .gpt2_nnx import GPT2Config, GPT2LMHeadModel, GPT2Model, load_gpt2_model
+from .lora_layer_nnx import LoRAConfig, LoRALayer, count_lora_parameters
+from .policy_nnx import PolicyConfig, PolicyNetwork, action_to_cost, action_to_name
+from .ttt_layer_nnx import TTTConfig, TTTLayer
+
+# Legacy Linen implementations (deprecated, kept for compatibility)
+# These will be removed in future versions
+# Use the NNX versions above instead
 
 __all__ = [
-    "TransformerLM",
+    # NNX models (use these)
     "TTTTransformerLM",
     "ModelConfig",
-    "load_model",
     "load_ttt_model",
-    "initialize_sharded_model",
-    "apply_sharding_to_params",
     "count_parameters",
-    "inspect_sharding",
+    "count_trainable_parameters",
     "TTTLayer",
     "TTTConfig",
+    "LoRALayer",
+    "LoRAConfig",
+    "count_lora_parameters",
     "PolicyNetwork",
     "PolicyConfig",
-    "FastWeightModule",
+    "action_to_name",
+    "action_to_cost",
+    "GPT2Model",
+    "GPT2LMHeadModel",
+    "GPT2Config",
+    "load_gpt2_model",
 ]

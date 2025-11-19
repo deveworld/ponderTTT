@@ -1,5 +1,5 @@
 """
-Integration test for the complete PonderTTT pipeline.
+Integration test for the complete PonderTTT pipeline with NNX.
 
 Tests:
 1. Data loading
@@ -12,16 +12,17 @@ Tests:
 
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import jax
 import jax.numpy as jnp
-from transformers import PreTrainedTokenizer
+from flax import nnx
+from tokenizers import Tokenizer
 
 print("=" * 60)
-print("PonderTTT Pipeline Integration Test")
+print("PonderTTT Pipeline Integration Test (NNX)")
 print("=" * 60)
 
 # Test 1: Data loading (using dummy data for unit testing)
@@ -29,7 +30,7 @@ print("\n[1/6] Testing data loading...")
 try:
     from ponderttt.data import get_tokenizer
 
-    tokenizer = cast(PreTrainedTokenizer, get_tokenizer("gpt2"))
+    tokenizer = cast(Tokenizer, get_tokenizer("gpt2"))
 
     # Create dummy batch for unit testing
     batch_size = 2
@@ -41,131 +42,159 @@ try:
         "input_ids": jnp.ones((batch_size, seq_length), dtype=jnp.int32),
         "attention_mask": jnp.ones((batch_size, seq_length), dtype=jnp.int32),
         "chunks": jnp.ones((batch_size, num_chunks, chunk_size), dtype=jnp.int32),
+        "chunk_attention_mask": jnp.ones((batch_size, num_chunks, chunk_size), dtype=jnp.int32),
     }
 
     assert "input_ids" in batch
     assert "chunks" in batch
-    print(f" Data loading works (dummy batch shape: {batch['input_ids'].shape})")
+    print(f"✓ Data loading works (dummy batch shape: {batch['input_ids'].shape})")
 except Exception as e:
     print(f"✗ Data loading failed: {e}")
-    sys.exit(1)
+    raise
 
-# Test 2: Model initialization
+# Test 2: Model initialization (NNX)
 print("\n[2/6] Testing model initialization...")
 try:
-    from ponderttt.models import TransformerLM, ModelConfig
+    from ponderttt.models import load_ttt_model, TTTConfig
 
-    model_config = ModelConfig(model_name="gpt2")
-    model = TransformerLM(config=model_config)
+    # Load model without pretrained weights for faster testing
+    model, gpt2_config = load_ttt_model(
+        model_name="gpt2",
+        seed=42,
+        load_pretrained=False
+    )
 
-    rng = jax.random.PRNGKey(0)
-    test_input = jnp.ones((1, 10), dtype=jnp.int32)
-    variables = model.init(rng, test_input)
-
-    print(" Model initialization works")
+    print(f"✓ Model initialized (GPT-2: {gpt2_config.n_layer} layers, {gpt2_config.n_embd} dim)")
+    print(f"  Model type: {type(model).__name__}")
 except Exception as e:
     print(f"✗ Model initialization failed: {e}")
-    sys.exit(1)
+    raise
 
 # Test 3: Feature extraction
 print("\n[3/6] Testing feature extraction...")
 try:
     from ponderttt.utils import FeatureExtractor
 
-    extractor = FeatureExtractor(vocab_size=tokenizer.vocab_size)
-    test_ids = jnp.array([[1, 2, 3, 4, 5]])
-    test_logits = jnp.ones((1, 5, tokenizer.vocab_size))
+    vocab_size = tokenizer.get_vocab_size()
+    feature_extractor = FeatureExtractor(vocab_size=vocab_size)
 
-    features = extractor.extract(test_ids, test_logits)
-    assert features.shape[-1] == 32
-    print(f" Feature extraction works (shape: {features.shape})")
+    # Test feature extraction
+    test_ids = batch["chunks"][:, 0, :]  # First chunk [batch_size, chunk_size]
+    test_logits = jnp.ones((batch_size, chunk_size, vocab_size))
+
+    features = feature_extractor.extract(test_ids, test_logits)
+    assert features.shape == (batch_size, 32), f"Expected shape (2, 32), got {features.shape}"
+
+    print(f"✓ Feature extraction works (shape: {features.shape})")
 except Exception as e:
     print(f"✗ Feature extraction failed: {e}")
-    sys.exit(1)
+    raise
 
-# Test 4: Policy network
+# Test 4: Policy network (NNX)
 print("\n[4/6] Testing policy network...")
 try:
     from ponderttt.models import PolicyNetwork, PolicyConfig
 
-    policy_config = PolicyConfig(feature_dim=32, num_actions=4)
-    policy = PolicyNetwork(config=policy_config)
+    policy_config = PolicyConfig(
+        feature_dim=32,
+        num_actions=4,
+        hidden_dim=64
+    )
+    rngs = nnx.Rngs(42)
+    policy = PolicyNetwork(policy_config, rngs)
+    policy.train()
 
-    test_features = jnp.ones((2, 32))
-    rng = jax.random.PRNGKey(1)
+    # Test policy inference
+    rng = jax.random.PRNGKey(0)
+    policy_output = policy(features, deterministic=False, rng=rng)
 
-    variables = policy.init(rng, test_features, deterministic=True)
-    outputs = cast(dict[str, Any], policy.apply(
-        variables,
-        test_features,
-        deterministic=True,
-        rngs={'action': rng}
-    ))
+    assert "action" in policy_output
+    assert "value" in policy_output
+    assert "log_prob" in policy_output
 
-    assert "action" in outputs
-    assert "value" in outputs
-    print(f" Policy network works (actions: {outputs['action']})")
+    print("✓ Policy network works")
+    print(f"  Actions: {policy_output['action']}")
+    print(f"  Values: {policy_output['value']}")
 except Exception as e:
     print(f"✗ Policy network failed: {e}")
-    sys.exit(1)
+    raise
 
-# Test 5: TTT layer
+# Test 5: TTT layer (NNX)
 print("\n[5/6] Testing TTT layer...")
 try:
     from ponderttt.models import TTTLayer, TTTConfig
 
     ttt_config = TTTConfig(
-        hidden_dim=768,
-        chunk_size=128,
-        num_heads=12,
+        hidden_dim=gpt2_config.n_embd,
+        num_heads=gpt2_config.n_head,
+        head_dim=gpt2_config.n_embd // gpt2_config.n_head,
+        mini_batch_size=64
     )
-    ttt_layer = TTTLayer(config=ttt_config)
+    rngs = nnx.Rngs(1)
+    ttt_layer = TTTLayer(ttt_config, rngs)
+    ttt_layer.train()
 
-    test_hidden = jnp.ones((1, 256, 768))
-    rng = jax.random.PRNGKey(2)
+    # Test TTT layer
+    test_hidden = jnp.ones((batch_size, chunk_size, gpt2_config.n_embd))
+    adapted_hidden, ttt_stats = ttt_layer(test_hidden)
 
-    variables = ttt_layer.init(rng, test_hidden)
-    output, stats = ttt_layer.apply(variables, test_hidden)
+    assert adapted_hidden.shape == test_hidden.shape
+    assert ttt_stats is not None
 
-    assert output.shape == test_hidden.shape
-    assert "ttt_loss" in stats
-    print(f" TTT layer works (loss: {stats['ttt_loss']:.4f})")
+    print(f"✓ TTT layer works (output shape: {adapted_hidden.shape})")
+    print(f"  Stats keys: {list(ttt_stats.keys())}")
 except Exception as e:
     print(f"✗ TTT layer failed: {e}")
-    sys.exit(1)
+    raise
 
-# Test 6: End-to-end flow
+# Test 6: End-to-end flow (NNX)
 print("\n[6/6] Testing end-to-end flow...")
 try:
-    # Use dummy batch from Test 1
-    input_ids = batch["input_ids"]
+    # Simulate processing one chunk
+    chunk_ids = batch["chunks"][:, 0, :]  # [batch_size, chunk_size]
 
-    # Forward through model
-    outputs = cast(dict[str, Any], model.apply(variables, input_ids[:, :10]))
+    # Step 1: Model forward pass
+    model.train()
+    outputs = model(chunk_ids, use_ttt=True)
     logits = outputs["logits"]
+    ttt_stats = outputs["ttt_stats"]
 
-    # Extract features
-    features = extractor.extract(input_ids[:, :5], logits[:, :5, :])
+    # Step 2: Extract features
+    features = feature_extractor.extract(chunk_ids, logits)
 
-    # Get policy decision
-    policy_outputs = cast(dict[str, Any], policy.apply(
-        policy.init(rng, features, deterministic=True),
-        features,
-        deterministic=True,
-        rngs={'action': rng}
-    ))
-    action = policy_outputs["action"][0]
+    # Step 3: Policy decision
+    rng = jax.random.PRNGKey(123)
+    policy_output = policy(features, deterministic=False, rng=rng)
+    actions = policy_output["action"]
+    values = policy_output["value"]
 
-    print(" End-to-end flow works")
-    print(f"  Input shape: {input_ids.shape}")
+    # Verify shapes
+    assert logits.shape == (batch_size, chunk_size, vocab_size)
+    assert features.shape == (batch_size, 32)
+    assert actions.shape == (batch_size,)
+    assert values.shape == (batch_size,)
+
+    print("✓ End-to-end flow works!")
     print(f"  Logits shape: {logits.shape}")
     print(f"  Features shape: {features.shape}")
-    print(f"  Policy action: {action}")
+    print(f"  Actions: {actions}")
+    print(f"  Values: {values}")
+    print(f"  TTT stats: {list(ttt_stats.keys())}")
+
 except Exception as e:
     print(f"✗ End-to-end flow failed: {e}")
-    sys.exit(1)
+    raise
 
+# Success!
 print("\n" + "=" * 60)
-print(" All integration tests passed!")
+print("✅ All integration tests passed!")
 print("=" * 60)
-print("\nPipeline is working correctly. Ready for experiments!")
+print("\nPipeline is ready for training:")
+print("  1. Tokenization ✓")
+print("  2. Model inference (NNX) ✓")
+print("  3. Feature extraction ✓")
+print("  4. Policy decisions (NNX) ✓")
+print("  5. TTT layer (NNX) ✓")
+print("  6. End-to-end flow ✓")
+print("\nRun training with:")
+print("  uv run python -m ponderttt.experiments.train_baseline --action UPDATE_1")

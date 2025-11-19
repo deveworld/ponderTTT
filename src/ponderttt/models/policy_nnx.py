@@ -1,12 +1,15 @@
 """
-Policy network for adaptive TTT decisions.
+Policy network for adaptive TTT decisions in NNX.
+
+Migrated from Linen to NNX for compatibility with NNX-based models.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
-import flax.linen as nn
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
 
 @dataclass
@@ -20,32 +23,69 @@ class PolicyConfig:
     dtype: jnp.dtype = jnp.float32
 
 
-class PolicyNetwork(nn.Module):
+class PolicyNetwork(nnx.Module):
     """
     Policy network for deciding TTT actions.
 
     Uses actor-critic architecture for PPO.
-
-    Attributes:
-        config: Policy configuration
     """
 
-    config: PolicyConfig
+    def __init__(self, config: PolicyConfig, rngs: nnx.Rngs):
+        """Initialize policy network.
 
-    @nn.compact
+        Args:
+            config: Policy configuration
+            rngs: Random number generators
+        """
+        self.config = config
+
+        # Shared feature extraction
+        self.fc1 = nnx.Linear(config.feature_dim, config.hidden_dim, rngs=rngs)
+        self.dropout1 = nnx.Dropout(config.dropout_rate, rngs=rngs)
+
+        self.fc2 = nnx.Linear(config.hidden_dim, config.hidden_dim, rngs=rngs)
+        self.dropout2 = nnx.Dropout(config.dropout_rate, rngs=rngs)
+
+        # Actor head (policy)
+        self.actor_head = nnx.Linear(config.hidden_dim, config.num_actions, rngs=rngs)
+
+        # Critic head (value)
+        self.critic_head = nnx.Linear(config.hidden_dim, 1, rngs=rngs)
+
+    def forward_shared(self, features: jax.Array) -> jax.Array:
+        """Shared feature extraction.
+
+        Args:
+            features: Input features [batch, feature_dim]
+
+        Returns:
+            Shared features [batch, hidden_dim]
+        """
+        x = self.fc1(features)
+        x = nnx.relu(x)
+        x = self.dropout1(x)
+
+        x = self.fc2(x)
+        x = nnx.relu(x)
+        x = self.dropout2(x)
+
+        return x
+
     def __call__(
         self,
-        features: jnp.ndarray,
+        features: jax.Array,
         deterministic: bool = False,
         return_logits: bool = False,
+        rng: Optional[jax.Array] = None,
     ) -> dict:
         """
         Forward pass through policy network.
 
         Args:
             features: Input features [batch, feature_dim]
-            deterministic: If True, select argmax action
+            deterministic: If True, select argmax action (not dropout control)
             return_logits: If True, return raw logits
+            rng: Random key for action sampling (required if not deterministic)
 
         Returns:
             Dictionary with:
@@ -54,25 +94,20 @@ class PolicyNetwork(nn.Module):
                 - value: State values [batch]
                 - entropy: Policy entropy [batch]
                 - logits: Raw logits [batch, num_actions] (if return_logits=True)
+                - probs: Action probabilities [batch, num_actions] (if return_logits=True)
+
+        Note:
+            Use model.train() / model.eval() to control dropout, not this parameter.
+            The 'deterministic' parameter here only controls action selection.
         """
-        cfg = self.config
-
         # Shared feature extraction
-        x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(features)
-        x = nn.relu(x)
-        x = nn.Dropout(rate=cfg.dropout_rate)(x, deterministic=deterministic)
-
-        x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(x)
-        x = nn.relu(x)
-        x = nn.Dropout(rate=cfg.dropout_rate)(x, deterministic=deterministic)
+        x = self.forward_shared(features)
 
         # Actor head (policy)
-        action_logits = nn.Dense(
-            features=cfg.num_actions, dtype=cfg.dtype, name="actor"
-        )(x)
+        action_logits = self.actor_head(x)
 
         # Critic head (value)
-        value = nn.Dense(features=1, dtype=cfg.dtype, name="critic")(x)
+        value = self.critic_head(x)
         value = jnp.squeeze(value, axis=-1)
 
         # Compute action probabilities
@@ -83,8 +118,9 @@ class PolicyNetwork(nn.Module):
             action = jnp.argmax(action_probs, axis=-1)
         else:
             # Sample from categorical distribution
-            key = self.make_rng("action")
-            action = jax.random.categorical(key, action_logits, axis=-1)
+            if rng is None:
+                raise ValueError("rng must be provided when deterministic=False")
+            action = jax.random.categorical(rng, action_logits, axis=-1)
 
         # Compute log probability of selected action
         log_probs = jax.nn.log_softmax(action_logits, axis=-1)
@@ -110,8 +146,8 @@ class PolicyNetwork(nn.Module):
 
     def evaluate_actions(
         self,
-        features: jnp.ndarray,
-        actions: jnp.ndarray,
+        features: jax.Array,
+        actions: jax.Array,
     ) -> dict:
         """
         Evaluate given actions (for PPO update).
@@ -123,21 +159,12 @@ class PolicyNetwork(nn.Module):
         Returns:
             Dictionary with log_prob, value, entropy
         """
-        cfg = self.config
-
-        # Forward pass (deterministic=True for evaluation)
-        x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(features)
-        x = nn.relu(x)
-        x = nn.Dropout(rate=cfg.dropout_rate)(x, deterministic=True)
-        x = nn.Dense(features=cfg.hidden_dim, dtype=cfg.dtype)(x)
-        x = nn.relu(x)
-        x = nn.Dropout(rate=cfg.dropout_rate)(x, deterministic=True)
+        # Forward pass
+        x = self.forward_shared(features)
 
         # Get action logits and value
-        action_logits = nn.Dense(
-            features=cfg.num_actions, dtype=cfg.dtype, name="actor"
-        )(x)
-        value = nn.Dense(features=1, dtype=cfg.dtype, name="critic")(x)
+        action_logits = self.actor_head(x)
+        value = self.critic_head(x)
         value = jnp.squeeze(value, axis=-1)
 
         # Compute log probability of given actions
@@ -183,6 +210,7 @@ def compute_gae(
     dones: jnp.ndarray,
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
+    last_value: float | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Compute Generalized Advantage Estimation using jax.lax.scan.
@@ -199,10 +227,10 @@ def compute_gae(
         returns: Return estimates [num_steps]
     """
     num_steps = len(rewards)
+    bootstrap_value = 0.0 if last_value is None else last_value
 
-    # Compute TD errors (delta)
-    next_values = jnp.concatenate([values[1:], jnp.array([0.0])])
-    deltas = rewards + gamma * next_values * (1 - dones) - values
+    extended_values = jnp.concatenate([values, jnp.array([bootstrap_value])])
+    deltas = rewards + gamma * extended_values[1:] * (1 - dones) - extended_values[:-1]
 
     # Compute GAE using scan (backward pass)
     def scan_fn(gae, t_idx):

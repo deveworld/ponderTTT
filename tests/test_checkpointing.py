@@ -5,11 +5,9 @@ Test script to verify checkpointing functionality.
 import tempfile
 from pathlib import Path
 import jax.numpy as jnp
-from flax.training import train_state
 import optax
 
-from src.ponderttt.utils.checkpointing import (
-    finalize_checkpointing,
+from ponderttt.utils.checkpointing import (
     get_latest_checkpoint_step,
     load_checkpoint,
     save_checkpoint,
@@ -183,7 +181,6 @@ def test_resume_simulation():
         chunk_count_resumed = checkpoint["metadata"]["chunk_count"]
         total_loss_resumed = checkpoint["metadata"]["total_loss"]
         results_resumed = checkpoint["metadata"]["results"]
-        params_resumed = checkpoint["state"]["params"]
 
         print(f"   ✓ Resumed from chunk {chunk_count_resumed}")
         print(f"   ✓ Total loss so far: {total_loss_resumed}")

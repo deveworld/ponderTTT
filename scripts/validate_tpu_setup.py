@@ -165,15 +165,24 @@ def check_parameter_sharding(mesh):
             }
         }
 
-        # Apply sharding
-        from ponderttt.models import apply_sharding_to_params
-        sharded_params = apply_sharding_to_params(params, mesh)
+        from jax.sharding import NamedSharding, PartitionSpec as P
+
+        param_sharding = NamedSharding(mesh, P('batch', None))
+        sharded_params = jax.tree_util.tree_map(
+            lambda x: jax.device_put(x, param_sharding),
+            params,
+        )
 
         print_on_main(" PASS: Parameters sharded successfully")
 
-        # Inspect sharding
-        from ponderttt.models import inspect_sharding
-        inspect_sharding(sharded_params, max_params=10)
+        def _print_specs(tree, prefix=""):
+            for key, value in tree.items():
+                if isinstance(value, dict):
+                    _print_specs(value, prefix=f"{prefix}{key}.")
+                else:
+                    print_on_main(f"  {prefix}{key}: {value.sharding if hasattr(value, 'sharding') else 'replicated'}")
+
+        _print_specs(sharded_params)
 
         return sharded_params
     except Exception as e:

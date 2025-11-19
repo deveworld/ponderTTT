@@ -1,32 +1,45 @@
 """
-Tokenization utilities.
+Tokenization utilities using HuggingFace tokenizers library directly.
+
+Uses the tokenizers library without transformers dependency.
 """
 
-from transformers import AutoTokenizer
+from tokenizers import Tokenizer
 
 
 def get_tokenizer(
     model_name: str = "gpt2",
     padding_side: str = "right",
     add_special_tokens: bool = True,
-) -> AutoTokenizer:
+) -> Tokenizer:
     """
-    Load and configure tokenizer.
+    Load and configure tokenizer using tokenizers library.
 
     Args:
-        model_name: HuggingFace model name
-        padding_side: Where to add padding tokens
+        model_name: HuggingFace model name (e.g., "gpt2", "gpt2-medium")
+        padding_side: Where to add padding tokens (not directly supported in tokenizers)
         add_special_tokens: Whether to add special tokens
 
     Returns:
-        Configured tokenizer
+        Configured tokenizer from tokenizers library
+
+    Note:
+        This uses the tokenizers library directly without transformers.
+        The padding_side parameter is accepted for API compatibility but
+        padding behavior should be controlled via enable_padding() and pad() methods.
     """
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # Load tokenizer from HuggingFace Hub
+    tokenizer = Tokenizer.from_pretrained(model_name)
 
-    # Set padding token if not present
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # Ensure dedicated padding token exists
+    pad_token = "<|pad|>"
+    if tokenizer.token_to_id(pad_token) is None:
+        tokenizer.add_special_tokens([pad_token])
 
-    tokenizer.padding_side = padding_side
+    pad_token_id = tokenizer.token_to_id(pad_token)
+    tokenizer.enable_padding(
+        pad_id=pad_token_id,
+        pad_token=pad_token,
+    )
 
     return tokenizer

@@ -1,168 +1,36 @@
-# Contributing to PonderTTT
+# Contributing
 
-Thank you for your interest in contributing to PonderTTT!
+Thanks for helping improve PonderTTT!
 
-## Development Setup
+## Getting started
+1. Install dependencies (see `README.md`). Use `uv` with editable installs.
+2. Run the sanity checks:
+   ```bash
+   python scripts/quick_test.py
+   python scripts/test_pipeline.py
+   pytest tests/test_checkpointing.py  # optional but recommended
+   ```
+3. Use `uv run ...` for CLI commands so the correct environment is used. Tokenizers download from Hugging Face; set `HF_HOME` if desired.
 
-1. Install uv (if not already installed):
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
+## Development tips
+- The code base is pure JAX/Flax NNX. Avoid reintroducing old Linen modules.
+- Chunk-level semantics are centralized in `ponderttt/experiments/training_utils.py`. If you add new trainers, use that helper to keep SKIP/UPDATE_k behaviour consistent.
+- New fast-weight variants should implement the same interface as `TTTLayer`/`LoRALayer`.
+- Benchmarks execute user completions. Keep security in mind and consider sandboxing if you add new datasets.
 
-2. Clone the repository:
-```bash
-git clone https://github.com/deveworld/ponderttt.git
-cd ponderttt
-```
+## Tests & formatting
+- We rely on `pytest`, `ruff`, and `mypy` (see extras in `pyproject.toml`). The CI expectation is:
+  ```bash
+  ruff check src tests
+  mypy src
+  pytest
+  ```
+- Long-running TPU/GPU tests are not part of CI; keep lightweight regressions under `scripts/` and `tests/`.
 
-3. Install dependencies:
-```bash
-make install
-```
+## Submitting changes
+1. Create a branch (`feature/chunk-visualizer`, etc.).
+2. Update documentation when behaviour changes; we treat the README/PLAN/PROJECT_STATUS as code.
+3. Include clear commit messages and explain how you validated the change.
+4. Open a PR referencing the relevant issue or research task; attach logs for `scripts/quick_test.py` and any other relevant tests.
 
-Or manually:
-```bash
-uv pip install -e .
-uv pip install -e ".[dev]"
-```
-
-4. Run validation:
-```bash
-# Quick validation with The Stack dataset
-uv run python -m ponderttt.experiments.train_baseline \
-    --model_scale 125m \
-    --action SKIP \
-    --max_chunks 10
-```
-
-**Note**: Requires GPU for production experiments. The Stack dataset will be downloaded automatically.
-
-**Note**: This project uses **uv** for package management, not pip.
-
-## Code Style
-
-We use the following tools to maintain code quality:
-
-- **Ruff**: Linting and formatting
-- **MyPy**: Static type checking
-- **Pytest**: Testing
-
-### Running Linters
-
-```bash
-# Format code
-make format
-
-# Run linters
-make lint
-```
-
-### Code Formatting Guidelines
-
-- Use type hints for all function signatures
-- Write docstrings for all public functions and classes
-- Follow PEP 8 style guidelines
-- Maximum line length: 100 characters (enforced by ruff)
-
-## Testing
-
-### Running Tests
-
-```bash
-# Run all tests
-pytest tests/
-
-# Run specific test file
-pytest tests/test_models.py
-
-# Run with coverage
-pytest tests/ --cov=src/ponderttt
-```
-
-### Writing Tests
-
-- Place test files in `tests/` directory
-- Name test files as `test_*.py`
-- Name test functions as `test_*`
-- Use fixtures for common setup
-- Aim for >80% code coverage
-
-Example:
-```python
-def test_model_forward_pass(base_model, tokenizer):
-    """Test that model can perform forward pass."""
-    text = "def test(): pass"
-    encoded = tokenizer(text, return_tensors="pt")
-    outputs = base_model(**encoded)
-    assert outputs["logits"] is not None
-```
-
-## Project Structure
-
-```
-ponderttt/
-├── src/ponderttt/       # Main package
-│   ├── data/            # Data loading
-│   ├── models/          # Model architectures
-│   ├── training/        # Training algorithms
-│   ├── evaluation/      # Evaluation metrics
-│   └── utils/           # Utilities
-├── tests/               # Unit tests
-├── scripts/             # Helper scripts
-└── docs/                # Documentation
-```
-
-## Pull Request Process
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Make your changes
-4. Run tests and linters: `make test && make lint`
-5. Commit your changes: `git commit -am 'Add new feature'`
-6. Push to the branch: `git push origin feature/your-feature`
-7. Create a Pull Request
-
-### PR Guidelines
-
-- Write clear, descriptive commit messages
-- Include tests for new features
-- Update documentation as needed
-- Ensure all tests pass
-- Keep PRs focused and atomic
-
-## Bug Reports
-
-When filing a bug report, please include:
-
-1. Description of the bug
-2. Steps to reproduce
-3. Expected behavior
-4. Actual behavior
-5. Environment details (OS, Python version, etc.)
-
-## Feature Requests
-
-We welcome feature requests! Please:
-
-1. Check if the feature already exists or is planned
-2. Describe the feature and its use case
-3. Explain how it fits with the project goals
-4. Provide examples if applicable
-
-## Code Review Process
-
-All submissions require review. We use GitHub pull requests for this purpose. Reviewers will check for:
-
-- Code quality and style
-- Test coverage
-- Documentation
-- Compatibility with existing code
-- Performance implications
-
-## Questions?
-
-Feel free to open an issue for questions or discussion!
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the MIT License.
+We appreciate issues describing bugs, missing docs, or ideas for baselines/ablations. Thanks for contributing!
