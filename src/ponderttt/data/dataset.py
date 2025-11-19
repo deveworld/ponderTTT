@@ -262,7 +262,12 @@ def create_data_iterator(
                 }
 
                 # Reset batch
-                batch = {"input_ids": [], "attention_mask": [], "chunks": []}
+                batch = {
+                    "input_ids": [],
+                    "attention_mask": [],
+                    "chunks": [],
+                    "chunk_attention_mask": [],
+                }
 
                 count += batch_size
                 if max_examples and count >= max_examples:
