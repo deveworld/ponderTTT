@@ -49,18 +49,18 @@ def test_basic_save_load():
             metadata=metadata,
         )
         wait_for_checkpoints()  # Wait for async save to complete
-        print("   ✓ Checkpoint saved")
+        print("   OK Checkpoint saved")
 
         # Check latest step
         print("\n2. Getting latest checkpoint step...")
         latest = get_latest_checkpoint_step(checkpoint_dir)
-        print(f"   ✓ Latest step: {latest}")
+        print(f"   OK Latest step: {latest}")
         assert latest == 42, f"Expected 42, got {latest}"
 
         # Load checkpoint
         print("\n3. Loading checkpoint...")
         loaded = load_checkpoint(checkpoint_dir, step=42)
-        print("   ✓ Checkpoint loaded")
+        print("   OK Checkpoint loaded")
 
         # Verify contents
         print("\n4. Verifying loaded data...")
@@ -73,7 +73,7 @@ def test_basic_save_load():
         # Verify params shape
         assert loaded["state"]["params"]["layer1"]["weights"].shape == (3, 3)
         assert loaded["state"]["params"]["layer1"]["bias"].shape == (3,)
-        print("   ✓ All data verified")
+        print("   OK All data verified")
 
     print("\n" + "=" * 60)
     print("Test 1 PASSED")
@@ -104,12 +104,12 @@ def test_multiple_checkpoints():
                 metadata={"step_num": step, "value": step * 10},
             )
         wait_for_checkpoints()  # Wait for async saves to complete
-        print("   ✓ All checkpoints saved")
+        print("   OK All checkpoints saved")
 
         # Get latest
         print("\n2. Getting latest checkpoint...")
         latest = get_latest_checkpoint_step(checkpoint_dir)
-        print(f"   ✓ Latest step: {latest}")
+        print(f"   OK Latest step: {latest}")
         assert latest == 30, f"Expected 30, got {latest}"
 
         # Load specific checkpoint
@@ -117,13 +117,13 @@ def test_multiple_checkpoints():
         loaded = load_checkpoint(checkpoint_dir, step=20)
         assert loaded["metadata"]["step_num"] == 20
         assert loaded["metadata"]["value"] == 200
-        print("   ✓ Specific checkpoint loaded correctly")
+        print("   OK Specific checkpoint loaded correctly")
 
         # Load latest
         print("\n4. Loading latest checkpoint...")
         loaded_latest = load_checkpoint(checkpoint_dir)
         assert loaded_latest["metadata"]["step_num"] == 30
-        print("   ✓ Latest checkpoint loaded correctly")
+        print("   OK Latest checkpoint loaded correctly")
 
     print("\n" + "=" * 60)
     print("Test 2 PASSED")
@@ -168,7 +168,7 @@ def test_resume_simulation():
             },
         )
         wait_for_checkpoints()  # Wait for async save to complete
-        print("   ✓ Checkpoint saved (interrupted)")
+        print("   OK Checkpoint saved (interrupted)")
 
         # Simulate resume
         print("\n2. Simulating resume...")
@@ -182,15 +182,15 @@ def test_resume_simulation():
         total_loss_resumed = checkpoint["metadata"]["total_loss"]
         results_resumed = checkpoint["metadata"]["results"]
 
-        print(f"   ✓ Resumed from chunk {chunk_count_resumed}")
-        print(f"   ✓ Total loss so far: {total_loss_resumed}")
-        print(f"   ✓ Chunks processed: {len(results_resumed['chunks'])}")
+        print(f"   OK Resumed from chunk {chunk_count_resumed}")
+        print(f"   OK Total loss so far: {total_loss_resumed}")
+        print(f"   OK Chunks processed: {len(results_resumed['chunks'])}")
 
         # Verify resume state
         assert chunk_count_resumed == 10
         assert len(results_resumed["chunks"]) == 10
         assert abs(total_loss_resumed - sum(i * 0.1 for i in range(1, 11))) < 1e-6
-        print("   ✓ Resume state verified")
+        print("   OK Resume state verified")
 
         # Continue from where we left off
         print("\n3. Continuing processing (chunks 11-15)...")
@@ -199,13 +199,13 @@ def test_resume_simulation():
             total_loss_resumed += i * 0.1
             results_resumed["chunks"].append({"id": i, "loss": i * 0.1})
 
-        print(f"   ✓ Processed up to chunk {chunk_count_resumed}")
-        print(f"   ✓ Total chunks: {len(results_resumed['chunks'])}")
+        print(f"   OK Processed up to chunk {chunk_count_resumed}")
+        print(f"   OK Total chunks: {len(results_resumed['chunks'])}")
 
         # Verify final state
         assert chunk_count_resumed == 15
         assert len(results_resumed["chunks"]) == 15
-        print("   ✓ Final state verified")
+        print("   OK Final state verified")
 
     print("\n" + "=" * 60)
     print("Test 3 PASSED")
@@ -214,7 +214,7 @@ def test_resume_simulation():
 
 def main():
     """Run all tests."""
-    print("\n" + "🔍 Checkpointing Verification Tests")
+    print("\n" + "[CHECK] Checkpointing Verification Tests")
     print("\n")
 
     try:
@@ -223,7 +223,7 @@ def main():
         test_resume_simulation()
 
         print("\n" + "=" * 60)
-        print("🎉 ALL TESTS PASSED!")
+        print("ALL TESTS PASSED!")
         print("=" * 60)
         print("\nCheckpointing implementation is working correctly!")
 

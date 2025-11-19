@@ -22,12 +22,12 @@ def main() -> None:
     print("\n[1/3] Loading tokenizer...")
     tokenizer = get_tokenizer("gpt2")
     vocab_size = tokenizer.get_vocab_size()
-    print(f"✓ Tokenizer vocab size: {vocab_size}")
+    print(f"OK Tokenizer vocab size: {vocab_size}")
 
     print("\n[2/3] Loading model with tied embeddings...")
     model, config = load_ttt_model(model_name="gpt2", seed=0, load_pretrained=False)
     model.eval()
-    print(f"✓ Model: {config.n_layer} layers, dim={config.n_embd}")
+    print(f"OK Model: {config.n_layer} layers, dim={config.n_embd}")
 
     print("\n[3/3] Running forward pass...")
     rng = jax.random.PRNGKey(0)
@@ -36,7 +36,7 @@ def main() -> None:
     logits = outputs["logits"]
 
     expected_shape = (1, 64, vocab_size)
-    print(f"✓ Forward pass successful, logits shape: {logits.shape}")
+    print(f"OK Forward pass successful, logits shape: {logits.shape}")
 
     if logits.shape != expected_shape:
         raise AssertionError(f"Unexpected logits shape {logits.shape}, expected {expected_shape}")

@@ -195,10 +195,10 @@ def action_to_cost(action: int) -> jnp.ndarray:
     Get computational cost for an action.
 
     Based on PLAN.md:
-    - SKIP: 1× (forward only)
-    - UPDATE_1: 3× (1 fwd + 2 bwd)
-    - UPDATE_2: 6× (2 fwd + 4 bwd)
-    - UPDATE_4: 12× (4 fwd + 8 bwd)
+    - SKIP: 1x (forward only)
+    - UPDATE_1: 3x (1 fwd + 2 bwd)
+    - UPDATE_2: 6x (2 fwd + 4 bwd)
+    - UPDATE_4: 12x (4 fwd + 8 bwd)
     """
     costs = jnp.array([1.0, 3.0, 6.0, 12.0])
     return costs[action]

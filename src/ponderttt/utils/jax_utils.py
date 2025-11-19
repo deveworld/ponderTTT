@@ -74,10 +74,10 @@ def initialize_jax_distributed(
         # Simple initialization - JAX auto-detects TPU Pod config
         try:
             jax.distributed.initialize()
-            print(" JAX distributed initialized automatically")
+            print("JAX distributed initialized automatically")
         except RuntimeError:
             # JAX distributed not available (single host or already initialized)
-            print(" JAX distributed initialization skipped (single host?)")
+            print("JAX distributed initialization skipped (single host?)")
             return
     else:
         # Explicit initialization
@@ -86,7 +86,7 @@ def initialize_jax_distributed(
             num_processes=num_processes,
             process_id=process_id,
         )
-        print(" JAX distributed initialized explicitly")
+        print("JAX distributed initialized explicitly")
 
     # Print device info (but only from process 0 to avoid spam)
     if jax.process_index() == 0:
@@ -110,7 +110,7 @@ def create_mesh(
         JAX Mesh object
 
     Example:
-        # For TPU v4-64 with 8 hosts × 8 chips = 64 devices
+        # For TPU v4-64 with 8 hosts x 8 chips = 64 devices
         # Data parallel only:
         mesh = create_mesh((64, 1), ('batch', 'model'))
 
@@ -247,7 +247,7 @@ def get_local_batch_size(
     Example:
         # For global_batch_size=512 on 8 hosts with 8 chips each (64 devices):
         # per_device_batch = 512 / 64 = 8
-        # local_batch = 8 × 8 = 64 per host
+        # local_batch = 8 x 8 = 64 per host
     """
     num_devices = jax.device_count()
     per_device_batch = global_batch_size // num_devices

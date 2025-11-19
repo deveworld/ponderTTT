@@ -37,7 +37,7 @@ for ACTION in "${ACTIONS[@]}"; do
         --output_dir ${OUTPUT_DIR} \
         --seed ${SEED}
 
-    echo "✓ ${ACTION} completed"
+    echo "OK ${ACTION} completed"
 done
 
 echo ""

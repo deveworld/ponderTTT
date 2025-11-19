@@ -49,7 +49,7 @@ def load_huggingface_weights(
     print("Converting weights to JAX format...")
     _load_weights_from_state_dict(model, hf_state_dict)
 
-    print(f"✓ Successfully loaded {model_name} weights")
+    print(f"OK Successfully loaded {model_name} weights")
     return model
 
 
@@ -166,7 +166,7 @@ def save_checkpoint(
         with open(checkpoint_path / "config.json", "w") as f:
             json.dump(config_dict, f, indent=2)
 
-    print(f"✓ Checkpoint saved to {checkpoint_path}")
+    print(f"OK Checkpoint saved to {checkpoint_path}")
 
 
 def load_checkpoint(
@@ -209,7 +209,7 @@ def load_checkpoint(
     # Merge back into model
     model = nnx.merge(graphdef, restored_state)
 
-    print(f"✓ Checkpoint loaded from {checkpoint_path}")
+    print(f"OK Checkpoint loaded from {checkpoint_path}")
     return model, config
 
 
@@ -241,7 +241,7 @@ def convert_and_save_pretrained(
     checkpoint_path = output_dir / model_name
     save_checkpoint(model, checkpoint_path, config)
 
-    print(f"\n✓ Converted {model_name} to NNX format")
+    print(f"\nOK Converted {model_name} to NNX format")
     print(f"  Saved to: {checkpoint_path}")
     print("  You can now use this checkpoint without transformers dependency")
 

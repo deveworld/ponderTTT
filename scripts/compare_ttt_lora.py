@@ -43,7 +43,7 @@ def compare_models():
     )
     ttt_trainable, ttt_total = count_trainable_parameters(ttt_model)
 
-    print(f"   ✓ TTT model loaded")
+    print(f"   OK TTT model loaded")
     print(f"     - Total params: {ttt_total:,}")
     print(f"     - Trainable: {ttt_trainable:,} ({ttt_trainable/ttt_total*100:.1f}%)")
 
@@ -63,7 +63,7 @@ def compare_models():
         )
         lora_trainable, lora_total = count_trainable_parameters(lora_model)
 
-        print(f"   ✓ LoRA model loaded")
+        print(f"   OK LoRA model loaded")
         print(f"     - Total params: {lora_total:,}")
         print(f"     - Trainable: {lora_trainable:,} ({lora_trainable/lora_total*100:.1f}%)")
 
@@ -100,13 +100,13 @@ def compare_models():
     print("=" * 70)
     print("""
 Recommended usage:
-TTT Layer —
+TTT Layer -
    - Maximum performance is critical
    - Academic reproducibility needed
    - GPU memory is sufficient
    - Following the official TTT-LM implementation
 
-LoRA —
+LoRA -
    - Memory is limited (22-50% reduction)
    - Faster training needed
    - Experimenting with different ranks

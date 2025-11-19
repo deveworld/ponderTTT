@@ -118,7 +118,7 @@ def main():
     print("=" * 60)
     print(f"Model scale: {args.model_scale}")
     print(f"Iterations: {args.num_iterations}")
-    print(f"Budget limit: {args.budget_limit}×")
+    print(f"Budget limit: {args.budget_limit}x")
     print(f"Rollout length: {args.rollout_length}")
     print(f"Output dir: {args.output_dir}")
     print()
@@ -144,7 +144,7 @@ def main():
     chunk_size = 512
     chunks_per_sequence = max(1, seq_length // chunk_size)
 
-    # Estimate examples needed (2× safety margin)
+    # Estimate examples needed (2x safety margin)
     examples_per_iteration = math.ceil(args.rollout_length / chunks_per_sequence) * batch_size
     num_examples = examples_per_iteration * args.num_iterations * 2
 
@@ -170,12 +170,12 @@ def main():
     policy = PolicyNetwork(config=policy_config, rngs=rngs)
     policy.train()  # Enable dropout for training
 
-    print(f"✓ Policy: {policy_config.feature_dim}D → {policy_config.hidden_dim}D → {policy_config.num_actions} actions")
+    print(f"OK Policy: {policy_config.feature_dim}D -> {policy_config.hidden_dim}D -> {policy_config.num_actions} actions")
 
     # Create optimizer
     print("Creating optimizer...")
     optimizer = nnx.Optimizer(policy, optax.adam(args.learning_rate), wrt=nnx.All(nnx.Param))
-    print(f"✓ Optimizer: Adam (lr={args.learning_rate})")
+    print(f"OK Optimizer: Adam (lr={args.learning_rate})")
 
     # Initialize TTT model template for environment rollouts
     print(f"\nPreparing TTT model ({args.fast_weight_type.upper()}) for rollouts...")
@@ -216,12 +216,12 @@ def main():
         optimizer = nnx.Optimizer(model, optax.adam(args.learning_rate), wrt=nnx.All(nnx.Param))
         return model, optimizer
 
-    print(f"✓ Model template ready: {ttt_config.n_layer} layers")
+    print(f"OK Model template ready: {ttt_config.n_layer} layers")
     print(f"  Fast weight type: {args.fast_weight_type}")
 
     # Initialize feature extractor
     feature_extractor = FeatureExtractor(vocab_size=tokenizer.get_vocab_size())
-    print(f"✓ Feature extractor initialized (32D features)")
+    print(f"OK Feature extractor initialized (32D features)")
 
     # PID controller for budget constraint
     pid = PIDController(
@@ -229,11 +229,11 @@ def main():
         ki=0.01,
         kd=0.05,
     )
-    print(f"✓ PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}")
+    print(f"OK PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}")
 
     # Training loop
     print("\nStarting policy training...")
-    print(f"Target budget: {args.budget_limit}×")
+    print(f"Target budget: {args.budget_limit}x")
     print()
 
     training_history = []
@@ -354,7 +354,7 @@ def main():
                 pbar.set_postfix(
                     {
                         "action": action_idx,
-                        "cost": f"{cost:.1f}×",
+                        "cost": f"{cost:.1f}x",
                         "reward": f"{reward:.3f}",
                     }
                 )
@@ -431,7 +431,7 @@ def main():
         avg_reward = float(jnp.mean(rollout_rewards_array))
 
         print("\nRollout summary:")
-        print(f"  Average cost: {avg_cost:.2f}× (target: {args.budget_limit:.1f}×)")
+        print(f"  Average cost: {avg_cost:.2f}x (target: {args.budget_limit:.1f}x)")
         print(f"  Average reward: {avg_reward:.4f}")
         print(f"  Lambda (penalty): {pid.lambda_value:.4f}")
         print(f"  Policy loss: {loss:.4f}")
@@ -454,7 +454,7 @@ def main():
 
     if training_history:
         print(f"Total iterations: {len(training_history)}")
-        print(f"Final average cost: {training_history[-1]['avg_cost']:.2f}×")
+        print(f"Final average cost: {training_history[-1]['avg_cost']:.2f}x")
         print(f"Final average reward: {training_history[-1]['avg_reward']:.4f}")
 
         # Save results
@@ -473,7 +473,7 @@ def main():
         with open(results_file, "w") as f:
             json.dump(results, f, indent=2)
 
-        print(f"\n✓ Results saved to: {results_file}")
+        print(f"\nOK Results saved to: {results_file}")
     else:
         print("\nNo training completed!")
 

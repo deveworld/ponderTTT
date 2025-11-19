@@ -2,8 +2,8 @@
 Train baseline TTT models with fixed action schedules (NNX version).
 
 Implements the architecture from PLAN.md:
-- Slow weights (θ_slow): Frozen pretrained model
-- Fast weights (θ_fast): Adaptive TTT layer weights
+- Slow weights (theta_slow): Frozen pretrained model
+- Fast weights (theta_fast): Adaptive TTT layer weights
 
 Usage:
     python -m ponderttt.experiments.train_baseline --model_scale 125m --action UPDATE_1
@@ -196,7 +196,7 @@ def main():
     # Set to training mode
     model.train()
 
-    print(f"✓ Model loaded: {config.n_layer} layers, {config.n_embd} dim")
+    print(f"OK Model loaded: {config.n_layer} layers, {config.n_embd} dim")
     print(f"  Fast weight type: {args.fast_weight_type}")
     total_params = count_params(model)
     print(f"  Total parameters: {total_params:,}")
@@ -205,7 +205,7 @@ def main():
     print("\nCreating optimizer...")
 
     # Extract TTT layer parameters only (freeze slow weights)
-    # Following PLAN.md: θ_slow (frozen), θ_fast (trainable)
+    # Following PLAN.md: theta_slow (frozen), theta_fast (trainable)
     trainable_params = model.get_trainable_params()
     trainable_param_count = sum(x.size for x in jax.tree.leaves(trainable_params))
 
@@ -216,7 +216,7 @@ def main():
     # Create optimizer for all parameters
     # Base model will be frozen via stop_gradient in the model's forward pass
     optimizer = nnx.Optimizer(model, optax.adam(args.learning_rate), wrt=nnx.All(nnx.Param))
-    print(f"✓ Optimizer: Adam (lr={args.learning_rate}, base_model frozen via stop_gradient)")
+    print(f"OK Optimizer: Adam (lr={args.learning_rate}, base_model frozen via stop_gradient)")
 
     # Training loop
     print("\nStarting training...")
@@ -306,7 +306,7 @@ def main():
         print(f"  Chunks processed: {chunks_processed}")
         print(f"  Average loss: {final_avg_loss:.4f}")
         print(f"  Average perplexity: {final_avg_ppl:.2f}")
-        print(f"  Average cost multiplier: {total_cost / max(chunks_processed, 1):.2f}×")
+        print(f"  Average cost multiplier: {total_cost / max(chunks_processed, 1):.2f}x")
 
         # Save results
         results = {
@@ -333,7 +333,7 @@ def main():
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
 
-        print(f"\n✓ Results saved to: {results_file}")
+        print(f"\nOK Results saved to: {results_file}")
     else:
         print("\nNo chunks processed!")
 
