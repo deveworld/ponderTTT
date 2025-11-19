@@ -475,7 +475,7 @@ def main():
 
         print(f"\n✓ Results saved to: {results_file}")
     else:
-        print("\n⚠️  No training completed!")
+        print("\nNo training completed!")
 
 
 if __name__ == "__main__":

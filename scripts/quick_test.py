@@ -141,13 +141,13 @@ except Exception as e:
 # Summary
 print("\n" + "=" * 60)
 if tests_passed == total_tests:
-    print(f"✅ All {total_tests} tests passed!")
+    print(f"All {total_tests} tests passed!")
     print("=" * 60)
-    print("\n✅ JAX/Flax NNX implementation is ready.")
+    print("\nJAX/Flax NNX implementation is ready.")
 else:
     print(f"Tests: {tests_passed}/{total_tests} passed, {tests_failed} failed")
     print("=" * 60)
-    print("\n⚠️  Some tests failed. Please fix the issues above.")
+    print("\nSome tests failed. Please fix the issues above.")
     if tests_passed > 0:
         print(f"Working components: {tests_passed}/{total_tests}")
 

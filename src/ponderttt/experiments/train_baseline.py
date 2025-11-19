@@ -335,7 +335,7 @@ def main():
 
         print(f"\n✓ Results saved to: {results_file}")
     else:
-        print("\n⚠️  No chunks processed!")
+        print("\nNo chunks processed!")
 
 
 if __name__ == "__main__":

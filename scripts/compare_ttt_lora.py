@@ -99,19 +99,20 @@ def compare_models():
     print("Recommendations")
     print("=" * 70)
     print("""
-✅ Use TTT Layer when:
+Recommended usage:
+TTT Layer —
    - Maximum performance is critical
    - Academic reproducibility needed
    - GPU memory is sufficient
-   - Following official TTT-LM implementation
+   - Following the official TTT-LM implementation
 
-✅ Use LoRA when:
+LoRA —
    - Memory is limited (22-50% reduction)
    - Faster training needed
    - Experimenting with different ranks
    - Practical deployment scenarios
 
-💡 Ablation study:
+Ablation study:
    - Main results: TTT Layer (academic justification)
    - Comparison: LoRA r=64/128 (practical alternative)
    - Paper contribution: Trade-off analysis

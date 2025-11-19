@@ -4,13 +4,13 @@
 
 | Area | Status | Notes |
 |------|--------|-------|
-| NNX GPT-2 + TTT/LoRA fast weights | ✅ | Base model frozen via `stop_gradient`, weight tying verified |
-| Streaming data pipeline | ✅ | `<|pad|>` token added, chunk + mask tensors propagated everywhere |
-| Chunk semantics | ✅ | Baseline & policy loops issue true SKIP/UPDATE_k actions |
-| PPO + PID controller | ✅ | Rollouts reset fast weights, rewards derived from loss deltas |
-| Executable benchmarks | ✅ | HumanEval/MBPP/ClassEval call `generate_fn` and run tests |
-| Tooling/tests | ✅ | `scripts/quick_test.py`, `test_pipeline.py`, distributed and TPU setup scripts updated |
-| Large-scale experiments | ⏳ | Requires TPU v4-64 or multi-GPU cluster |
+| NNX GPT-2 + TTT/LoRA fast weights | Complete | Base model frozen via `stop_gradient`, weight tying verified |
+| Streaming data pipeline | Complete | `<|pad|>` token added, chunk + mask tensors propagated everywhere |
+| Chunk semantics | Complete | Baseline & policy loops issue true SKIP/UPDATE_k actions |
+| PPO + PID controller | Complete | Rollouts reset fast weights, rewards derived from loss deltas |
+| Executable benchmarks | Complete | HumanEval/MBPP/ClassEval call `generate_fn` and run tests |
+| Tooling/tests | Complete | `scripts/quick_test.py`, `test_pipeline.py`, distributed and TPU setup scripts updated |
+| Large-scale experiments | In progress | Requires TPU v4-64 or multi-GPU cluster |
 
 ## Recent work
 - Implemented chunk-level training utilities shared by baselines and the policy trainer.

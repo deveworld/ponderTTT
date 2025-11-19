@@ -76,7 +76,7 @@ def test_basic_save_load():
         print("   ✓ All data verified")
 
     print("\n" + "=" * 60)
-    print("✅ Test 1 PASSED")
+    print("Test 1 PASSED")
     print("=" * 60)
 
 
@@ -126,7 +126,7 @@ def test_multiple_checkpoints():
         print("   ✓ Latest checkpoint loaded correctly")
 
     print("\n" + "=" * 60)
-    print("✅ Test 2 PASSED")
+    print("Test 2 PASSED")
     print("=" * 60)
 
 
@@ -208,7 +208,7 @@ def test_resume_simulation():
         print("   ✓ Final state verified")
 
     print("\n" + "=" * 60)
-    print("✅ Test 3 PASSED")
+    print("Test 3 PASSED")
     print("=" * 60)
 
 
@@ -229,7 +229,7 @@ def main():
 
     except Exception as e:
         print("\n" + "=" * 60)
-        print("❌ TEST FAILED")
+        print("TEST FAILED")
         print("=" * 60)
         print(f"\nError: {e}")
         import traceback
