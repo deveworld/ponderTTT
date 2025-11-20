@@ -45,6 +45,7 @@ class FeatureExtractor:
         logits: jnp.ndarray,
         hidden_states: list[jnp.ndarray] | None = None,
         attentions: list[jnp.ndarray] | None = None,
+        attention_mask: jnp.ndarray | None = None,
         budget_remaining: float = 1.0,
     ) -> jnp.ndarray:
         """
@@ -60,30 +61,36 @@ class FeatureExtractor:
         Returns:
             Features [batch, 32]
         """
-        batch_size = input_ids.shape[0]
+        batch_size, seq_len = input_ids.shape
+
+        if attention_mask is None:
+            attention_mask = jnp.ones((batch_size, seq_len), dtype=jnp.float32)
+        else:
+            attention_mask = attention_mask.astype(jnp.float32)
+        valid_tokens = jnp.maximum(jnp.sum(attention_mask, axis=-1, keepdims=True), 1.0)
 
         features = []
 
         # 1. Model confidence (4)
-        confidence = self._extract_confidence(logits)
+        confidence = self._extract_confidence(logits, attention_mask, valid_tokens)
         features.append(confidence)
 
         # 2. Activation statistics (6)
         if hidden_states is not None:
-            activations = self._extract_activations(hidden_states)
+            activations = self._extract_activations(hidden_states, attention_mask, valid_tokens)
         else:
             activations = jnp.zeros((batch_size, 6))
         features.append(activations)
 
         # 3. Attention patterns (4)
         if attentions is not None:
-            attention_feat = self._extract_attention(attentions)
+            attention_feat = self._extract_attention(attentions, attention_mask, valid_tokens)
         else:
             attention_feat = jnp.zeros((batch_size, 4))
         features.append(attention_feat)
 
         # 4. Code metrics (8)
-        code_feat = self._extract_code_metrics(input_ids, logits)
+        code_feat = self._extract_code_metrics(input_ids, logits, attention_mask, valid_tokens)
         features.append(code_feat)
 
         # 5. Historical context (4)
@@ -103,20 +110,31 @@ class FeatureExtractor:
 
         return all_features
 
-    def _extract_confidence(self, logits: jnp.ndarray) -> jnp.ndarray:
+    def _extract_confidence(
+        self,
+        logits: jnp.ndarray,
+        attention_mask: jnp.ndarray,
+        valid_tokens: jnp.ndarray,
+    ) -> jnp.ndarray:
         """Extract model confidence features (4D)."""
         # Compute probabilities
         probs = jax.nn.softmax(logits, axis=-1)
 
         # Entropy
         entropy = -jnp.sum(probs * jnp.log(probs + 1e-10), axis=-1)
-        mean_entropy = jnp.mean(entropy, axis=-1)
-        max_entropy = jnp.max(entropy, axis=-1)
+        entropy = entropy * attention_mask
+        mean_entropy = jnp.sum(entropy, axis=-1) / valid_tokens.squeeze(-1)
+        max_entropy = jnp.max(jnp.where(attention_mask > 0, entropy, -jnp.inf), axis=-1)
+        max_entropy = jnp.where(jnp.isfinite(max_entropy), max_entropy, 0.0)
 
         # Perplexity (use max prob as proxy)
         max_probs = jnp.max(probs, axis=-1)
-        mean_perplexity = jnp.exp(-jnp.mean(jnp.log(max_probs + 1e-10), axis=-1))
-        max_perplexity = jnp.exp(-jnp.min(jnp.log(max_probs + 1e-10), axis=-1))
+        log_max_probs = jnp.log(max_probs + 1e-10) * attention_mask
+        mean_perplexity = jnp.exp(-jnp.sum(log_max_probs, axis=-1) / valid_tokens.squeeze(-1))
+        max_perplexity = jnp.exp(
+            -jnp.max(jnp.where(attention_mask > 0, log_max_probs, -jnp.inf), axis=-1)
+        )
+        max_perplexity = jnp.where(jnp.isfinite(max_perplexity), max_perplexity, 1.0)
 
         return jnp.stack(
             [
@@ -128,20 +146,33 @@ class FeatureExtractor:
             axis=-1,
         )
 
-    def _extract_activations(self, hidden_states: list[jnp.ndarray]) -> jnp.ndarray:
+    def _extract_activations(
+        self,
+        hidden_states: list[jnp.ndarray],
+        attention_mask: jnp.ndarray,
+        valid_tokens: jnp.ndarray,
+    ) -> jnp.ndarray:
         """Extract activation statistics (6D)."""
         # Use last layer
         last_hidden = hidden_states[-1]  # [batch, seq_len, hidden_dim]
+        mask = attention_mask[..., None]
+        denom = valid_tokens[..., None]
 
         # Statistics
-        mean_act = jnp.mean(last_hidden, axis=(1, 2))
-        std_act = jnp.std(last_hidden, axis=(1, 2))
-        sparsity = jnp.mean(
-            (jnp.abs(last_hidden) < 0.01).astype(jnp.float32), axis=(1, 2)
+        mean_act = jnp.sum(last_hidden * mask, axis=(1, 2)) / denom.squeeze(-1)
+        centered = last_hidden - mean_act[:, None, None]
+        std_act = jnp.sqrt(
+            jnp.sum((centered**2) * mask, axis=(1, 2)) / denom.squeeze(-1)
         )
-        max_act = jnp.max(last_hidden, axis=(1, 2))
-        min_act = jnp.min(last_hidden, axis=(1, 2))
+        sparsity = jnp.sum(
+            (jnp.abs(last_hidden) < 0.01).astype(jnp.float32) * mask, axis=(1, 2)
+        ) / denom.squeeze(-1)
+        max_act = jnp.max(jnp.where(mask > 0, last_hidden, -jnp.inf), axis=(1, 2))
+        min_act = jnp.min(jnp.where(mask > 0, last_hidden, jnp.inf), axis=(1, 2))
         range_act = max_act - min_act
+
+        max_act = jnp.where(jnp.isfinite(max_act), max_act, 0.0)
+        min_act = jnp.where(jnp.isfinite(min_act), min_act, 0.0)
 
         return jnp.stack(
             [
@@ -155,7 +186,12 @@ class FeatureExtractor:
             axis=-1,
         )
 
-    def _extract_attention(self, attentions: list[jnp.ndarray]) -> jnp.ndarray:
+    def _extract_attention(
+        self,
+        attentions: list[jnp.ndarray],
+        attention_mask: jnp.ndarray,
+        valid_tokens: jnp.ndarray,
+    ) -> jnp.ndarray:
         """Extract attention pattern features (4D)."""
         # Use last layer attention
         last_attn = attentions[-1]  # [batch, num_heads, seq_len, seq_len]
@@ -163,18 +199,27 @@ class FeatureExtractor:
         # Average over heads
         attn_avg = jnp.mean(last_attn, axis=1)
 
+        # Mask out padding positions
+        pair_mask = (attention_mask[:, None, :] * attention_mask[:, :, None]).astype(jnp.float32)
+        pair_denom = jnp.maximum(jnp.sum(pair_mask, axis=(1, 2)), 1.0)
+        attn_avg = attn_avg * pair_mask
+
         # Entropy
         entropy = -jnp.sum(attn_avg * jnp.log(attn_avg + 1e-10), axis=-1)
-        mean_entropy = jnp.mean(entropy, axis=-1)
-        max_entropy = jnp.max(entropy, axis=-1)
+        mean_entropy = jnp.sum(entropy, axis=-1) / jnp.maximum(valid_tokens.squeeze(-1) - 1, 1.0)
+        max_entropy = jnp.max(jnp.where(attention_mask > 0, entropy, -jnp.inf), axis=-1)
+        max_entropy = jnp.where(jnp.isfinite(max_entropy), max_entropy, 0.0)
 
         # Range
-        attn_range = jnp.mean(
-            jnp.max(last_attn, axis=-1) - jnp.min(last_attn, axis=-1), axis=(1, 2)
-        )
+        attn_range = jnp.sum(
+            (jnp.max(last_attn, axis=-1) - jnp.min(last_attn, axis=-1)) * attention_mask[:, None, :],
+            axis=(1, 2),
+        ) / jnp.maximum(valid_tokens.squeeze(-1), 1.0)
 
         # Sparsity
-        sparsity = jnp.mean((last_attn < 0.01).astype(jnp.float32), axis=(1, 2, 3))
+        sparsity = jnp.sum((last_attn < 0.01).astype(jnp.float32) * pair_mask[:, None, :, :], axis=(1, 2, 3)) / (
+            pair_denom[:, None] * last_attn.shape[1]
+        )
 
         return jnp.stack(
             [
@@ -190,50 +235,64 @@ class FeatureExtractor:
         self,
         input_ids: jnp.ndarray,
         logits: jnp.ndarray,
+        attention_mask: jnp.ndarray,
+        valid_tokens: jnp.ndarray,
     ) -> jnp.ndarray:
         """Extract code-specific metrics (8D)."""
         batch_size, seq_len = input_ids.shape
+        mask = attention_mask
 
         # Token statistics
         # Diversity metric (replaces unique token ratio for JIT compatibility)
         # Use standard deviation as a proxy for token diversity
         # Higher std = more diverse tokens
         token_diversity = (
-            jnp.std(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+            jnp.sqrt(
+                jnp.sum(((input_ids.astype(jnp.float32) - jnp.mean(input_ids.astype(jnp.float32), axis=-1, keepdims=True)) ** 2) * mask,
+                        axis=-1)
+                / valid_tokens.squeeze(-1)
+            )
+            / self.vocab_size
         )
 
         # Repetition (adjacent duplicates)
         repeated = jnp.mean(
-            (input_ids[:, 1:] == input_ids[:, :-1]).astype(jnp.float32), axis=-1
+            (input_ids[:, 1:] == input_ids[:, :-1]).astype(jnp.float32) * mask[:, 1:],
+            axis=-1,
         )
 
         # Token ID statistics
         avg_token_id = (
-            jnp.mean(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+            jnp.sum(input_ids.astype(jnp.float32) * mask, axis=-1) / valid_tokens.squeeze(-1) / self.vocab_size
         )
-        std_token_id = jnp.std(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+        centered_tokens = (input_ids.astype(jnp.float32) - jnp.expand_dims(avg_token_id * self.vocab_size, -1))
+        std_token_id = (
+            jnp.sqrt(jnp.sum((centered_tokens**2) * mask, axis=-1) / valid_tokens.squeeze(-1)) / self.vocab_size
+        )
 
         # Prediction confidence
         probs = jax.nn.softmax(logits, axis=-1)
         max_probs = jnp.max(probs, axis=-1)
-        pred_confidence = jnp.mean(max_probs, axis=-1)
+        pred_confidence = jnp.sum(max_probs * mask, axis=-1) / valid_tokens.squeeze(-1)
 
         # Top-k diversity
         top_k_probs = jax.lax.top_k(probs, 5)[0]
         top_k_probs = top_k_probs / jnp.sum(top_k_probs, axis=-1, keepdims=True)
-        top_k_entropy = -jnp.sum(top_k_probs * jnp.log(top_k_probs + 1e-10), axis=-1)
-        top_k_diversity = jnp.mean(top_k_entropy, axis=-1)
+        top_k_entropy = -jnp.sum(top_k_probs * jnp.log(top_k_probs + 1e-10), axis=-1) * mask
+        top_k_diversity = jnp.sum(top_k_entropy, axis=-1) / valid_tokens.squeeze(-1)
 
         # Token variation
         token_diffs = jnp.abs(
             input_ids[:, 1:].astype(jnp.float32) - input_ids[:, :-1].astype(jnp.float32)
         )
-        token_variation = jnp.std(token_diffs, axis=-1) / self.vocab_size
+        token_variation = (
+            jnp.sqrt(jnp.sum((token_diffs ** 2) * mask[:, 1:], axis=-1) / jnp.maximum(valid_tokens.squeeze(-1) - 1, 1.0))
+            / self.vocab_size
+        )
 
         # Prediction uncertainty (std of top-k probabilities)
-        top_k_probs = jax.lax.top_k(probs, 5)[0]
         pred_uncertainty = jnp.std(top_k_probs, axis=-1)
-        pred_uncertainty = jnp.mean(pred_uncertainty, axis=-1)
+        pred_uncertainty = jnp.sum(pred_uncertainty * mask, axis=-1) / valid_tokens.squeeze(-1)
 
         return jnp.stack(
             [

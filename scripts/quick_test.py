@@ -55,7 +55,8 @@ try:
     model, config = load_ttt_model(
         model_name="gpt2",
         seed=42,
-        load_pretrained=False
+        load_pretrained=False,
+        vocab_size=vocab_size,
     )
     print("OK TTT model created")
 

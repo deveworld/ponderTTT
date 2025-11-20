@@ -179,7 +179,7 @@ def plot_cost_vs_quality(
     plt.grid(True, alpha=0.3)
 
     # Add trend line
-    if len(costs) >= 2:
+    if len(costs) >= 2 and not np.allclose(costs, costs[0]):
         z = np.polyfit(costs, losses, 1)
         p = np.poly1d(z)
         plt.plot(costs, p(costs), "r--", alpha=0.8, label=f"Trend: y={z[0]:.3f}x+{z[1]:.3f}")

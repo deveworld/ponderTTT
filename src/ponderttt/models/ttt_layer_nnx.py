@@ -270,6 +270,11 @@ class TTTLayer(nnx.Module):
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, Tuple]:
         """Prepare inputs for TTT processing."""
         B, N, F = batch.shape
+        if N % self.mini_batch_size != 0:
+            raise ValueError(
+                f"Sequence length {N} must be divisible by mini_batch_size {self.mini_batch_size} "
+                "for TTT mini-batch processing."
+            )
         n_mini_batch = N // self.mini_batch_size
         seq_shape = (n_mini_batch, self.mini_batch_size)
         X = batch.reshape(B, *seq_shape, self.width)
@@ -491,7 +496,7 @@ class TTTLayer(nnx.Module):
 
         # Apply gating
         y = self.wg(hidden_states)
-        y = jax.nn.gelu(y)
+        y = jax.nn.gelu(y, approximate=True)
         Z = y * Z
 
         # Output projection

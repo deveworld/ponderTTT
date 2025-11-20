@@ -127,16 +127,8 @@ class TTTTransformerLM(nnx.Module):
             Dictionary containing only fast-weight layer parameters
         """
         # Extract only fast-weight layer parameters (TTT or LoRA)
-        # In NNX, we use nnx.split to get state, then filter
-        graphdef, state = nnx.split(self)
-
-        # Create filtered state with only fast-weight parameters
-        trainable_state = {}
-        for key, value in state.items():
-            if 'fast_layer' in str(key):
-                trainable_state[key] = value
-
-        return trainable_state
+        _, fast_state = nnx.split(self.fast_layer)
+        return fast_state
 
     def __call__(
         self,
@@ -162,9 +154,8 @@ class TTTTransformerLM(nnx.Module):
         """
         # Get hidden states from frozen base model
         # Apply stop_gradient to freeze theta_slow (PLAN.md: only theta_fast is trainable)
-        hidden_states = jax.lax.stop_gradient(self.base_model(input_ids))
-
         train_flag = self.is_training
+        hidden_states = jax.lax.stop_gradient(self.base_model(input_ids, train=train_flag))
 
         if use_ttt:
             # Following official TTT-LM Block pattern (model.py Line 696-714):
@@ -221,6 +212,7 @@ def load_ttt_model(
     dtype: jnp.dtype = jnp.float32,
     seed: int = 0,
     load_pretrained: bool = True,
+    vocab_size: int | None = None,
 ) -> Tuple[TTTTransformerLM, GPT2Config]:
     """
     Load TTT-augmented transformer model.
@@ -233,12 +225,17 @@ def load_ttt_model(
         dtype: Data type for model
         seed: Random seed
         load_pretrained: Whether to load pretrained weights from HuggingFace
+        vocab_size: Optional override for tokenizer vocab size (e.g., if a pad token was added)
 
     Returns:
         (model, config) tuple
     """
     # Get GPT-2 config
     gpt2_config = GPT2Config.from_pretrained(model_name)
+    if vocab_size is not None:
+        if vocab_size < gpt2_config.vocab_size:
+            raise ValueError(f"vocab_size override ({vocab_size}) is smaller than base config ({gpt2_config.vocab_size})")
+        gpt2_config.vocab_size = vocab_size
 
     # Default configs if not provided
     if fast_weight_type == "ttt" and ttt_config is None:
@@ -295,10 +292,19 @@ def load_ttt_model(
         temp_model = GPT2LMHeadModel(gpt2_config, rngs, tie_word_embeddings=True)
         temp_model = load_huggingface_weights(temp_model, model_name)
 
+        # Pad embeddings if vocab_size was expanded (e.g., added pad token)
+        vocab_diff = gpt2_config.vocab_size - temp_model.transformer.wte.embedding.value.shape[0]
+        def _pad_vocab_matrix(x: Any) -> Any:
+            if vocab_diff <= 0:
+                return x
+            if x.ndim == 2:
+                return jnp.pad(x, ((0, vocab_diff), (0, 0)))
+            return x
+
         # Copy weights to our base_model
         _set_param_value(
             model.base_model.wte.embedding,
-            _get_param_value(temp_model.transformer.wte.embedding, "wte.embedding"),
+            _pad_vocab_matrix(_get_param_value(temp_model.transformer.wte.embedding, "wte.embedding")),
             "wte.embedding",
         )
         _set_param_value(
@@ -422,22 +428,18 @@ def count_trainable_parameters(model: TTTTransformerLM) -> Tuple[int, int]:
     """
     # Get full state with all nested parameters
     state = nnx.state(model)
+    fast_state = model.get_trainable_params()
 
     total = 0
     trainable = 0
 
     # Flatten state to get all parameters with their paths
-    flat_params, _ = jax.tree_util.tree_flatten_with_path(state)
-
-    for path, value in flat_params:
+    for value in jax.tree_util.tree_leaves(state):
         if isinstance(value, jnp.ndarray):
-            param_count = value.size
-            total += param_count
+            total += int(value.size)
 
-            # Only fast-weight layer parameters are trainable
-            # Path is tuple like (DictKey('fast_layer'), DictKey('q_lora'), ...)
-            path_str = '/'.join(str(p) for p in path)
-            if 'fast_layer' in path_str:
-                trainable += param_count
+    for value in jax.tree_util.tree_leaves(fast_state):
+        if isinstance(value, jnp.ndarray):
+            trainable += int(value.size)
 
     return trainable, total

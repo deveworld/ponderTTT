@@ -79,6 +79,33 @@ def compare_models():
             }
         )
 
+    # 3. Lightweight speed/memory benchmarks on CPU (illustrative; replace with device-specific)
+    import time
+    import psutil
+
+    def benchmark_forward(model_to_test, label):
+        x = jnp.ones((batch_size, seq_len), dtype=jnp.int32)
+        start = time.time()
+        _ = model_to_test(x, use_ttt=False)
+        elapsed = time.time() - start
+        mem = psutil.Process().memory_info().rss / 1e9
+        print(f"   {label}: {elapsed*1000:.2f} ms forward, RSS ~ {mem:.3f} GB")
+        return elapsed, mem
+
+    print("\nBenchmarking forward pass (CPU, single batch)...")
+    ttt_time, ttt_mem = benchmark_forward(ttt_model, "TTT")
+    for result in results:
+        rank = int(result["name"].split("r=")[-1][:-1])
+        # Recreate model for the rank (already built above)
+        lora_config = LoRAConfig(hidden_dim=hidden_dim, rank=rank)
+        lora_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="lora",
+            lora_config=lora_config,
+            load_pretrained=False,
+        )
+        benchmark_forward(lora_model, f"LoRA r={rank}")
+
     # 3. Summary comparison
     print("\n" + "=" * 70)
     print("Summary Comparison")

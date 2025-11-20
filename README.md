@@ -4,8 +4,8 @@ Adaptive, chunk-level Test-Time Training (TTT) for code generation models built 
 
 ## What this project provides
 - **Chunk-aware fast weights** – GPT-2 slow weights stay frozen while a TTT or strictly low-rank LoRA adapter updates per chunk. Actions `SKIP / UPDATE_1 / UPDATE_2 / UPDATE_4` map to 0/1/2/4 optimizer steps on the fast weights.
-- **Budget-constrained policy learning** – PPO with PID Lagrangian uses 32-D mask-aware features, cost-penalized rewards, advantage normalization, clipped value loss, multi-epoch updates, grad clipping, and KL logging to respect compute budgets.
-- **Streaming data pipeline** – The Stack v2 (dedup) streamed from Software Heritage with a required `seq_length % chunk_size == 0`, dedicated `<|pad|>` token, aligned masks, and cache keys that include language/tokenizer.
+- **Budget-constrained policy learning** – PPO with PID Lagrangian uses 32-D mask-aware features, cost-penalized rewards, advantage normalization, value clipping, mini-batch updates, grad clipping, PID anti-windup, and KL logging to respect compute budgets.
+- **Streaming data pipeline** – The Stack v2 (dedup) streamed from Software Heritage with a required `seq_length % chunk_size == 0`, dedicated `<|pad|>` token (enforced), aligned masks, and cache keys that include language/tokenizer.
 - **Executable evaluation (gated)** – HumanEval/MBPP/ClassEval helpers are present; unsafe exec is disabled unless `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1` is set in a trusted sandbox.
 - **Operational tooling** – quick sanity tests, end-to-end pipeline checks, distributed/TPU validation, checkpointing, visualization, and baseline/policy trainers.
 
@@ -29,7 +29,7 @@ If you want CUDA support, install a CUDA-enabled `jaxlib` before `uv pip install
 uv pip install "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 ```
 
-Tokenizer weights are downloaded from Hugging Face; set `HF_HOME` or mirror the files locally if you are offline.
+Tokenizer weights are downloaded from Hugging Face; set `HF_HOME` or mirror the files locally if you are offline. `get_tokenizer` adds `<|pad|>`; datasets will raise if it is missing.
 
 ## Quick validation
 Run the lightweight smoke tests once after installation:
@@ -61,9 +61,12 @@ uv run python -m ponderttt.experiments.train_policy \
     --rollout_length 64 \
     --budget_limit 4.0 \
     --num_iterations 50 \
+    --ppo_minibatch_size 32 \
     --output_dir outputs/policy
 ```
 Results are saved as JSON (training history); visualize them with `python scripts/visualize_results.py --results_file outputs/policy/...json`.
+
+`load_ttt_model` accepts `vocab_size` to align model embeddings with tokenizer extensions (e.g., added pad token).
 
 ## Evaluation
 Use `ponderttt.evaluation.benchmarks` to run pass@k tests with a `generate_fn(prompt) -> Iterable[str]`. For safety, code execution is disabled by default; set `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1` only inside a trusted sandbox before calling `evaluate_all`.

@@ -67,10 +67,22 @@ def _load_weights_from_state_dict(model: GPT2LMHeadModel, state_dict: dict[str, 
             raise ValueError(f"Parameter '{name}' is not initialized")
         param.value = value
 
+    def _pad_to_match(param: nnx.Param | None, value: jnp.ndarray) -> jnp.ndarray:
+        if param is None:
+            return value
+        if value.shape == param.value.shape:
+            return value
+        # Only pad vocab dimension if needed (assumes vocab dim is first)
+        if value.shape[0] < param.value.shape[0]:
+            pad_rows = param.value.shape[0] - value.shape[0]
+            pad_config = [(0, pad_rows)] + [(0, 0) for _ in range(value.ndim - 1)]
+            return jnp.pad(value, pad_config)
+        return value
+
     # Token embeddings
     _set_param_value(
         model.transformer.wte.embedding,
-        jnp.array(state_dict["transformer.wte.weight"].numpy()),
+        _pad_to_match(model.transformer.wte.embedding, jnp.array(state_dict["transformer.wte.weight"].numpy())),
         "transformer.wte.embedding",
     )
 
@@ -185,7 +197,7 @@ def _load_weights_from_state_dict(model: GPT2LMHeadModel, state_dict: dict[str, 
         lm_head_weight = state_dict["lm_head.weight"].numpy()
         _set_param_value(
             model.lm_head.kernel,
-            jnp.array(lm_head_weight).T,
+            _pad_to_match(model.lm_head.kernel, jnp.array(lm_head_weight)).T,
             "lm_head.kernel",
         )
 

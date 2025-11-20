@@ -37,6 +37,8 @@ class PIDController:
     lambda_value: float = 1.0
     integral: float = 0.0
     previous_error: float = 0.0
+    lambda_max: float = 10.0
+    integral_limit: float = 100.0
 
     def update(
         self,
@@ -62,15 +64,18 @@ class PIDController:
 
         # Update lambda
         delta_lambda = p_term + i_term + d_term
-        new_lambda = jnp.maximum(0.0, self.lambda_value + delta_lambda)
+        new_lambda = jnp.clip(self.lambda_value + delta_lambda, 0.0, self.lambda_max)
+        new_integral = jnp.clip(self.integral + error * dt, -self.integral_limit, self.integral_limit)
 
         return PIDController(
             kp=self.kp,
             ki=self.ki,
             kd=self.kd,
             lambda_value=float(new_lambda),
-            integral=self.integral + error * dt,
+            integral=float(new_integral),
             previous_error=error,
+            lambda_max=self.lambda_max,
+            integral_limit=self.integral_limit,
         )
 
 
@@ -151,8 +156,11 @@ class PIDLagrangianPPO:
         )
         policy_loss = -jnp.mean(jnp.minimum(surr1, surr2))
 
-        # Value loss
-        value_loss = jnp.mean((values - returns) ** 2)
+        # Value loss with optional clipping (matches train_policy.py style)
+        value_pred_clipped = values + jnp.clip(values - returns, -self.clip_epsilon, self.clip_epsilon)
+        value_losses = jnp.square(values - returns)
+        value_losses_clipped = jnp.square(value_pred_clipped - returns)
+        value_loss = jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
 
         # Entropy bonus
         entropy_loss = -jnp.mean(entropy)

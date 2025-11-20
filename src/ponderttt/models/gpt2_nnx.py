@@ -74,11 +74,12 @@ class CausalSelfAttention(nnx.Module):
         self.attn_dropout = nnx.Dropout(config.dropout, rngs=rngs)
         self.resid_dropout = nnx.Dropout(config.dropout, rngs=rngs)
 
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, *, train: bool = False) -> jax.Array:
         """Apply causal self-attention.
 
         Args:
             x: Input tensor [batch, seq_len, n_embd]
+            train: Whether to enable dropout
 
         Returns:
             Attention output [batch, seq_len, n_embd]
@@ -104,7 +105,7 @@ class CausalSelfAttention(nnx.Module):
 
         # Softmax and dropout
         attn_weights = jax.nn.softmax(attn_weights, axis=-1)
-        attn_weights = self.attn_dropout(attn_weights)
+        attn_weights = self.attn_dropout(attn_weights, deterministic=not train)
 
         # Apply attention to values
         out = attn_weights @ v  # [B, n_head, T, head_dim]
@@ -114,7 +115,7 @@ class CausalSelfAttention(nnx.Module):
 
         # Output projection and dropout
         out = self.c_proj(out)
-        out = self.resid_dropout(out)
+        out = self.resid_dropout(out, deterministic=not train)
 
         return out
 
@@ -135,11 +136,12 @@ class MLP(nnx.Module):
         self.c_proj = nnx.Linear(4 * config.n_embd, config.n_embd, rngs=rngs)
         self.dropout = nnx.Dropout(config.dropout, rngs=rngs)
 
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, *, train: bool = False) -> jax.Array:
         """Apply MLP.
 
         Args:
             x: Input tensor [batch, seq_len, n_embd]
+            train: Whether to enable dropout
 
         Returns:
             MLP output [batch, seq_len, n_embd]
@@ -147,7 +149,7 @@ class MLP(nnx.Module):
         x = self.c_fc(x)
         x = jax.nn.gelu(x, approximate=True)  # Use approximate GELU like PyTorch
         x = self.c_proj(x)
-        x = self.dropout(x)
+        x = self.dropout(x, deterministic=not train)
         return x
 
 
@@ -167,18 +169,19 @@ class Block(nnx.Module):
         self.ln_2 = nnx.LayerNorm(config.n_embd, epsilon=config.layer_norm_epsilon, rngs=rngs)
         self.mlp = MLP(config, rngs)
 
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, *, train: bool = False) -> jax.Array:
         """Apply transformer block.
 
         Args:
             x: Input tensor [batch, seq_len, n_embd]
+            train: Whether to enable dropout
 
         Returns:
             Block output [batch, seq_len, n_embd]
         """
         # Pre-normalization (GPT-2 style)
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        x = x + self.attn(self.ln_1(x), train=train)
+        x = x + self.mlp(self.ln_2(x), train=train)
         return x
 
 
@@ -205,11 +208,12 @@ class GPT2Model(nnx.Module):
         # Final layer norm
         self.ln_f = nnx.LayerNorm(config.n_embd, epsilon=config.layer_norm_epsilon, rngs=rngs)
 
-    def __call__(self, input_ids: jax.Array) -> jax.Array:
+    def __call__(self, input_ids: jax.Array, *, train: bool = False) -> jax.Array:
         """Forward pass.
 
         Args:
             input_ids: Token IDs [batch, seq_len]
+            train: Whether to enable dropout
 
         Returns:
             Hidden states [batch, seq_len, n_embd]
@@ -228,11 +232,11 @@ class GPT2Model(nnx.Module):
         pos_emb = self.wpe(pos)  # [T, n_embd]
 
         # Combine token + position embeddings
-        x = self.drop(tok_emb + pos_emb)
+        x = self.drop(tok_emb + pos_emb, deterministic=not train)
 
         # Apply transformer blocks
         for block in self.h:
-            x = block(x)
+            x = block(x, train=train)
 
         # Final layer norm
         x = self.ln_f(x)
@@ -266,17 +270,18 @@ class GPT2LMHeadModel(nnx.Module):
         if not tie_word_embeddings:
             self.lm_head = nnx.Linear(config.n_embd, config.vocab_size, use_bias=False, rngs=rngs)
 
-    def __call__(self, input_ids: jax.Array) -> jax.Array:
+    def __call__(self, input_ids: jax.Array, *, train: bool = False) -> jax.Array:
         """Forward pass with language modeling head.
 
         Args:
             input_ids: Token IDs [batch, seq_len]
+            train: Whether to enable dropout
 
         Returns:
             Logits [batch, seq_len, vocab_size]
         """
         # Get hidden states from transformer
-        hidden_states = self.transformer(input_ids)
+        hidden_states = self.transformer(input_ids, train=train)
 
         # Compute logits
         if self.tie_word_embeddings:

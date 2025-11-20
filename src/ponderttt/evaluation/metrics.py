@@ -26,18 +26,24 @@ def compute_pass_at_k(
     Formula from "Evaluating Large Language Models Trained on Code" (Chen et al., 2021):
         pass@k = 1 - (n-c choose k) / (n choose k)
     """
-    if n - c < k:
-        return 1.0
+    # Edge cases
+    if k <= 0 or n <= 0 or c <= 0:
+        return 0.0
+    if k > n:
+        k = n
 
+    # 1 - prod_{i=0..k-1} (n-c-i) / (n-i)
     numerator = 1.0
-    for i in range(k):
-        numerator *= n - c - i
-
     denominator = 1.0
     for i in range(k):
+        numerator *= max(n - c - i, 0)
         denominator *= n - i
 
-    return 1.0 - (numerator / denominator)
+    if denominator <= 0:
+        return 0.0
+
+    ratio = numerator / denominator
+    return float(max(0.0, min(1.0, 1.0 - ratio)))
 
 
 def compute_flops(
@@ -79,16 +85,19 @@ def compute_efficiency_metrics(
     Returns:
         Dictionary with efficiency metrics
     """
-    quality_scores_np = np.array(quality_scores)
-    costs_np = np.array(costs)
+    quality_scores_np = np.array(quality_scores, dtype=float)
+    costs_np = np.array(costs, dtype=float)
+
+    # Prevent division by zero/NaN in efficiency calculations
+    safe_costs = np.where(costs_np == 0, np.inf, costs_np)
 
     return {
         "mean_quality": float(np.mean(quality_scores_np)),
         "std_quality": float(np.std(quality_scores_np)),
         "mean_cost": float(np.mean(costs_np)),
         "std_cost": float(np.std(costs_np)),
-        "quality_per_cost": float(np.mean(quality_scores_np / costs_np)),
-        "efficiency_score": float(np.mean(quality_scores_np) / np.mean(costs_np)),
+        "quality_per_cost": float(np.mean(quality_scores_np / safe_costs)),
+        "efficiency_score": float(np.mean(quality_scores_np) / np.mean(safe_costs)),
     }
 
 
