@@ -38,6 +38,7 @@ total_tests = 5
 
 # Test 1: Tokenizer
 print("\n[1/5] Testing tokenizer...")
+tokenizer = None
 try:
     tokenizer = cast(Tokenizer, get_tokenizer("gpt2"))
     vocab_size = tokenizer.get_vocab_size()
@@ -107,8 +108,7 @@ try:
     test_features = jnp.ones((4, 32))
     policy.train()  # Set to training mode
 
-    rng = jax.random.PRNGKey(42)
-    policy_outputs = policy(test_features, deterministic=True, rng=rng)
+    policy_outputs = policy(test_features, deterministic=True)
 
     print("OK Policy network works")
     print(f"  Actions: {policy_outputs['action']}")
@@ -122,9 +122,13 @@ except Exception as e:
 # Test 5: Feature Extraction
 print("\n[5/5] Testing feature extraction...")
 try:
-    tokenizer = cast(Tokenizer, get_tokenizer("gpt2"))
+    assert tokenizer is not None, "Tokenizer not initialized"
     vocab_size = tokenizer.get_vocab_size()
-    extractor = FeatureExtractor(vocab_size=vocab_size)
+    extractor = FeatureExtractor(
+        vocab_size=vocab_size,
+        pad_token_id=tokenizer.token_to_id("<|pad|>"),
+        seq_length_norm=64,
+    )
 
     test_ids = jnp.array([[1, 2, 3, 4, 5]])
     test_logits = jnp.ones((1, 5, vocab_size))

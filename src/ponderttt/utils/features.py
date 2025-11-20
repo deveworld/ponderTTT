@@ -27,9 +27,13 @@ class FeatureExtractor:
         self,
         vocab_size: int,
         ema_alpha: float = 0.1,
+        pad_token_id: int | None = None,
+        seq_length_norm: float | None = None,
     ):
         self.vocab_size = vocab_size
         self.ema_alpha = ema_alpha
+        self.pad_token_id = pad_token_id
+        self.seq_length_norm = float(seq_length_norm) if seq_length_norm is not None else 4096.0
 
         # History tracking
         self.difficulty_ema = 0.0
@@ -262,32 +266,37 @@ class FeatureExtractor:
         """Extract sequence statistics (6D)."""
         batch_size, seq_len = input_ids.shape
 
+        # Optional mask based on pad token
+        if self.pad_token_id is None:
+            mask = jnp.ones((batch_size, seq_len), dtype=jnp.float32)
+        else:
+            mask = (input_ids != self.pad_token_id).astype(jnp.float32)
+
         # Length (normalized)
-        seq_length = jnp.full((batch_size,), seq_len / 4096.0)
+        valid_tokens = jnp.maximum(jnp.sum(mask, axis=-1), 1.0)
+        seq_length = valid_tokens / self.seq_length_norm
 
-        # Token frequency
-        # Simplified - use token ID statistics
-        avg_freq = jnp.mean(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
-        max_freq = jnp.max(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+        # Token frequency (masked)
+        avg_freq = jnp.sum(input_ids.astype(jnp.float32) * mask, axis=-1) / (valid_tokens * self.vocab_size)
+        max_freq = jnp.max(jnp.where(mask > 0, input_ids, 0), axis=-1) / self.vocab_size
 
-        # Position
-        position = jnp.arange(batch_size).astype(jnp.float32) / batch_size
-
-        # Diversity (using std as proxy for JIT compatibility)
-        token_diversity = (
-            jnp.std(input_ids.astype(jnp.float32), axis=-1) / self.vocab_size
+        # Position statistics (relative index of non-pad tokens)
+        positions = jnp.arange(seq_len, dtype=jnp.float32)[None, :] / jnp.maximum(seq_len - 1, 1)
+        position_mean = jnp.sum(positions * mask, axis=-1) / valid_tokens
+        position_std = jnp.sqrt(
+            jnp.sum(((positions - position_mean[:, None]) ** 2) * mask, axis=-1) / valid_tokens
         )
 
-        # Compression ratio (using diversity as proxy)
-        compression = token_diversity
+        # Compression ratio (proxy: fraction of non-pad tokens)
+        compression = valid_tokens / seq_len
 
         return jnp.stack(
             [
                 seq_length,
                 jnp.log(avg_freq + 1.0),
                 jnp.log(max_freq + 1.0),
-                position,
-                token_diversity,
+                position_mean,
+                position_std,
                 compression,
             ],
             axis=-1,
@@ -310,6 +319,8 @@ def extract_features(
     input_ids: jnp.ndarray,
     logits: jnp.ndarray,
     vocab_size: int,
+    pad_token_id: int | None = None,
+    seq_length_norm: float | None = None,
     **kwargs,
 ) -> jnp.ndarray:
     """
@@ -324,5 +335,9 @@ def extract_features(
     Returns:
         Features [batch, 32]
     """
-    extractor = FeatureExtractor(vocab_size=vocab_size)
+    extractor = FeatureExtractor(
+        vocab_size=vocab_size,
+        pad_token_id=pad_token_id,
+        seq_length_norm=seq_length_norm,
+    )
     return extractor.extract(input_ids, logits, **kwargs)

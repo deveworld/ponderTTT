@@ -20,9 +20,11 @@ import optax
 from flax import nnx
 from tokenizers import Tokenizer
 from tqdm import tqdm
+from transformers.models import opt
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import load_ttt_model
+from ..utils.checkpointing import save_checkpoint, wait_for_checkpoints
 from .training_utils import run_chunk_step
 
 
@@ -215,7 +217,14 @@ def main():
 
     # Create optimizer for all parameters
     # Base model will be frozen via stop_gradient in the model's forward pass
-    optimizer = nnx.Optimizer(model, optax.adam(args.learning_rate), wrt=nnx.All(nnx.Param))
+    optimizer = nnx.Optimizer(
+        model,
+        optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.adam(args.learning_rate),
+        ),
+        wrt=nnx.All(nnx.Param),
+    )
     print(f"OK Optimizer: Adam (lr={args.learning_rate}, base_model frozen via stop_gradient)")
 
     # Training loop
@@ -240,9 +249,8 @@ def main():
 
     def reset_fast_weights():
         model.fast_layer = nnx.merge(fast_graphdef, clone_state(fast_state_template))
-        return nnx.Optimizer(model, optax.adam(args.learning_rate), wrt=nnx.All(nnx.Param))
 
-    optimizer = reset_fast_weights()
+    reset_fast_weights()
 
     with tqdm(total=args.max_chunks, desc="Training") as pbar:
         while chunks_processed < args.max_chunks:
@@ -263,7 +271,7 @@ def main():
                 }
 
                 if chunk_idx == 0:
-                    optimizer = reset_fast_weights()
+                    reset_fast_weights()
 
                 if action_steps == 0:
                     metrics = run_chunk_step(
@@ -351,6 +359,15 @@ def main():
             json.dump(results, f, indent=2)
 
         print(f"\nOK Results saved to: {results_file}")
+
+        save_checkpoint(
+            checkpoint_dir=output_dir / "checkpoints",
+            step=chunks_processed,
+            state={"model": nnx.state(model)},
+            metadata=results,
+        )
+        wait_for_checkpoints()
+        print(f"OK Checkpoint saved to {output_dir / 'checkpoints'}")
     else:
         print("\nNo chunks processed!")
 

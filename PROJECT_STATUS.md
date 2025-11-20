@@ -7,9 +7,9 @@
 | NNX GPT-2 + TTT/LoRA fast weights | Complete | Base model frozen via `stop_gradient`, weight tying verified |
 | Streaming data pipeline | Complete | `<|pad|>` token added, chunk + mask tensors propagated everywhere |
 | Chunk semantics | Complete | Baseline & policy loops issue true SKIP/UPDATE_k actions |
-| PPO + PID controller | Complete | Rollouts reset fast weights, rewards derived from loss deltas |
-| Executable benchmarks | Complete | HumanEval/MBPP/ClassEval call `generate_fn` and run tests |
-| Tooling/tests | Complete | `scripts/quick_test.py`, `test_pipeline.py`, distributed and TPU setup scripts updated |
+| PPO + PID controller | Complete | Cost-penalized rewards, clipped value loss, multi-epoch PPO, grad clipping, KL logging |
+| Executable benchmarks | Complete | HumanEval/MBPP/ClassEval helpers gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS` for sandboxed exec |
+| Tooling/tests | Complete | `scripts/quick_test.py`, `test_pipeline.py`, distributed and TPU setup scripts updated; checkpoint errors surfaced |
 | Large-scale experiments | In progress | Requires TPU v4-64 or multi-GPU cluster |
 
 ## Recent work
@@ -20,10 +20,10 @@
 - Refreshed every helper script to match the NNX stack.
 
 ## Next steps
-1. **Stabilize PPO** – sweep PID gains, rollout length, and entropy bonus; record cost-quality curves.
+1. **Stabilize PPO** – sweep PID gains, rollout length, entropy bonus, KL targets; record cost-quality curves.
 2. **Add heuristics** – simple entropy or loss-threshold policies to compare against PPO.
 3. **Scaling** – run 350 M and 1 B experiments on TPU v4-64 once hardware is available; enable gradient checkpointing and parameter sharding.
-4. **Evaluation package** – integrate sandboxed execution (e.g., `evalplus` or firejail) for safer benchmark runs.
+4. **Evaluation package** – integrate a real sandbox (e.g., `evalplus`/firejail) so `evaluate_all` can run without `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS`.
 
 ## How to validate changes locally
 ```bash

@@ -54,7 +54,7 @@ input_ids = jnp.array([token_ids], dtype=jnp.int32)
 input_sharding = NamedSharding(mesh, P("batch", None))
 sharded_input = jax.device_put(input_ids[:, :512], input_sharding)
 
-# Forward pass (TTT disabled for inference demo)
+# Step 5: Run forward pass (TTT disabled for inference demo)
 outputs = cast(dict[str, Any], model(sharded_input, use_ttt=False))
 logits = outputs["logits"]
 

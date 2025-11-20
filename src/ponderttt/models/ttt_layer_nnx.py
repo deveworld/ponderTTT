@@ -16,18 +16,19 @@ from flax import nnx
 from jax import vmap
 from jax.tree_util import tree_map
 
+_REMAT_SCAN = getattr(jax, "checkpoint", getattr(jax, "remat"))
 
 def scan_remat_every_n_iterations_scan(f, n, carry, x):
     """
     Remat every n mini batches for memory efficiency.
 
     From official TTT implementation.
-    Groups mini-batches into chunks of size n, applies jax.remat to reduce
+    Groups mini-batches into chunks of size n, applies jax.checkpoint to reduce
     memory usage during backpropagation.
     """
     x_grouped = tree_map(lambda x: x.reshape((-1, n, *x.shape[1:])), x)
     carry, y_grouped = jax.lax.scan(
-        jax.remat(partial(jax.lax.scan, f), prevent_cse=False),
+        _REMAT_SCAN(partial(jax.lax.scan, f), prevent_cse=False),
         carry,
         x_grouped
     )
@@ -149,9 +150,9 @@ class TTTLayer(nnx.Module):
         # Precompute RoPE frequencies
         self.freqs_cis = precompute_freqs_cis(
             self.head_dim,
-            self.mini_batch_size * 2,
+            config.max_seq_length,
             theta=config.rope_theta,
-            dtype=config.dtype
+            dtype=config.dtype,
         )
 
         # Q, K, V, O projections
@@ -250,7 +251,7 @@ class TTTLayer(nnx.Module):
             learnable_lrs.append(lr)
 
         learnable_ttt_lr = jnp.stack(learnable_lrs, axis=1)  # [B, num_heads, n_mini_batch, mini_batch_size, 1]
-        learnable_ttt_lr = nnx.sigmoid(learnable_ttt_lr)
+        learnable_ttt_lr = jax.nn.sigmoid(learnable_ttt_lr)
 
         # Position-dependent base learning rate
         token_idx = self.learnable_token_idx.value + self.token_idx
@@ -304,8 +305,12 @@ class TTTLayer(nnx.Module):
         XK = self._split_heads(XK)
         XV = self._split_heads(XV)
 
-        # Apply RoPE
-        freqs_cis = jnp.take(self.freqs_cis, position_ids % self.mini_batch_size, axis=0)
+        # Apply RoPE with true positions (no mini-batch wrapping)
+        if position_ids.max() >= self.freqs_cis.shape[0]:
+            raise ValueError(
+                f"Position ids exceed RoPE cache (max {self.freqs_cis.shape[0]-1}, got {int(position_ids.max())})"
+            )
+        freqs_cis = jnp.take(self.freqs_cis, position_ids, axis=0)
         XQ, XK = apply_rotary_emb(XQ, XK, freqs_cis=freqs_cis, dtype=self.config.dtype)
 
         # Split into mini-batches
@@ -453,6 +458,8 @@ class TTTLayer(nnx.Module):
         hidden_states: jax.Array,
         mask: Optional[jax.Array] = None,
         position_ids: Optional[jax.Array] = None,
+        *,
+        train: bool = False,
     ) -> Tuple[jax.Array, dict]:
         """Apply TTT layer.
 
@@ -467,6 +474,7 @@ class TTTLayer(nnx.Module):
         Note:
             TTT layer doesn't use dropout, so no train/eval mode distinction needed.
         """
+        del mask, train  # Interface parity with LoRA fast weights
         # Generate position IDs if not provided
         if position_ids is None:
             batch_size, seq_len = hidden_states.shape[:2]
@@ -483,7 +491,7 @@ class TTTLayer(nnx.Module):
 
         # Apply gating
         y = self.wg(hidden_states)
-        y = nnx.gelu(y)
+        y = jax.nn.gelu(y)
         Z = y * Z
 
         # Output projection

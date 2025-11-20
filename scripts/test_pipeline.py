@@ -76,7 +76,11 @@ try:
     from ponderttt.utils import FeatureExtractor
 
     vocab_size = tokenizer.get_vocab_size()
-    feature_extractor = FeatureExtractor(vocab_size=vocab_size)
+    feature_extractor = FeatureExtractor(
+        vocab_size=vocab_size,
+        pad_token_id=tokenizer.token_to_id("<|pad|>"),
+        seq_length_norm=chunk_size,
+    )
 
     # Test feature extraction
     test_ids = batch["chunks"][:, 0, :]  # First chunk [batch_size, chunk_size]

@@ -12,6 +12,7 @@ import orbax.checkpoint as ocp
 
 # Global list to track async save threads
 _save_threads = []
+_save_errors: list[Exception] = []
 _save_lock = threading.Lock()
 
 
@@ -57,28 +58,35 @@ def save_checkpoint(
 
     # Make deep copies of data to avoid race conditions
     # (data might change in main thread while background thread is saving)
-    state_copy = copy.deepcopy(state)
+    state_copy = jax.tree_util.tree_map(
+        lambda x: x.copy() if hasattr(x, "copy") else x,
+        state,
+    )
     metadata_copy = copy.deepcopy(metadata) if metadata is not None else None
 
     def _save_thread():
         """Background thread that performs the actual save."""
-        checkpointer = ocp.PyTreeCheckpointer()
+        try:
+            checkpointer = ocp.PyTreeCheckpointer()
 
-        # Prepare checkpoint using the copied data
-        checkpoint = {
-            "state": state_copy,
-            "step": step,
-        }
+            # Prepare checkpoint using the copied data
+            checkpoint = {
+                "state": state_copy,
+                "step": step,
+            }
 
-        if metadata_copy is not None:
-            checkpoint["metadata"] = metadata_copy
+            if metadata_copy is not None:
+                checkpoint["metadata"] = metadata_copy
 
-        # Save (this blocks in the background thread, not main thread)
-        checkpointer.save(
-            checkpoint_dir / f"checkpoint_{step}",
-            checkpoint,
-            force=True,
-        )
+            # Save (this blocks in the background thread, not main thread)
+            checkpointer.save(
+                checkpoint_dir / f"checkpoint_{step}",
+                checkpoint,
+                force=True,
+            )
+        except Exception as e:  # pragma: no cover - surfaced in wait_for_checkpoints
+            with _save_lock:
+                _save_errors.append(e)
 
     # Start save in background thread
     thread = threading.Thread(target=_save_thread, daemon=False)
@@ -102,6 +110,9 @@ def wait_for_checkpoints():
 
     with _save_lock:
         _save_threads.clear()
+        if _save_errors:
+            errors, _save_errors[:] = list(_save_errors), []
+            raise RuntimeError(f"Checkpointing failed with errors: {errors}")
 
 
 def finalize_checkpointing():

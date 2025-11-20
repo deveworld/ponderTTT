@@ -62,14 +62,23 @@ def _load_weights_from_state_dict(model: GPT2LMHeadModel, state_dict: dict[str, 
     """
     config = model.config
 
+    def _set_param_value(param: nnx.Param | None, value: jnp.ndarray, name: str) -> None:
+        if param is None:
+            raise ValueError(f"Parameter '{name}' is not initialized")
+        param.value = value
+
     # Token embeddings
-    model.transformer.wte.embedding.value = jnp.array(
-        state_dict["transformer.wte.weight"].numpy()
+    _set_param_value(
+        model.transformer.wte.embedding,
+        jnp.array(state_dict["transformer.wte.weight"].numpy()),
+        "transformer.wte.embedding",
     )
 
     # Position embeddings
-    model.transformer.wpe.embedding.value = jnp.array(
-        state_dict["transformer.wpe.weight"].numpy()
+    _set_param_value(
+        model.transformer.wpe.embedding,
+        jnp.array(state_dict["transformer.wpe.weight"].numpy()),
+        "transformer.wpe.embedding",
     )
 
     # Transformer blocks
@@ -78,47 +87,107 @@ def _load_weights_from_state_dict(model: GPT2LMHeadModel, state_dict: dict[str, 
         prefix = f"transformer.h.{i}"
 
         # Layer norm 1
-        block.ln_1.scale.value = jnp.array(state_dict[f"{prefix}.ln_1.weight"].numpy())
-        block.ln_1.bias.value = jnp.array(state_dict[f"{prefix}.ln_1.bias"].numpy())
+        _set_param_value(
+            block.ln_1.scale,
+            jnp.array(state_dict[f"{prefix}.ln_1.weight"].numpy()),
+            f"{prefix}.ln_1.scale",
+        )
+        _set_param_value(
+            block.ln_1.bias,
+            jnp.array(state_dict[f"{prefix}.ln_1.bias"].numpy()),
+            f"{prefix}.ln_1.bias",
+        )
 
         # Attention: combined QKV
         # Note: GPT-2's Conv1D already uses [in_features, out_features] like Flax
         qkv_weight = state_dict[f"{prefix}.attn.c_attn.weight"].numpy()
         qkv_bias = state_dict[f"{prefix}.attn.c_attn.bias"].numpy()
-        block.attn.c_attn.kernel.value = jnp.array(qkv_weight)  # No transpose needed
-        block.attn.c_attn.bias.value = jnp.array(qkv_bias)
+        _set_param_value(
+            block.attn.c_attn.kernel,
+            jnp.array(qkv_weight),
+            f"{prefix}.attn.c_attn.kernel",
+        )
+        _set_param_value(
+            block.attn.c_attn.bias,
+            jnp.array(qkv_bias),
+            f"{prefix}.attn.c_attn.bias",
+        )
 
         # Attention: output projection
         proj_weight = state_dict[f"{prefix}.attn.c_proj.weight"].numpy()
         proj_bias = state_dict[f"{prefix}.attn.c_proj.bias"].numpy()
-        block.attn.c_proj.kernel.value = jnp.array(proj_weight)  # No transpose needed
-        block.attn.c_proj.bias.value = jnp.array(proj_bias)
+        _set_param_value(
+            block.attn.c_proj.kernel,
+            jnp.array(proj_weight),
+            f"{prefix}.attn.c_proj.kernel",
+        )
+        _set_param_value(
+            block.attn.c_proj.bias,
+            jnp.array(proj_bias),
+            f"{prefix}.attn.c_proj.bias",
+        )
 
         # Layer norm 2
-        block.ln_2.scale.value = jnp.array(state_dict[f"{prefix}.ln_2.weight"].numpy())
-        block.ln_2.bias.value = jnp.array(state_dict[f"{prefix}.ln_2.bias"].numpy())
+        _set_param_value(
+            block.ln_2.scale,
+            jnp.array(state_dict[f"{prefix}.ln_2.weight"].numpy()),
+            f"{prefix}.ln_2.scale",
+        )
+        _set_param_value(
+            block.ln_2.bias,
+            jnp.array(state_dict[f"{prefix}.ln_2.bias"].numpy()),
+            f"{prefix}.ln_2.bias",
+        )
 
         # MLP: first projection
         # Note: GPT-2's Conv1D already uses [in_features, out_features] like Flax
         fc_weight = state_dict[f"{prefix}.mlp.c_fc.weight"].numpy()
         fc_bias = state_dict[f"{prefix}.mlp.c_fc.bias"].numpy()
-        block.mlp.c_fc.kernel.value = jnp.array(fc_weight)  # No transpose needed
-        block.mlp.c_fc.bias.value = jnp.array(fc_bias)
+        _set_param_value(
+            block.mlp.c_fc.kernel,
+            jnp.array(fc_weight),
+            f"{prefix}.mlp.c_fc.kernel",
+        )
+        _set_param_value(
+            block.mlp.c_fc.bias,
+            jnp.array(fc_bias),
+            f"{prefix}.mlp.c_fc.bias",
+        )
 
         # MLP: second projection
         proj_weight = state_dict[f"{prefix}.mlp.c_proj.weight"].numpy()
         proj_bias = state_dict[f"{prefix}.mlp.c_proj.bias"].numpy()
-        block.mlp.c_proj.kernel.value = jnp.array(proj_weight)  # No transpose needed
-        block.mlp.c_proj.bias.value = jnp.array(proj_bias)
+        _set_param_value(
+            block.mlp.c_proj.kernel,
+            jnp.array(proj_weight),
+            f"{prefix}.mlp.c_proj.kernel",
+        )
+        _set_param_value(
+            block.mlp.c_proj.bias,
+            jnp.array(proj_bias),
+            f"{prefix}.mlp.c_proj.bias",
+        )
 
     # Final layer norm
-    model.transformer.ln_f.scale.value = jnp.array(state_dict["transformer.ln_f.weight"].numpy())
-    model.transformer.ln_f.bias.value = jnp.array(state_dict["transformer.ln_f.bias"].numpy())
+    _set_param_value(
+        model.transformer.ln_f.scale,
+        jnp.array(state_dict["transformer.ln_f.weight"].numpy()),
+        "transformer.ln_f.scale",
+    )
+    _set_param_value(
+        model.transformer.ln_f.bias,
+        jnp.array(state_dict["transformer.ln_f.bias"].numpy()),
+        "transformer.ln_f.bias",
+    )
 
     # LM head (only if not using weight tying)
     if not model.tie_word_embeddings and "lm_head.weight" in state_dict:
         lm_head_weight = state_dict["lm_head.weight"].numpy()
-        model.lm_head.kernel.value = jnp.array(lm_head_weight).T
+        _set_param_value(
+            model.lm_head.kernel,
+            jnp.array(lm_head_weight).T,
+            "lm_head.kernel",
+        )
 
 
 def save_checkpoint(

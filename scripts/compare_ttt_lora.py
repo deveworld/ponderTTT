@@ -34,6 +34,10 @@ def compare_models():
     print(f"  Sequence length: {seq_len}")
     print()
 
+    from ponderttt.models import GPT2Config
+    gpt2_config = GPT2Config.from_pretrained(model_name)
+    hidden_dim = gpt2_config.n_embd
+
     # 1. Create TTT model
     print("1. Loading TTT model...")
     ttt_model, _ = load_ttt_model(
@@ -54,7 +58,7 @@ def compare_models():
 
         from ponderttt.models import LoRAConfig
 
-        lora_config = LoRAConfig(hidden_dim=768, rank=rank)
+        lora_config = LoRAConfig(hidden_dim=hidden_dim, rank=rank)
         lora_model, _ = load_ttt_model(
             model_name=model_name,
             fast_weight_type="lora",

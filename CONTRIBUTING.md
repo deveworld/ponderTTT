@@ -16,7 +16,8 @@ Thanks for helping improve PonderTTT!
 - The code base is pure JAX/Flax NNX. Avoid reintroducing old Linen modules.
 - Chunk-level semantics are centralized in `ponderttt/experiments/training_utils.py`. If you add new trainers, use that helper to keep SKIP/UPDATE_k behaviour consistent.
 - New fast-weight variants should implement the same interface as `TTTLayer`/`LoRALayer`.
-- Benchmarks execute user completions. Keep security in mind and consider sandboxing if you add new datasets.
+- Benchmarks execute user completions. Code execution is gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS`; only enable it inside a sandbox.
+- The streaming pipeline requires `seq_length % chunk_size == 0`; validate new configs accordingly.
 
 ## Tests & formatting
 - We rely on `pytest`, `ruff`, and `mypy` (see extras in `pyproject.toml`). The CI expectation is:

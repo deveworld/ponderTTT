@@ -2,6 +2,7 @@
 Code generation benchmarks (HumanEval, MBPP, ClassEval).
 """
 
+import os
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -99,7 +100,7 @@ class HumanEvalBenchmark:
 
             attempts_per_problem.append(total)
             scores.append(
-                compute_pass_at_k(total, correct, min(k, total)) if total > 0 else 0.0
+                compute_pass_at_k(total, correct, k) if total > 0 else 0.0
             )
 
         if not scores:
@@ -188,7 +189,7 @@ class MBPPBenchmark:
 
             attempts_per_problem.append(total)
             scores.append(
-                compute_pass_at_k(total, correct, min(k, total)) if total > 0 else 0.0
+                compute_pass_at_k(total, correct, k) if total > 0 else 0.0
             )
 
         if not scores:
@@ -263,7 +264,7 @@ class ClassEvalBenchmark:
                     correct += 1
             attempts.append(total)
             scores.append(
-                compute_pass_at_k(total, correct, min(k, total)) if total > 0 else 0.0
+                compute_pass_at_k(total, correct, k) if total > 0 else 0.0
             )
 
         if not scores:
@@ -338,6 +339,12 @@ class BenchmarkSuite:
 
 def _check_solution(problem: CodeProblem, completion: str) -> bool:
     """Execute completion+tests to determine correctness."""
+    if os.environ.get("PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS") != "1":
+        raise RuntimeError(
+            "Unsafe code execution is disabled. Set PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1 "
+            "to run benchmark tests in a trusted, sandboxed environment."
+        )
+
     namespace: dict[str, object] = {}
     source = f"{problem.prompt}\n{completion}\n"
 

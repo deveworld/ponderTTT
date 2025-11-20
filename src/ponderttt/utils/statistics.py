@@ -28,8 +28,7 @@ def bootstrap_ci(
     Returns:
         (point_estimate, lower_bound, upper_bound)
     """
-    if random_seed is not None:
-        np.random.seed(random_seed)
+    rng = np.random.default_rng(random_seed)
 
     point_estimate = statistic(data)
 
@@ -38,7 +37,7 @@ def bootstrap_ci(
     n = len(data)
 
     for _ in range(n_bootstrap):
-        sample = np.random.choice(data, size=n, replace=True)
+        sample = rng.choice(data, size=n, replace=True)
         bootstrap_estimates_list.append(statistic(sample))
 
     bootstrap_estimates = np.array(bootstrap_estimates_list)

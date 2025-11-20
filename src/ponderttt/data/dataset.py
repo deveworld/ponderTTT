@@ -3,6 +3,7 @@ Dataset implementation for code data with multi-host sharding support.
 """
 
 import hashlib
+import logging
 import pickle
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -52,6 +53,11 @@ class CodeDataset:
         self.chunk_size = chunk_size
         self.shard_across_hosts = shard_across_hosts
         self.pad_token_id = self.tokenizer.token_to_id("<|pad|>") or 0
+
+        if self.seq_length % self.chunk_size != 0:
+            raise ValueError(
+                f"seq_length ({self.seq_length}) must be divisible by chunk_size ({self.chunk_size})"
+            )
 
         # Setup S3 client for unsigned requests (no AWS credentials needed)
         # Add timeouts to prevent hanging on slow downloads
@@ -127,7 +133,8 @@ class CodeDataset:
             ) as f:
                 content = f.read().decode(src_encoding)
             return content
-        except Exception:
+        except Exception as exc:
+            logging.warning("Failed to download blob %s (%s): %s", blob_id, src_encoding, exc)
             # Skip files that fail to download or timeout
             return ""
 
@@ -201,6 +208,7 @@ class CodeDataset:
 def create_data_iterator(
     tokenizer: Tokenizer,
     split: str = "train",
+    language: str = "Python",
     batch_size: int = 8,
     seq_length: int = 8192,
     chunk_size: int = 4096,
@@ -215,6 +223,7 @@ def create_data_iterator(
     Args:
         tokenizer: Tokenizer
         split: Dataset split
+        language: Programming language shard
         batch_size: Batch size
         seq_length: Sequence length
         chunk_size: Chunk size for TTT
@@ -232,6 +241,7 @@ def create_data_iterator(
     dataset = CodeDataset(
         tokenizer=tokenizer,
         split=split,
+        language=language,
         seq_length=seq_length,
         chunk_size=chunk_size,
     )
@@ -285,7 +295,8 @@ def create_data_iterator(
     if cache_data:
         # Create cache key based on parameters
         cache_key = hashlib.md5(
-            f"{split}_{batch_size}_{seq_length}_{chunk_size}_{max_examples}".encode()
+            f"{split}_{batch_size}_{seq_length}_{chunk_size}_{max_examples}_"
+            f"{language}_vocab{tokenizer.get_vocab_size()}".encode()
         ).hexdigest()
         cache_path = Path(cache_dir) / f"{cache_key}.pkl"
 
@@ -313,7 +324,9 @@ def create_data_iterator(
         print(f"Processing {len(raw_examples)} examples in parallel...")
 
         # Process examples in parallel
-        processed_examples = [None] * len(raw_examples)
+        processed_examples: list[dict[str, np.ndarray] | None] = [None] * len(
+            raw_examples
+        )
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             # Submit all processing jobs
             futures = {
