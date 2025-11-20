@@ -14,7 +14,7 @@ This document summarizes how the current NNX code base lines up with the officia
 - The layer reports the same diagnostic statistics (`ttt_loss_*`, `ssl_target_variance`) used for monitoring in TTT-LM.
 
 ## Training objective
-- The current trainers optimize the language-modeling cross-entropy only; the auxiliary self-supervised (XV−XK) loss from the original paper is not yet added to the objective. The stats are still exposed, so adding the extra term is straightforward in future work.
+- The trainers optimize the language-modeling cross-entropy plus a small SSL auxiliary loss (XV−XK MSE) emitted by the TTT layer (configurable weight).
 
 ## Remaining gaps
 - Internal TTT updates are always reset between chunk sequences for stability. The reference implementation optionally keeps weights alive across longer contexts; we may re-introduce that once policy training requires it.

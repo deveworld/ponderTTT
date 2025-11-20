@@ -22,7 +22,7 @@ class ChunkModel(Protocol):
     ) -> dict: ...
 
 
-def _forward(model: ChunkModel, batch: dict, use_ttt: bool):
+def _forward(model: ChunkModel, batch: dict, use_ttt: bool, ssl_weight: float):
     outputs = model(batch["input_ids"], use_ttt=use_ttt)
     logits = outputs["logits"]
     ttt_stats = outputs.get("ttt_stats", {})
@@ -32,10 +32,23 @@ def _forward(model: ChunkModel, batch: dict, use_ttt: bool):
     mask = batch["attention_mask"][:, 1:]
 
     loss = cross_entropy_loss(logits_for_loss, labels, mask)
+    if use_ttt and ssl_weight > 0 and ttt_stats:
+        ssl_terms = [
+            ttt_stats.get("ttt_loss_init"),
+            ttt_stats.get("ttt_loss_step_0"),
+            ttt_stats.get("ttt_loss_step_1"),
+        ]
+        ssl_values = [float(x) for x in ssl_terms if x is not None]
+        if ssl_values:
+            ssl_loss = sum(ssl_values) / len(ssl_values)
+            loss = loss + ssl_weight * ssl_loss
+
     return loss, ttt_stats
 
 
 def metrics_from_loss(loss: jnp.ndarray, ttt_stats: dict | None) -> dict[str, float]:
+    if not jnp.isfinite(loss):
+        raise ValueError(f"Non-finite loss encountered: {loss}")
     perplexity = jnp.exp(loss)
     metrics: dict[str, float] = {
         "loss": float(loss),
@@ -55,13 +68,14 @@ def run_chunk_step(
     batch: dict,
     use_ttt: bool,
     apply_update: bool,
+    ssl_weight: float = 0.0,
 ) -> dict[str, float]:
     """
     Run one chunk step (optionally applying gradients).
     """
 
     def loss_fn(mdl: ChunkModel):
-        return _forward(mdl, batch, use_ttt)
+        return _forward(mdl, batch, use_ttt, ssl_weight)
 
     if not apply_update or optimizer is None:
         loss, ttt_stats = loss_fn(model)

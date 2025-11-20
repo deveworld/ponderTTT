@@ -57,9 +57,9 @@ class PIDController:
         """
         error = constraint_violation
 
-        # PID terms
+        # PID terms (integral uses stored state; integrate after computing output)
         p_term = self.kp * error
-        i_term = self.ki * (self.integral + error * dt)
+        i_term = self.ki * self.integral
         d_term = self.kd * (error - self.previous_error) / dt
 
         # Update lambda

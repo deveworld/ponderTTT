@@ -5,9 +5,9 @@ We study adaptive test-time training for code generation models. A pretrained GP
 
 ## 2. Method overview
 1. **Chunked streaming** – The Stack v2 (Python) is streamed, padded with a dedicated `<|pad|>` token, and split into 512-token chunks. Each sequence yields multiple decision points.
-2. **Action space** – `SKIP`, `UPDATE_1`, `UPDATE_2`, `UPDATE_4`, interpreted as 0/1/2/4 gradient-style updates on the fast-weight module. Costs are 1x, 3x, 6x, and 12x the baseline forward pass, matching the original TTT-LM accounting.
+2. **Action space** – `SKIP`, `UPDATE_1`, `UPDATE_2`, `UPDATE_4`, interpreted as 0/1/2/4 gradient-style updates on the fast-weight module. Costs are 1x, 3x, 6x, and 12x the baseline forward pass, matching the original TTT-LM accounting. Fast-weight updates include a small SSL auxiliary loss.
 3. **Policy** – A PPO agent with a PID Lagrangian controller observes 32-D mask-aware features (loss delta, entropy, token stats, budget usage, history EMA). Rewards equal the chunk loss improvement minus λ·cost/limit; value loss is clipped, gradients are norm-clipped, and PID uses anti-windup.
-4. **Training loop** – For each rollout we reset the fast weights, stream `rollout_length` chunks, query the policy, execute updates, and log rewards/costs/KL. GAE runs with zero bootstrap for stability under truncation; PPO updates run over mini-batches.
+4. **Training loop** – For each rollout we reset the fast weights, stream `rollout_length` chunks, query the policy, execute updates, and log rewards/costs/KL. GAE runs with zero bootstrap for stability under truncation; PPO updates run over mini-batches and support multi-seed aggregation with bootstrap CIs.
 5. **Evaluation** – After training we run HumanEval/MBPP/ClassEval helpers; unsafe exec is gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1` and should be enabled only in a sandbox. pass@k is reported with bootstrapped confidence intervals.
 
 ## 3. Baselines

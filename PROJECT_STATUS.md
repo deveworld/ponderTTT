@@ -7,17 +7,17 @@
 | NNX GPT-2 + TTT/LoRA fast weights | Complete | Base model frozen via `stop_gradient`, weight tying verified |
 | Streaming data pipeline | Complete | `<|pad|>` token enforced, chunk + mask tensors propagated everywhere |
 | Chunk semantics | Complete | Baseline & policy loops issue true SKIP/UPDATE_k actions |
-| PPO + PID controller | Complete | Cost-penalized rewards, value clipping, mini-batch PPO, grad clipping, KL logging, anti-windup |
+| PPO + PID controller | Complete | Cost-penalized rewards, value clipping, mini-batch PPO, grad clipping, KL logging, anti-windup, multi-seed summaries |
 | Executable benchmarks | Complete | HumanEval/MBPP/ClassEval helpers gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS` for sandboxed exec |
 | Tooling/tests | Complete | `scripts/quick_test.py`, `test_pipeline.py` (randomized dummy data), distributed and TPU setup scripts updated; checkpoint errors surfaced |
 | Large-scale experiments | In progress | Requires TPU v4-64 or multi-GPU cluster |
 
 ## Recent work
-- Added PPO mini-batch updates, value clipping, and PID anti-windup.
+- Added PPO mini-batch updates, value clipping, PID anti-windup, and multi-seed summaries with bootstrap CI.
 - Enforced tokenizer pad token presence; cache keys now include tokenizer identity.
 - Reworked feature extraction to mask padding and fixed pass@k and efficiency edge cases.
 - Integrated vocab-size overrides for tokenizer/model alignment; weight-tying test now checks shared parameters.
-- Added baseline LoRA attention integration and lightweight speed/memory benchmarks.
+- Added baseline LoRA attention integration and lightweight speed/memory benchmarks; included SSL auxiliary loss in training loops.
 
 ## Next steps
 1. **Stabilize PPO** – sweep PID gains, rollout length, entropy bonus, KL targets; record cost-quality curves.
