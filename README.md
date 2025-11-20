@@ -38,6 +38,7 @@ python scripts/quick_test.py          # tokenizer/model/feature sanity
 python scripts/test_pipeline.py       # end-to-end chunk pipeline
 python scripts/test_distributed.py    # multi-host primitives (CPU friendly)
 python scripts/test_weight_tying.py   # weight tying regression
+python scripts/compare_gpt2_nnx.py    # compare NNX logits to transformers (requires HF weights)
 ```
 For TPU deployments run `python scripts/validate_tpu_setup.py --multi_host` on all workers before launching long jobs.
 
