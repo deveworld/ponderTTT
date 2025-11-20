@@ -17,7 +17,8 @@ Thanks for helping improve PonderTTT!
 - Chunk-level semantics are centralized in `ponderttt/experiments/training_utils.py`. If you add new trainers, use that helper to keep SKIP/UPDATE_k behaviour consistent.
 - New fast-weight variants should implement the same interface as `TTTLayer`/`LoRALayer`.
 - Benchmarks execute user completions. Code execution is gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS`; only enable it inside a sandbox.
-- The streaming pipeline requires `seq_length % chunk_size == 0`; validate new configs accordingly.
+- The streaming pipeline requires `seq_length % chunk_size == 0` and a tokenizer with `<|pad|>` present (enforced). If you add tokens, pass the resulting `vocab_size` to `load_ttt_model`.
+- Policy training uses mini-batch PPO (`--ppo_minibatch_size`) with value clipping and PID anti-windup; keep new training loops consistent with that interface.
 
 ## Tests & formatting
 - We rely on `pytest`, `ruff`, and `mypy` (see extras in `pyproject.toml`). The CI expectation is:

@@ -371,7 +371,7 @@ def main():
     if all_passed:
         print_on_main("All tests passed! Your TPU setup is ready for training.")
         print_on_main("\nNext steps:")
-        print_on_main("  python scripts/train_tpu.py --multi_host --mesh_shape='64,1'")
+        print_on_main("  uv run python -m ponderttt.experiments.train_policy --model_scale 125m --multi_host")
     else:
         print_on_main("  Some tests failed. Please review the errors above.")
         sys.exit(1)

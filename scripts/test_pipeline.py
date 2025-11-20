@@ -38,11 +38,18 @@ try:
     chunk_size = 512
     num_chunks = seq_length // chunk_size
 
+    rng = jax.random.PRNGKey(0)
+    vocab_size = tokenizer.get_vocab_size()
+    input_ids = jax.random.randint(rng, (batch_size, seq_length), minval=0, maxval=vocab_size)
+    attention_mask = jnp.ones((batch_size, seq_length), dtype=jnp.int32)
+    chunks = input_ids.reshape(batch_size, num_chunks, chunk_size)
+    chunk_attention_mask = attention_mask.reshape(batch_size, num_chunks, chunk_size)
+
     batch = {
-        "input_ids": jnp.ones((batch_size, seq_length), dtype=jnp.int32),
-        "attention_mask": jnp.ones((batch_size, seq_length), dtype=jnp.int32),
-        "chunks": jnp.ones((batch_size, num_chunks, chunk_size), dtype=jnp.int32),
-        "chunk_attention_mask": jnp.ones((batch_size, num_chunks, chunk_size), dtype=jnp.int32),
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "chunks": chunks,
+        "chunk_attention_mask": chunk_attention_mask,
     }
 
     assert "input_ids" in batch
@@ -61,7 +68,8 @@ try:
     model, gpt2_config = load_ttt_model(
         model_name="gpt2",
         seed=42,
-        load_pretrained=False
+        load_pretrained=False,
+        vocab_size=tokenizer.get_vocab_size(),
     )
 
     print(f"OK Model initialized (GPT-2: {gpt2_config.n_layer} layers, {gpt2_config.n_embd} dim)")

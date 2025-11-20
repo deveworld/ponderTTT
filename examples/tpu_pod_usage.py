@@ -32,14 +32,15 @@ print(f"Created mesh: {mesh}")
 print(f"Mesh shape: {mesh.shape}")
 print(f"Mesh axis names: {mesh.axis_names}")
 
-# Step 3: Load model (NNX) and tokenizer
+# Step 3: Load tokenizer and model (NNX) with matching vocab size
+tokenizer = get_tokenizer("gpt2")
 model, config = load_ttt_model(
     model_name="gpt2",
     seed=42,
     load_pretrained=False,
+    vocab_size=tokenizer.get_vocab_size(),
 )
 model.train()
-tokenizer = get_tokenizer("gpt2")
 
 print(f"Model loaded: {config.n_layer} layers, hidden {config.n_embd}")
 
@@ -52,7 +53,7 @@ if len(token_ids) < config.n_positions:
 input_ids = jnp.array([token_ids], dtype=jnp.int32)
 
 input_sharding = NamedSharding(mesh, P("batch", None))
-sharded_input = jax.device_put(input_ids[:, :512], input_sharding)
+sharded_input = jax.device_put(input_ids[:, : config.n_positions], input_sharding)
 
 # Step 5: Run forward pass (TTT disabled for inference demo)
 outputs = cast(dict[str, Any], model(sharded_input, use_ttt=False))

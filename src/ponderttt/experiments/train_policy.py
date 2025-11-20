@@ -68,6 +68,12 @@ def parse_args():
         help="Number of PPO epochs per rollout",
     )
     parser.add_argument(
+        "--ppo_minibatch_size",
+        type=int,
+        default=32,
+        help="Minibatch size for PPO updates",
+    )
+    parser.add_argument(
         "--value_clip",
         type=float,
         default=0.2,
@@ -187,6 +193,7 @@ def main():
     rngs = nnx.Rngs(args.seed)
     policy = PolicyNetwork(config=policy_config, rngs=rngs)
     policy.train()  # Enable dropout for training
+    policy_rng = jax.random.PRNGKey(args.seed + 2)
 
     print(f"OK Policy: {policy_config.feature_dim}D -> {policy_config.hidden_dim}D -> {policy_config.num_actions} actions")
 
@@ -220,6 +227,7 @@ def main():
             lora_config=lora_config,
             seed=args.seed + 1,
             load_pretrained=True,
+            vocab_size=tokenizer.get_vocab_size(),
         )
     else:
         ttt_model_template, ttt_config = load_ttt_model(
@@ -227,6 +235,7 @@ def main():
             fast_weight_type="ttt",
             seed=args.seed + 1,
             load_pretrained=True,
+            vocab_size=tokenizer.get_vocab_size(),
         )
 
     ttt_model_template.train()
@@ -279,10 +288,13 @@ def main():
             batch = next(data_iter)
             num_chunks = batch["chunks"].shape[1]
             for idx in range(num_chunks):
-                yield {
-                    "input_ids": batch["chunks"][:, idx, :],
-                    "attention_mask": batch["chunk_attention_mask"][:, idx, :],
-                }
+                yield (
+                    {
+                        "input_ids": batch["chunks"][:, idx, :],
+                        "attention_mask": batch["chunk_attention_mask"][:, idx, :],
+                    },
+                    idx == 0,
+                )
 
     chunk_iterator = None
 
@@ -319,10 +331,13 @@ def main():
         with tqdm(total=args.rollout_length, desc="Collecting rollout") as pbar:
             while chunks_collected < args.rollout_length:
                 try:
-                    chunk_batch = get_chunk_batch()
+                    chunk_batch, is_new_sequence = get_chunk_batch()
                 except StopIteration:
                     exhausted = True
                     break
+
+                if is_new_sequence:
+                    ttt_model, ttt_optimizer = reset_ttt_model()
 
                 outputs = ttt_model(chunk_batch["input_ids"], use_ttt=False)
                 logits = outputs["logits"]
@@ -342,14 +357,16 @@ def main():
                 features = feature_extractor.extract(
                     input_ids=chunk_batch["input_ids"],
                     logits=logits,
+                    attention_mask=chunk_batch["attention_mask"],
                     budget_remaining=budget_remaining,
                 )
                 batch_size = chunk_batch["input_ids"].shape[0]
 
+                policy_rng, action_key = jax.random.split(policy_rng)
                 policy_output = policy(
                     features,
                     deterministic=False,
-                    rng=rngs.action(),
+                    rng=action_key,
                 )
 
                 actions = policy_output["action"]
@@ -437,44 +454,60 @@ def main():
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # Policy update using vectorized operations (batch processing)
+        # Policy update using minibatches
         old_log_probs = rollout_log_probs_array
         old_values = rollout_values_array
-
-        def policy_loss_fn(mdl):
-            """Compute PPO loss for entire rollout in one batch."""
-            outputs = mdl.evaluate_actions(rollout_features_array, rollout_actions_array)
-            new_log_probs = outputs["log_prob"]
-            new_values = outputs["value"]
-            entropies = outputs["entropy"]
-
-            ratios = jnp.exp(new_log_probs - old_log_probs)
-            clip_ratios = jnp.clip(ratios, 1.0 - args.value_clip, 1.0 + args.value_clip)
-            policy_loss = -jnp.mean(
-                jnp.minimum(ratios * advantages, clip_ratios * advantages)
-            )
-
-            value_pred_clipped = old_values + jnp.clip(
-                new_values - old_values, -args.value_clip, args.value_clip
-            )
-            value_losses = jnp.square(new_values - returns)
-            value_losses_clipped = jnp.square(value_pred_clipped - returns)
-            value_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
-
-            entropy_loss = -0.01 * jnp.mean(entropies)
-
-            approx_kl = jnp.mean(old_log_probs - new_log_probs)
-            total_loss = policy_loss + value_loss + entropy_loss
-            return total_loss, {"policy_loss": policy_loss, "value_loss": value_loss, "entropy": jnp.mean(entropies), "approx_kl": approx_kl}
-
-        # Compute gradients and update over multiple epochs
         last_metrics = {}
         loss = math.inf
+        data_size = rollout_features_array.shape[0]
+        update_rng = jax.random.PRNGKey(args.seed + iteration + 100)
         for _ in range(args.ppo_epochs):
-            loss_fn = nnx.value_and_grad(policy_loss_fn, has_aux=True)
-            (loss, metrics), grads = loss_fn(policy)
-            optimizer.update(policy, grads)
-            last_metrics = metrics
+            update_rng, perm_key = jax.random.split(update_rng)
+            perm = jax.random.permutation(perm_key, data_size)
+            for start in range(0, data_size, args.ppo_minibatch_size):
+                mb_idx = perm[start : start + args.ppo_minibatch_size]
+                mb_features = rollout_features_array[mb_idx]
+                mb_actions = rollout_actions_array[mb_idx]
+                mb_old_log_probs = old_log_probs[mb_idx]
+                mb_old_values = old_values[mb_idx]
+                mb_advantages = advantages[mb_idx]
+                mb_returns = returns[mb_idx]
+
+                def policy_loss_fn(mdl):
+                    """Compute PPO loss for minibatch."""
+                    outputs = mdl.evaluate_actions(mb_features, mb_actions)
+                    new_log_probs = outputs["log_prob"]
+                    new_values = outputs["value"]
+                    entropies = outputs["entropy"]
+
+                    ratios = jnp.exp(new_log_probs - mb_old_log_probs)
+                    clip_ratios = jnp.clip(ratios, 1.0 - args.value_clip, 1.0 + args.value_clip)
+                    policy_loss = -jnp.mean(
+                        jnp.minimum(ratios * mb_advantages, clip_ratios * mb_advantages)
+                    )
+
+                    value_pred_clipped = mb_old_values + jnp.clip(
+                        new_values - mb_old_values, -args.value_clip, args.value_clip
+                    )
+                    value_losses = jnp.square(new_values - mb_returns)
+                    value_losses_clipped = jnp.square(value_pred_clipped - mb_returns)
+                    value_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
+
+                    entropy_loss = -0.01 * jnp.mean(entropies)
+
+                    approx_kl = jnp.mean(mb_old_log_probs - new_log_probs)
+                    total_loss = policy_loss + value_loss + entropy_loss
+                    return total_loss, {
+                        "policy_loss": policy_loss,
+                        "value_loss": value_loss,
+                        "entropy": jnp.mean(entropies),
+                        "approx_kl": approx_kl,
+                    }
+
+                loss_fn = nnx.value_and_grad(policy_loss_fn, has_aux=True)
+                (loss, metrics), grads = loss_fn(policy)
+                optimizer.update(policy, grads)
+                last_metrics = metrics
 
         # Update PID controller
         avg_cost = float(jnp.mean(rollout_costs_array))

@@ -157,20 +157,31 @@ class LoRALayer(nnx.Module):
                 - adapted_hidden: Adapted hidden states [batch, seq_len, hidden_dim]
                 - stats: Dictionary with adaptation statistics
         """
-        # Apply LoRA to Q and V
-        q_adapted = self.q_lora(hidden_states, train=train)  # [batch, seq, hidden]
-        v_adapted = self.v_lora(hidden_states, train=train)  # [batch, seq, hidden]
+        # Apply LoRA to Q and V projections
+        q_delta = self.q_lora(hidden_states, train=train)  # [batch, seq, hidden]
+        v_delta = self.v_lora(hidden_states, train=train)  # [batch, seq, hidden]
 
-        # Combine adaptations with a low-rank sum (maintains LoRA structure)
-        adapted_output = q_adapted + v_adapted
+        # Simple self-attention using adapted Q/V (single-head)
+        q = hidden_states + q_delta
+        k = hidden_states
+        v = hidden_states + v_delta
+
+        scale = 1.0 / jnp.sqrt(self.config.hidden_dim)
+        attn_scores = jnp.einsum("bth,bsh->bts", q, k) * scale
+        if mask is not None:
+            attn_mask = (mask[:, None, :] > 0).astype(jnp.float32)
+            attn_scores = jnp.where(attn_mask > 0, attn_scores, -jnp.inf)
+        attn_weights = jax.nn.softmax(attn_scores, axis=-1)
+        adapted_output = attn_weights @ v
 
         # Compute statistics (for monitoring)
         stats = {
-            "q_norm": jnp.linalg.norm(q_adapted),
-            "v_norm": jnp.linalg.norm(v_adapted),
-            "q_mean": jnp.mean(jnp.abs(q_adapted)),
-            "v_mean": jnp.mean(jnp.abs(v_adapted)),
+            "q_norm": jnp.linalg.norm(q_delta),
+            "v_norm": jnp.linalg.norm(v_delta),
+            "q_mean": jnp.mean(jnp.abs(q_delta)),
+            "v_mean": jnp.mean(jnp.abs(v_delta)),
             "output_norm": jnp.linalg.norm(adapted_output),
+            "attn_entropy": -jnp.mean(attn_weights * jnp.log(attn_weights + 1e-10)),
         }
 
         return adapted_output, stats

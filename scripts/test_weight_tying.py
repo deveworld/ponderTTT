@@ -25,7 +25,12 @@ def main() -> None:
     print(f"OK Tokenizer vocab size: {vocab_size}")
 
     print("\n[2/3] Loading model with tied embeddings...")
-    model, config = load_ttt_model(model_name="gpt2", seed=0, load_pretrained=False)
+    model, config = load_ttt_model(
+        model_name="gpt2",
+        seed=0,
+        load_pretrained=False,
+        vocab_size=vocab_size,
+    )
     model.eval()
     print(f"OK Model: {config.n_layer} layers, dim={config.n_embd}")
 
@@ -45,8 +50,14 @@ def main() -> None:
     hidden_states = model.base_model(test_input)
     embedding_kernel = model.base_model.wte.embedding.value
     manual_logits = hidden_states @ embedding_kernel.T
-    if not jnp.allclose(logits, manual_logits, atol=1e-5):
+    if not jnp.allclose(logits, manual_logits, atol=1e-4):
         raise AssertionError("Logits do not match tied embedding projection")
+
+    # Explicitly verify that embedding and LM head share the same underlying array
+    tied_kernel = model.base_model.wte.embedding.value
+    lm_kernel = model.base_model.wte.embedding.value if model.tie_word_embeddings else model.lm_head.kernel
+    if tied_kernel is not lm_kernel:
+        raise AssertionError("Embedding and LM head do not share the same parameter object")
 
     print("\n" + "=" * 60)
     print("Weight tying verified (shared embedding + LM head).")

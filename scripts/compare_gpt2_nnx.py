@@ -71,6 +71,7 @@ def main() -> None:
         model_name=args.model_name,
         fast_weight_type="ttt",
         load_pretrained=True,
+        vocab_size=tokenizer.vocab_size,
     )
     model_nnx.eval()
 

@@ -5,19 +5,19 @@
 | Area | Status | Notes |
 |------|--------|-------|
 | NNX GPT-2 + TTT/LoRA fast weights | Complete | Base model frozen via `stop_gradient`, weight tying verified |
-| Streaming data pipeline | Complete | `<|pad|>` token added, chunk + mask tensors propagated everywhere |
+| Streaming data pipeline | Complete | `<|pad|>` token enforced, chunk + mask tensors propagated everywhere |
 | Chunk semantics | Complete | Baseline & policy loops issue true SKIP/UPDATE_k actions |
-| PPO + PID controller | Complete | Cost-penalized rewards, clipped value loss, multi-epoch PPO, grad clipping, KL logging |
+| PPO + PID controller | Complete | Cost-penalized rewards, value clipping, mini-batch PPO, grad clipping, KL logging, anti-windup |
 | Executable benchmarks | Complete | HumanEval/MBPP/ClassEval helpers gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS` for sandboxed exec |
-| Tooling/tests | Complete | `scripts/quick_test.py`, `test_pipeline.py`, distributed and TPU setup scripts updated; checkpoint errors surfaced |
+| Tooling/tests | Complete | `scripts/quick_test.py`, `test_pipeline.py` (randomized dummy data), distributed and TPU setup scripts updated; checkpoint errors surfaced |
 | Large-scale experiments | In progress | Requires TPU v4-64 or multi-GPU cluster |
 
 ## Recent work
-- Implemented chunk-level training utilities shared by baselines and the policy trainer.
-- Rebuilt policy rollouts to track real budgets and store the full batch for PPO.
-- Fixed the tokenizer/padding bug that masked genuine `<|endoftext|>` tokens.
-- Replaced placeholder benchmark stubs with executable pass@k evaluation.
-- Refreshed every helper script to match the NNX stack.
+- Added PPO mini-batch updates, value clipping, and PID anti-windup.
+- Enforced tokenizer pad token presence; cache keys now include tokenizer identity.
+- Reworked feature extraction to mask padding and fixed pass@k and efficiency edge cases.
+- Integrated vocab-size overrides for tokenizer/model alignment; weight-tying test now checks shared parameters.
+- Added baseline LoRA attention integration and lightweight speed/memory benchmarks.
 
 ## Next steps
 1. **Stabilize PPO** – sweep PID gains, rollout length, entropy bonus, KL targets; record cost-quality curves.

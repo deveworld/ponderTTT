@@ -20,7 +20,6 @@ import optax
 from flax import nnx
 from tokenizers import Tokenizer
 from tqdm import tqdm
-from transformers.models import opt
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import load_ttt_model
@@ -185,14 +184,16 @@ def main():
             fast_weight_type="lora",
             lora_config=lora_config,
             seed=args.seed,
-            load_pretrained=args.load_pretrained
+            load_pretrained=args.load_pretrained,
+            vocab_size=tokenizer.get_vocab_size(),
         )
     else:
         model, config = load_ttt_model(
             model_name=model_name,
             fast_weight_type="ttt",
             seed=args.seed,
-            load_pretrained=args.load_pretrained
+            load_pretrained=args.load_pretrained,
+            vocab_size=tokenizer.get_vocab_size(),
         )
 
     # Set to training mode
@@ -232,7 +233,6 @@ def main():
     print(f"Processing {args.max_chunks} chunks...")
 
     total_loss = 0.0
-    total_perplexity = 0.0
     total_cost = 0.0
     chunks_processed = 0
 
@@ -240,6 +240,16 @@ def main():
     cost_multiplier = action_to_cost(args.action)
 
     fast_graphdef, fast_state_template = nnx.split(model.fast_layer)
+
+    def create_optimizer():
+        return nnx.Optimizer(
+            model,
+            optax.chain(
+                optax.clip_by_global_norm(1.0),
+                optax.adam(args.learning_rate),
+            ),
+            wrt=nnx.All(nnx.Param),
+        )
 
     def clone_state(state):
         return jax.tree_util.tree_map(
@@ -250,6 +260,7 @@ def main():
     def reset_fast_weights():
         model.fast_layer = nnx.merge(fast_graphdef, clone_state(fast_state_template))
 
+    optimizer = create_optimizer()
     reset_fast_weights()
 
     with tqdm(total=args.max_chunks, desc="Training") as pbar:
@@ -272,6 +283,7 @@ def main():
 
                 if chunk_idx == 0:
                     reset_fast_weights()
+                    optimizer = create_optimizer()
 
                 if action_steps == 0:
                     metrics = run_chunk_step(
@@ -294,7 +306,6 @@ def main():
 
                 assert metrics is not None
                 total_loss += metrics["loss"]
-                total_perplexity += metrics["perplexity"]
                 total_cost += cost_multiplier
                 chunks_processed += 1
 
@@ -308,7 +319,7 @@ def main():
 
                 if chunks_processed % 10 == 0:
                     avg_loss = total_loss / chunks_processed
-                    avg_ppl = total_perplexity / chunks_processed
+                    avg_ppl = math.exp(avg_loss)
                     print(f"\nChunk {chunks_processed}/{args.max_chunks}:")
                     print(f"  Average loss: {avg_loss:.4f}")
                     print(f"  Average perplexity: {avg_ppl:.2f}")
@@ -325,7 +336,7 @@ def main():
 
     if chunks_processed > 0:
         final_avg_loss = total_loss / chunks_processed
-        final_avg_ppl = total_perplexity / chunks_processed
+        final_avg_ppl = math.exp(final_avg_loss)
 
         print("\nFinal metrics:")
         print(f"  Chunks processed: {chunks_processed}")

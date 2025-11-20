@@ -52,7 +52,11 @@ class CodeDataset:
         self.seq_length = seq_length
         self.chunk_size = chunk_size
         self.shard_across_hosts = shard_across_hosts
-        self.pad_token_id = self.tokenizer.token_to_id("<|pad|>") or 0
+        self.pad_token_id = self.tokenizer.token_to_id("<|pad|>")
+        if self.pad_token_id is None:
+            raise ValueError(
+                "Tokenizer is missing <|pad|> token; please add it before constructing the dataset."
+            )
 
         if self.seq_length % self.chunk_size != 0:
             raise ValueError(
@@ -294,9 +298,15 @@ def create_data_iterator(
     # Cache all data upfront if enabled with parallel downloading
     if cache_data:
         # Create cache key based on parameters
+        try:
+            tokenizer_serialized = tokenizer.to_str()
+        except Exception:
+            tokenizer_serialized = repr(tokenizer)
+        tokenizer_hash = hashlib.md5(tokenizer_serialized.encode()).hexdigest()
+
         cache_key = hashlib.md5(
             f"{split}_{batch_size}_{seq_length}_{chunk_size}_{max_examples}_"
-            f"{language}_vocab{tokenizer.get_vocab_size()}".encode()
+            f"{language}_vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}".encode()
         ).hexdigest()
         cache_path = Path(cache_dir) / f"{cache_key}.pkl"
 
