@@ -85,6 +85,18 @@ def parse_args():
         default=64,
         help="LoRA rank (only used if fast_weight_type='lora')"
     )
+    parser.add_argument(
+        "--ssl_weight",
+        type=float,
+        default=0.1,
+        help="Weight for SSL auxiliary loss when using TTT/LoRA fast weights",
+    )
+    parser.add_argument(
+        "--seeds",
+        type=str,
+        default=None,
+        help="Optional comma-separated list of seeds for multi-seed runs (e.g., '0,1,2')",
+    )
 
     return parser.parse_args()
 
@@ -119,6 +131,7 @@ def count_params(model: nnx.Module) -> int:
 
 def main():
     args = parse_args()
+    seeds = [args.seed] if args.seeds is None else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
 
     print("=" * 60)
     print("PonderTTT Baseline Training (NNX)")
@@ -127,6 +140,7 @@ def main():
     print(f"Action: {args.action}")
     print(f"Max chunks: {args.max_chunks}")
     print(f"Output dir: {args.output_dir}")
+    print(f"Seeds: {seeds}")
 
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -157,46 +171,48 @@ def main():
     chunks_per_sequence = seq_length // chunk_size
     examples_needed = math.ceil(args.max_chunks / max(chunks_per_sequence, 1))
 
-    data_iter = create_data_iterator(
-        tokenizer=tokenizer,
-        split="train",
-        batch_size=batch_size,
-        seq_length=seq_length,
-        chunk_size=chunk_size,
-        max_examples=examples_needed * batch_size,
-    )
+    def build_data_iter():
+        return create_data_iterator(
+            tokenizer=tokenizer,
+            split="train",
+            batch_size=batch_size,
+            seq_length=seq_length,
+            chunk_size=chunk_size,
+            max_examples=examples_needed * batch_size,
+        )
 
-    # Initialize model
-    print(f"\nInitializing model with {args.fast_weight_type.upper()} fast weights...")
+    def init_model(seed):
+        print(f"\nInitializing model with {args.fast_weight_type.upper()} fast weights (seed={seed})...")
 
-    # Prepare config based on fast weight type
-    if args.fast_weight_type == "lora":
-        from ponderttt.models import LoRAConfig
-        lora_config = LoRAConfig(
-            hidden_dim=768 if args.model_scale == "125m" else 1024 if args.model_scale == "350m" else 1280,
-            rank=args.lora_rank,
-            alpha=float(args.lora_rank),
-            dropout_rate=0.1,
-        )
-        print(f"  LoRA rank: {args.lora_rank}")
-        model, config = load_ttt_model(
-            model_name=model_name,
-            fast_weight_type="lora",
-            lora_config=lora_config,
-            seed=args.seed,
-            load_pretrained=args.load_pretrained,
-            vocab_size=tokenizer.get_vocab_size(),
-        )
-    else:
-        model, config = load_ttt_model(
-            model_name=model_name,
-            fast_weight_type="ttt",
-            seed=args.seed,
-            load_pretrained=args.load_pretrained,
-            vocab_size=tokenizer.get_vocab_size(),
-        )
+        if args.fast_weight_type == "lora":
+            from ponderttt.models import LoRAConfig
+            lora_config = LoRAConfig(
+                hidden_dim=768 if args.model_scale == "125m" else 1024 if args.model_scale == "350m" else 1280,
+                rank=args.lora_rank,
+                alpha=float(args.lora_rank),
+                dropout_rate=0.1,
+            )
+            print(f"  LoRA rank: {args.lora_rank}")
+            mdl, cfg = load_ttt_model(
+                model_name=model_name,
+                fast_weight_type="lora",
+                lora_config=lora_config,
+                seed=seed,
+                load_pretrained=args.load_pretrained,
+                vocab_size=tokenizer.get_vocab_size(),
+            )
+        else:
+            mdl, cfg = load_ttt_model(
+                model_name=model_name,
+                fast_weight_type="ttt",
+                seed=seed,
+                load_pretrained=args.load_pretrained,
+                vocab_size=tokenizer.get_vocab_size(),
+            )
+        return mdl, cfg
 
     # Set to training mode
+    model, config = init_model(seeds[0])
     model.train()
 
     print(f"OK Model loaded: {config.n_layer} layers, {config.n_embd} dim")
@@ -218,14 +234,16 @@ def main():
 
     # Create optimizer for all parameters
     # Base model will be frozen via stop_gradient in the model's forward pass
-    optimizer = nnx.Optimizer(
-        model,
-        optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adam(args.learning_rate),
-        ),
-        wrt=nnx.All(nnx.Param),
-    )
+    def create_optimizer():
+        return nnx.Optimizer(
+            model,
+            optax.chain(
+                optax.clip_by_global_norm(1.0),
+                optax.adam(args.learning_rate),
+            ),
+            wrt=nnx.All(nnx.Param),
+        )
+    optimizer = create_optimizer()
     print(f"OK Optimizer: Adam (lr={args.learning_rate}, base_model frozen via stop_gradient)")
 
     # Training loop
@@ -260,125 +278,166 @@ def main():
     def reset_fast_weights():
         model.fast_layer = nnx.merge(fast_graphdef, clone_state(fast_state_template))
 
-    optimizer = create_optimizer()
-    reset_fast_weights()
+    seed_results = []
 
-    with tqdm(total=args.max_chunks, desc="Training") as pbar:
-        while chunks_processed < args.max_chunks:
-            try:
-                batch = next(data_iter)
-            except StopIteration:
-                print("\nData iterator exhausted")
-                break
+    for seed in seeds:
+        model, config = init_model(seed)
+        model.train()
+        optimizer = create_optimizer()
+        reset_fast_weights()
+        data_iter = create_data_iter(
+            tokenizer=tokenizer,
+            split="train",
+            batch_size=batch_size,
+            seq_length=seq_length,
+            chunk_size=chunk_size,
+            max_examples=examples_needed * batch_size,
+        )
 
-            num_chunks_available = batch["chunks"].shape[1]
-            for chunk_idx in range(num_chunks_available):
-                if chunks_processed >= args.max_chunks:
+        total_loss = 0.0
+        total_cost = 0.0
+        chunks_processed = 0
+
+        print(f"\n=== Running seed {seed} ===")
+        with tqdm(total=args.max_chunks, desc=f"Training seed {seed}") as pbar:
+            while chunks_processed < args.max_chunks:
+                try:
+                    batch = next(data_iter)
+                except StopIteration:
+                    print("\nData iterator exhausted")
                     break
 
-                chunk_batch = {
-                    "input_ids": batch["chunks"][:, chunk_idx, :],
-                    "attention_mask": batch["chunk_attention_mask"][:, chunk_idx, :],
-                }
+                num_chunks_available = batch["chunks"].shape[1]
+                for chunk_idx in range(num_chunks_available):
+                    if chunks_processed >= args.max_chunks:
+                        break
 
-                if chunk_idx == 0:
-                    reset_fast_weights()
-                    optimizer = create_optimizer()
+                    chunk_batch = {
+                        "input_ids": batch["chunks"][:, chunk_idx, :],
+                        "attention_mask": batch["chunk_attention_mask"][:, chunk_idx, :],
+                    }
 
-                if action_steps == 0:
-                    metrics = run_chunk_step(
-                        model,
-                        None,
-                        chunk_batch,
-                        use_ttt=False,
-                        apply_update=False,
-                    )
-                else:
-                    metrics = None
-                    for _ in range(action_steps):
+                    if chunk_idx == 0:
+                        reset_fast_weights()
+                        optimizer = create_optimizer()
+
+                    if action_steps == 0:
                         metrics = run_chunk_step(
                             model,
-                            optimizer,
+                            None,
                             chunk_batch,
-                            use_ttt=True,
-                            apply_update=True,
+                            use_ttt=False,
+                            apply_update=False,
+                            ssl_weight=0.0,
                         )
+                    else:
+                        metrics = None
+                        for _ in range(action_steps):
+                            metrics = run_chunk_step(
+                                model,
+                                optimizer,
+                                chunk_batch,
+                                use_ttt=True,
+                                apply_update=True,
+                                ssl_weight=args.ssl_weight,
+                            )
 
-                assert metrics is not None
-                total_loss += metrics["loss"]
-                total_cost += cost_multiplier
-                chunks_processed += 1
+                    assert metrics is not None
+                    total_loss += metrics["loss"]
+                    total_cost += cost_multiplier
+                    chunks_processed += 1
 
-                pbar.set_postfix(
-                    {
-                        "loss": f"{metrics['loss']:.4f}",
-                        "ppl": f"{metrics['perplexity']:.2f}",
-                    }
-                )
-                pbar.update(1)
+                    pbar.set_postfix(
+                        {
+                            "loss": f"{metrics['loss']:.4f}",
+                            "ppl": f"{metrics['perplexity']:.2f}",
+                        }
+                    )
+                    pbar.update(1)
 
-                if chunks_processed % 10 == 0:
-                    avg_loss = total_loss / chunks_processed
-                    avg_ppl = math.exp(avg_loss)
-                    print(f"\nChunk {chunks_processed}/{args.max_chunks}:")
-                    print(f"  Average loss: {avg_loss:.4f}")
-                    print(f"  Average perplexity: {avg_ppl:.2f}")
-                    ttt_keys = [k for k in metrics.keys() if k.startswith("ttt_")]
-                    if ttt_keys:
-                        print("  TTT stats:")
-                        for key in ttt_keys:
-                            print(f"    {key}: {metrics[key]:.4f}")
+                    if chunks_processed % 10 == 0:
+                        avg_loss = total_loss / chunks_processed
+                        avg_ppl = math.exp(avg_loss)
+                        print(f"\nChunk {chunks_processed}/{args.max_chunks}:")
+                        print(f"  Average loss: {avg_loss:.4f}")
+                        print(f"  Average perplexity: {avg_ppl:.2f}")
+                        ttt_keys = [k for k in metrics.keys() if k.startswith("ttt_")]
+                        if ttt_keys:
+                            print("  TTT stats:")
+                            for key in ttt_keys:
+                                print(f"    {key}: {metrics[key]:.4f}")
 
-    # Final results
-    print("\n" + "=" * 60)
-    print("Training completed!")
-    print("=" * 60)
+        if chunks_processed > 0:
+            final_avg_loss = total_loss / chunks_processed
+            final_avg_ppl = math.exp(final_avg_loss)
+            seed_results.append(
+                {
+                    'seed': seed,
+                    'chunks_processed': chunks_processed,
+                    'final_loss': final_avg_loss,
+                    'final_perplexity': final_avg_ppl,
+                    'total_cost': total_cost,
+                    'avg_cost_per_chunk': total_cost / chunks_processed,
+                }
+            )
 
-    if chunks_processed > 0:
-        final_avg_loss = total_loss / chunks_processed
-        final_avg_ppl = math.exp(final_avg_loss)
+            results = {
+                'model_scale': args.model_scale,
+                'action': args.action,
+                'fast_weight_type': args.fast_weight_type,
+                'lora_rank': args.lora_rank if args.fast_weight_type == 'lora' else None,
+                'num_ttt_steps': num_ttt_steps,
+                'cost_multiplier': cost_multiplier,
+                'chunks_processed': chunks_processed,
+                'final_loss': final_avg_loss,
+                'final_perplexity': final_avg_ppl,
+                'learning_rate': args.learning_rate,
+                'seed': seed,
+                'total_cost': total_cost,
+                'avg_cost_per_chunk': total_cost / chunks_processed,
+            }
 
-        print("\nFinal metrics:")
-        print(f"  Chunks processed: {chunks_processed}")
-        print(f"  Average loss: {final_avg_loss:.4f}")
-        print(f"  Average perplexity: {final_avg_ppl:.2f}")
-        print(f"  Average cost multiplier: {total_cost / max(chunks_processed, 1):.2f}x")
+            suffix = f"_{args.fast_weight_type}"
+            if args.fast_weight_type == "lora":
+                suffix += f"_r{args.lora_rank}"
+            results_file = output_dir / f"results_{args.model_scale}_{args.action}{suffix}_seed{seed}.json"
+            with open(results_file, 'w') as f:
+                json.dump(results, f, indent=2)
 
-        # Save results
-        results = {
-            'model_scale': args.model_scale,
-            'action': args.action,
-            'fast_weight_type': args.fast_weight_type,
-            'lora_rank': args.lora_rank if args.fast_weight_type == 'lora' else None,
-            'num_ttt_steps': num_ttt_steps,
-            'cost_multiplier': cost_multiplier,
-            'chunks_processed': chunks_processed,
-            'final_loss': final_avg_loss,
-            'final_perplexity': final_avg_ppl,
-            'learning_rate': args.learning_rate,
-            'seed': args.seed,
-            'total_cost': total_cost,
-            'avg_cost_per_chunk': total_cost / chunks_processed,
-        }
+            print(f"\nOK Results saved to: {results_file}")
 
-        # Include fast_weight_type in filename
-        suffix = f"_{args.fast_weight_type}"
-        if args.fast_weight_type == "lora":
-            suffix += f"_r{args.lora_rank}"
-        results_file = output_dir / f"results_{args.model_scale}_{args.action}{suffix}.json"
-        with open(results_file, 'w') as f:
-            json.dump(results, f, indent=2)
+            save_checkpoint(
+                checkpoint_dir=output_dir / "checkpoints",
+                step=chunks_processed,
+                state={"model": nnx.state(model)},
+                metadata=results,
+            )
+            wait_for_checkpoints()
+            print(f"OK Checkpoint saved to {output_dir / 'checkpoints'}")
 
-        print(f"\nOK Results saved to: {results_file}")
-
-        save_checkpoint(
-            checkpoint_dir=output_dir / "checkpoints",
-            step=chunks_processed,
-            state={"model": nnx.state(model)},
-            metadata=results,
-        )
-        wait_for_checkpoints()
-        print(f"OK Checkpoint saved to {output_dir / 'checkpoints'}")
+    # Aggregate across seeds if multiple
+    if seed_results:
+        if len(seed_results) > 1:
+            losses = jnp.array([r['final_loss'] for r in seed_results])
+            perplexities = jnp.array([r['final_perplexity'] for r in seed_results])
+            from ponderttt.utils.statistics import bootstrap_ci, compute_iqm
+            loss_ci = bootstrap_ci(losses, n_bootstrap=1000)
+            ppl_ci = bootstrap_ci(perplexities, n_bootstrap=1000)
+            summary = {
+                "seeds": [r['seed'] for r in seed_results],
+                "loss_mean": float(losses.mean()),
+                "loss_iqm": compute_iqm(losses),
+                "loss_ci": loss_ci,
+                "ppl_mean": float(perplexities.mean()),
+                "ppl_iqm": compute_iqm(perplexities),
+                "ppl_ci": ppl_ci,
+            }
+            summary_file = output_dir / f"summary_{args.model_scale}_{args.action}.json"
+            with open(summary_file, "w") as f:
+                json.dump(summary, f, indent=2)
+            print(f"\nSeed summary saved to {summary_file}")
+        else:
+            print("\nSingle-seed run complete.")
     else:
         print("\nNo chunks processed!")
 

@@ -311,11 +311,13 @@ class TTTLayer(nnx.Module):
         XV = self._split_heads(XV)
 
         # Apply RoPE with true positions (no mini-batch wrapping)
-        if position_ids.max() >= self.freqs_cis.shape[0]:
+        # Use mini-batch relative positions for RoPE (wrap positions per mini-batch)
+        rel_position_ids = position_ids % self.mini_batch_size
+        if rel_position_ids.max() >= self.freqs_cis.shape[0]:
             raise ValueError(
-                f"Position ids exceed RoPE cache (max {self.freqs_cis.shape[0]-1}, got {int(position_ids.max())})"
+                f"Position ids exceed RoPE cache (max {self.freqs_cis.shape[0]-1}, got {int(rel_position_ids.max())})"
             )
-        freqs_cis = jnp.take(self.freqs_cis, position_ids, axis=0)
+        freqs_cis = jnp.take(self.freqs_cis, rel_position_ids, axis=0)
         XQ, XK = apply_rotary_emb(XQ, XK, freqs_cis=freqs_cis, dtype=self.config.dtype)
 
         # Split into mini-batches

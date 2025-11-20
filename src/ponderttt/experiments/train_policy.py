@@ -116,6 +116,18 @@ def parse_args():
         default=64,
         help="LoRA rank (only used if fast_weight_type='lora')"
     )
+    parser.add_argument(
+        "--ssl_weight",
+        type=float,
+        default=0.1,
+        help="Weight for SSL auxiliary loss when using TTT/LoRA fast weights",
+    )
+    parser.add_argument(
+        "--seeds",
+        type=str,
+        default=None,
+        help="Optional comma-separated list of seeds for multi-seed runs (e.g., '0,1,2')",
+    )
 
     return parser.parse_args()
 
@@ -136,6 +148,7 @@ def get_model_name(model_scale: str) -> str:
 
 def main():
     args = parse_args()
+    seeds = [args.seed] if args.seeds is None else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
 
     print("=" * 60)
     print("PonderTTT Policy Training (NNX)")
@@ -146,6 +159,7 @@ def main():
     print(f"Rollout length: {args.rollout_length}")
     print(f"Output dir: {args.output_dir}")
     print()
+    print(f"Seeds: {seeds}")
 
     if args.budget_limit <= 0:
         raise ValueError("budget_limit must be positive")
@@ -172,14 +186,15 @@ def main():
     examples_per_iteration = math.ceil(args.rollout_length / chunks_per_sequence) * batch_size
     num_examples = examples_per_iteration * args.num_iterations * 2
 
-    data_iter = create_data_iterator(
-        tokenizer=tokenizer,
-        split="train",
-        batch_size=batch_size,
-        seq_length=seq_length,
-        chunk_size=chunk_size,
-        max_examples=num_examples,
-    )
+    def build_data_iter():
+        return create_data_iterator(
+            tokenizer=tokenizer,
+            split="train",
+            batch_size=batch_size,
+            seq_length=seq_length,
+            chunk_size=chunk_size,
+            max_examples=num_examples,
+        )
 
     # Initialize policy network
     print("\nInitializing policy network...")
@@ -209,220 +224,226 @@ def main():
     )
     print(f"OK Optimizer: Adam (lr={args.learning_rate}, clip={args.max_grad_norm})")
 
-    # Initialize TTT model template for environment rollouts
-    print(f"\nPreparing TTT model ({args.fast_weight_type.upper()}) for rollouts...")
-    if args.fast_weight_type == "lora":
-        from ponderttt.models import LoRAConfig
-
-        lora_config = LoRAConfig(
-            hidden_dim=768 if args.model_scale == "125m" else 1024 if args.model_scale == "350m" else 1280,
-            rank=args.lora_rank,
-            alpha=float(args.lora_rank),
-            dropout_rate=0.1,
-        )
-        print(f"  LoRA rank: {args.lora_rank}")
-        ttt_model_template, ttt_config = load_ttt_model(
-            model_name=model_name,
-            fast_weight_type="lora",
-            lora_config=lora_config,
-            seed=args.seed + 1,
-            load_pretrained=True,
-            vocab_size=tokenizer.get_vocab_size(),
-        )
-    else:
-        ttt_model_template, ttt_config = load_ttt_model(
-            model_name=model_name,
-            fast_weight_type="ttt",
-            seed=args.seed + 1,
-            load_pretrained=True,
-            vocab_size=tokenizer.get_vocab_size(),
-        )
-
-    ttt_model_template.train()
-    model_graphdef, model_state = nnx.split(ttt_model_template)
-    base_state = jax.tree_util.tree_map(lambda x: x.copy(), model_state)
-
-    def reset_ttt_model():
-        """Create a fresh copy of the TTT model + optimizer."""
-        model_state_copy = jax.tree_util.tree_map(lambda x: x.copy(), base_state)
-        model = nnx.merge(model_graphdef, model_state_copy)
-        model.train()
-        optimizer = nnx.Optimizer(
-            model,
-            optax.chain(
-                optax.clip_by_global_norm(args.max_grad_norm),
-                optax.adam(args.learning_rate),
-            ),
-            wrt=nnx.All(nnx.Param),
-        )
-        return model, optimizer
-
-    print(f"OK Model template ready: {ttt_config.n_layer} layers")
-    print(f"  Fast weight type: {args.fast_weight_type}")
-
-    # Initialize feature extractor
-    feature_extractor = FeatureExtractor(
-        vocab_size=tokenizer.get_vocab_size(),
-        pad_token_id=tokenizer.token_to_id("<|pad|>"),
-        seq_length_norm=chunk_size,
-    )
-    print(f"OK Feature extractor initialized (32D features)")
-
-    # PID controller for budget constraint
-    pid = PIDController(
-        kp=0.1,
-        ki=0.01,
-        kd=0.05,
-    )
-    print(f"OK PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}")
-
-    # Training loop
-    print("\nStarting policy training...")
-    print(f"Target budget: {args.budget_limit}x")
-    print()
-
     training_history = []
+    seed_histories = []
 
-    def chunk_stream():
-        while True:
-            batch = next(data_iter)
-            num_chunks = batch["chunks"].shape[1]
-            for idx in range(num_chunks):
-                yield (
-                    {
-                        "input_ids": batch["chunks"][:, idx, :],
-                        "attention_mask": batch["chunk_attention_mask"][:, idx, :],
-                    },
-                    idx == 0,
-                )
+    for seed in seeds:
+        print(f"\n=== Running seed {seed} ===")
+        # reinitialize policy RNGs for each seed
+        rngs = nnx.Rngs(seed)
+        policy = PolicyNetwork(config=policy_config, rngs=rngs)
+        policy.train()
+        policy_rng = jax.random.PRNGKey(seed + 2)
 
-    chunk_iterator = None
+        # Prepare TTT model template per seed
+        if args.fast_weight_type == "lora":
+            from ponderttt.models import LoRAConfig
 
-    def get_chunk_batch():
-        nonlocal chunk_iterator
-        if chunk_iterator is None:
-            chunk_iterator = chunk_stream()
-        return next(chunk_iterator)
+            lora_config = LoRAConfig(
+                hidden_dim=768 if args.model_scale == "125m" else 1024 if args.model_scale == "350m" else 1280,
+                rank=args.lora_rank,
+                alpha=float(args.lora_rank),
+                dropout_rate=0.1,
+            )
+            print(f"  LoRA rank: {args.lora_rank}")
+            ttt_model_template, ttt_config = load_ttt_model(
+                model_name=model_name,
+                fast_weight_type="lora",
+                lora_config=lora_config,
+                seed=seed + 1,
+                load_pretrained=True,
+                vocab_size=tokenizer.get_vocab_size(),
+            )
+        else:
+            ttt_model_template, ttt_config = load_ttt_model(
+                model_name=model_name,
+                fast_weight_type="ttt",
+                seed=seed + 1,
+                load_pretrained=True,
+                vocab_size=tokenizer.get_vocab_size(),
+            )
 
-    chunks_per_sequence = seq_length // chunk_size
+        ttt_model_template.train()
+        model_graphdef, model_state = nnx.split(ttt_model_template)
+        base_state = jax.tree_util.tree_map(lambda x: x.copy(), model_state)
 
-    for iteration in range(args.num_iterations):
-        print(f"\n{'=' * 60}")
-        print(f"Iteration {iteration + 1}/{args.num_iterations}")
-        print(f"{'=' * 60}")
+        def reset_ttt_model():
+            """Create a fresh copy of the TTT model + optimizer."""
+            model_state_copy = jax.tree_util.tree_map(lambda x: x.copy(), base_state)
+            model = nnx.merge(model_graphdef, model_state_copy)
+            model.train()
+            optimizer_model = nnx.Optimizer(
+                model,
+                optax.chain(
+                    optax.clip_by_global_norm(args.max_grad_norm),
+                    optax.adam(args.learning_rate),
+                ),
+                wrt=nnx.All(nnx.Param),
+            )
+            return model, optimizer_model
 
-        feature_extractor.reset_history()
-        ttt_model, ttt_optimizer = reset_ttt_model()
+        print(f"OK Model template ready: {ttt_config.n_layer} layers")
+        print(f"  Fast weight type: {args.fast_weight_type}")
 
-        # Collect rollout data
-        rollout_features = []
-        rollout_actions = []
-        rollout_log_probs = []
-        rollout_values = []
-        rollout_rewards = []
-        rollout_costs = []
+        # Initialize feature extractor
+        feature_extractor = FeatureExtractor(
+            vocab_size=tokenizer.get_vocab_size(),
+            pad_token_id=tokenizer.token_to_id("<|pad|>"),
+            seq_length_norm=chunk_size,
+        )
+        print(f"OK Feature extractor initialized (32D features)")
 
-        costs_map = jnp.array([1.0, 3.0, 6.0, 12.0])
-        step_map = [0, 1, 2, 4]
-        cost_accumulator = 0.0
-        chunks_collected = 0
-        exhausted = False
+        # PID controller for budget constraint
+        pid = PIDController(
+            kp=0.1,
+            ki=0.01,
+            kd=0.05,
+        )
+        print(f"OK PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}")
 
-        with tqdm(total=args.rollout_length, desc="Collecting rollout") as pbar:
-            while chunks_collected < args.rollout_length:
-                try:
-                    chunk_batch, is_new_sequence = get_chunk_batch()
-                except StopIteration:
-                    exhausted = True
-                    break
+        chunk_iterator = None
 
-                if is_new_sequence:
-                    ttt_model, ttt_optimizer = reset_ttt_model()
+        data_iter = build_data_iter()
 
-                outputs = ttt_model(chunk_batch["input_ids"], use_ttt=False)
-                logits = outputs["logits"]
-                labels = chunk_batch["input_ids"]
-                mask = chunk_batch["attention_mask"]
-                loss_baseline = cross_entropy_loss(
-                    logits[:, :-1],
-                    labels[:, 1:],
-                    mask[:, 1:],
-                )
-
-                budget_remaining = max(
-                    0.0,
-                    (args.budget_limit - cost_accumulator) / max(args.budget_limit, 1e-8),
-                )
-
-                features = feature_extractor.extract(
-                    input_ids=chunk_batch["input_ids"],
-                    logits=logits,
-                    attention_mask=chunk_batch["attention_mask"],
-                    budget_remaining=budget_remaining,
-                )
-                batch_size = chunk_batch["input_ids"].shape[0]
-
-                policy_rng, action_key = jax.random.split(policy_rng)
-                policy_output = policy(
-                    features,
-                    deterministic=False,
-                    rng=action_key,
-                )
-
-                actions = policy_output["action"]
-                if not jnp.all(actions == actions[0]):
-                    raise ValueError(
-                        "All actions in the batch must match. Use batch_size=1 or ensure identical actions."
+        def chunk_stream():
+            while True:
+                batch = next(data_iter)
+                num_chunks = batch["chunks"].shape[1]
+                for idx in range(num_chunks):
+                    yield (
+                        {
+                            "input_ids": batch["chunks"][:, idx, :],
+                            "attention_mask": batch["chunk_attention_mask"][:, idx, :],
+                        },
+                        idx == 0,
                     )
-                action_idx = int(actions[0])
-                action_steps = step_map[action_idx]
-                cost = float(costs_map[action_idx])
 
-                if action_steps == 0:
-                    loss_after = float(loss_baseline)
-                else:
-                    metrics = None
-                    for _ in range(action_steps):
-                        metrics = run_chunk_step(
-                            ttt_model,
-                            ttt_optimizer,
-                            chunk_batch,
-                            use_ttt=True,
-                            apply_update=True,
+        def get_chunk_batch():
+            nonlocal chunk_iterator
+            if chunk_iterator is None:
+                chunk_iterator = chunk_stream()
+            return next(chunk_iterator)
+
+        chunks_per_sequence = seq_length // chunk_size
+        training_history = []
+
+        for iteration in range(args.num_iterations):
+            print(f"\n{'=' * 60}")
+            print(f"Iteration {iteration + 1}/{args.num_iterations}")
+            print(f"{'=' * 60}")
+
+            feature_extractor.reset_history()
+            ttt_model, ttt_optimizer = reset_ttt_model()
+
+            rollout_features = []
+            rollout_actions = []
+            rollout_log_probs = []
+            rollout_values = []
+            rollout_rewards = []
+            rollout_costs = []
+
+            costs_map = jnp.array([1.0, 3.0, 6.0, 12.0])
+            step_map = [0, 1, 2, 4]
+            cost_accumulator = 0.0
+            chunks_collected = 0
+            exhausted = False
+
+            with tqdm(total=args.rollout_length, desc="Collecting rollout") as pbar:
+                while chunks_collected < args.rollout_length:
+                    try:
+                        chunk_batch, is_new_sequence = get_chunk_batch()
+                    except StopIteration:
+                        exhausted = True
+                        break
+
+                    if is_new_sequence:
+                        ttt_model, ttt_optimizer = reset_ttt_model()
+
+                    outputs = ttt_model(chunk_batch["input_ids"], use_ttt=False)
+                    logits = outputs["logits"]
+                    labels = chunk_batch["input_ids"]
+                    mask = chunk_batch["attention_mask"]
+                    loss_baseline = cross_entropy_loss(
+                        logits[:, :-1],
+                        labels[:, 1:],
+                        mask[:, 1:],
+                    )
+
+                    budget_remaining = max(
+                        0.0,
+                        (args.budget_limit - cost_accumulator) / max(args.budget_limit, 1e-8),
+                    )
+
+                    features = feature_extractor.extract(
+                        input_ids=chunk_batch["input_ids"],
+                        logits=logits,
+                        attention_mask=chunk_batch["attention_mask"],
+                        budget_remaining=budget_remaining,
+                    )
+                    batch_size = chunk_batch["input_ids"].shape[0]
+
+                    policy_rng, action_key = jax.random.split(policy_rng)
+                    policy_output = policy(
+                        features,
+                        deterministic=False,
+                        rng=action_key,
+                    )
+
+                    actions = policy_output["action"]
+                    if not jnp.all(actions == actions[0]):
+                        raise ValueError(
+                            "All actions in the batch must match. Use batch_size=1 or ensure identical actions."
                         )
-                    assert metrics is not None
-                    loss_after = metrics["loss"]
+                    action_idx = int(actions[0])
+                    action_steps = step_map[action_idx]
+                    cost = float(costs_map[action_idx])
 
-                quality_improvement = float(loss_baseline) - loss_after
-                reward = quality_improvement
-                cost_accumulator += cost
+                    if action_steps == 0:
+                        loss_after = float(loss_baseline)
+                    else:
+                        metrics = None
+                        for _ in range(action_steps):
+                            metrics = run_chunk_step(
+                                ttt_model,
+                                ttt_optimizer,
+                                chunk_batch,
+                                use_ttt=True,
+                                apply_update=True,
+                                ssl_weight=args.ssl_weight,
+                            )
+                        assert metrics is not None
+                        loss_after = metrics["loss"]
 
-                feature_extractor.update_history(float(loss_baseline), cost)
+                    quality_improvement = float(loss_baseline) - loss_after
+                    reward = quality_improvement
+                    cost_accumulator += cost
 
-                rollout_features.append(features)
-                rollout_actions.append(actions)
-                rollout_log_probs.append(policy_output["log_prob"])
-                rollout_values.append(policy_output["value"])
-                rollout_rewards.append(jnp.full((batch_size,), reward))
-                rollout_costs.append(jnp.full((batch_size,), cost))
+                    feature_extractor.update_history(float(loss_baseline), cost)
 
-                chunks_collected += 1
-                pbar.update(1)
-                pbar.set_postfix(
-                    {
-                        "action": action_idx,
-                        "cost": f"{cost:.1f}x",
-                        "reward": f"{reward:.3f}",
-                    }
-                )
+                    rollout_features.append(features)
+                    rollout_actions.append(actions)
+                    rollout_log_probs.append(policy_output["log_prob"])
+                    rollout_values.append(policy_output["value"])
+                    rollout_rewards.append(jnp.full((batch_size,), reward))
+                    rollout_costs.append(jnp.full((batch_size,), cost))
 
-        if exhausted:
-            print("\nData iterator exhausted during rollout collection")
-            break
+                    chunks_collected += 1
+                    pbar.update(1)
+                    pbar.set_postfix(
+                        {
+                            "action": action_idx,
+                            "cost": f"{cost:.1f}x",
+                            "reward": f"{reward:.3f}",
+                        }
+                    )
 
-        if len(rollout_rewards) == 0:
-            print("No rollout data collected, stopping")
-            break
+            if exhausted:
+                print("\nData iterator exhausted during rollout collection")
+                break
+
+            if len(rollout_rewards) == 0:
+                print("No rollout data collected, stopping")
+                break
 
         # Convert to arrays [num_steps]
         feature_dim = rollout_features[0].shape[-1]
@@ -491,7 +512,7 @@ def main():
                     )
                     value_losses = jnp.square(new_values - mb_returns)
                     value_losses_clipped = jnp.square(value_pred_clipped - mb_returns)
-                    value_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
+                    value_loss = 0.5 * jnp.mean(jnp.minimum(value_losses, value_losses_clipped))
 
                     entropy_loss = -0.01 * jnp.mean(entropies)
 
@@ -526,43 +547,67 @@ def main():
         print(f"  Chunks collected: {chunks_collected}")
 
         # Save iteration results
-        training_history.append({
-            "iteration": iteration + 1,
-            "avg_cost": avg_cost,
-            "avg_reward": avg_reward,
-            "lambda": float(pid.lambda_value),
-            "policy_loss": float(loss),
-            "chunks": chunks_collected,
-            "approx_kl": float(last_metrics.get("approx_kl", 0.0)),
-        })
+            training_history.append({
+                "iteration": iteration + 1,
+                "avg_cost": avg_cost,
+                "avg_reward": avg_reward,
+                "lambda": float(pid.lambda_value),
+                "policy_loss": float(loss),
+                "chunks": chunks_collected,
+                "approx_kl": float(last_metrics.get("approx_kl", 0.0)),
+            })
 
-    # Final summary
+        # Save per-seed results
+        if training_history:
+            results = {
+                "config": {
+                    "model_scale": args.model_scale,
+                    "num_iterations": args.num_iterations,
+                    "budget_limit": args.budget_limit,
+                    "rollout_length": args.rollout_length,
+                    "learning_rate": args.learning_rate,
+                    "seed": seed,
+                    "ssl_weight": args.ssl_weight,
+                    "ppo_minibatch_size": args.ppo_minibatch_size,
+                },
+                "training_history": training_history,
+            }
+            results_file = output_dir / f"policy_results_{args.model_scale}_seed{seed}.json"
+            with open(results_file, "w") as f:
+                json.dump(results, f, indent=2)
+            print(f"\nOK Results saved to: {results_file}")
+            seed_histories.append(results)
+        else:
+            print("\nNo training completed for this seed!")
+
+    # Final summary across seeds
     print("\n" + "=" * 60)
     print("Training Complete!")
     print("=" * 60)
 
-    if training_history:
-        print(f"Total iterations: {len(training_history)}")
-        print(f"Final average cost: {training_history[-1]['avg_cost']:.2f}x")
-        print(f"Final average reward: {training_history[-1]['avg_reward']:.4f}")
+    if seed_histories:
+        last_hist = seed_histories[-1]["training_history"]
+        print(f"Total iterations (last seed): {len(last_hist)}")
+        print(f"Final average cost (last seed): {last_hist[-1]['avg_cost']:.2f}x")
+        print(f"Final average reward (last seed): {last_hist[-1]['avg_reward']:.4f}")
 
-        # Save results
-        results = {
-            "config": {
-                "model_scale": args.model_scale,
-                "num_iterations": args.num_iterations,
-                "budget_limit": args.budget_limit,
-                "rollout_length": args.rollout_length,
-                "learning_rate": args.learning_rate,
-            },
-            "training_history": training_history,
-        }
-
-        results_file = output_dir / f"policy_results_{args.model_scale}.json"
-        with open(results_file, "w") as f:
-            json.dump(results, f, indent=2)
-
-        print(f"\nOK Results saved to: {results_file}")
+        if len(seed_histories) > 1:
+            from ponderttt.utils.statistics import bootstrap_ci, compute_iqm
+            final_costs = jnp.array([h["training_history"][-1]["avg_cost"] for h in seed_histories])
+            final_rewards = jnp.array([h["training_history"][-1]["avg_reward"] for h in seed_histories])
+            summary = {
+                "seeds": [h["config"]["seed"] for h in seed_histories],
+                "avg_cost_mean": float(final_costs.mean()),
+                "avg_cost_iqm": compute_iqm(final_costs),
+                "avg_cost_ci": bootstrap_ci(final_costs, n_bootstrap=1000),
+                "avg_reward_mean": float(final_rewards.mean()),
+                "avg_reward_iqm": compute_iqm(final_rewards),
+                "avg_reward_ci": bootstrap_ci(final_rewards, n_bootstrap=1000),
+            }
+            summary_file = output_dir / f"policy_summary_{args.model_scale}.json"
+            with open(summary_file, "w") as f:
+                json.dump(summary, f, indent=2)
+            print(f"\nSeed summary saved to: {summary_file}")
     else:
         print("\nNo training completed!")
 

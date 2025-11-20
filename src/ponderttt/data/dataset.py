@@ -303,10 +303,12 @@ def create_data_iterator(
         except Exception:
             tokenizer_serialized = repr(tokenizer)
         tokenizer_hash = hashlib.md5(tokenizer_serialized.encode()).hexdigest()
+        tokenizer_id = getattr(tokenizer, "model", None)
+        tokenizer_id_str = tokenizer_id.__class__.__name__ if tokenizer_id is not None else "unknown"
 
         cache_key = hashlib.md5(
             f"{split}_{batch_size}_{seq_length}_{chunk_size}_{max_examples}_"
-            f"{language}_vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}".encode()
+            f"{language}_vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}_{tokenizer_id_str}".encode()
         ).hexdigest()
         cache_path = Path(cache_dir) / f"{cache_key}.pkl"
 
