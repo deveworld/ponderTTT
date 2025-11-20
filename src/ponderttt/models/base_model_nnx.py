@@ -6,7 +6,7 @@ Uses native GPT-2 implementation for TPU optimization.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -44,10 +44,10 @@ class TTTTransformerLM(nnx.Module):
     def __init__(
         self,
         gpt2_config: GPT2Config,
+        rngs: nnx.Rngs,
         ttt_config: Optional[TTTConfig] = None,
         lora_config: Optional[LoRAConfig] = None,
-        model_config: ModelConfig = None,
-        rngs: nnx.Rngs = None,
+        model_config: Optional[ModelConfig] = None,
         tie_word_embeddings: bool = True
     ):
         """Initialize TTT-augmented model.
@@ -69,6 +69,7 @@ class TTTTransformerLM(nnx.Module):
         self.model_config = model_config
         self.tie_word_embeddings = tie_word_embeddings
         self.fast_weight_type = model_config.fast_weight_type
+        self.is_training = False
 
         # Slow weights: Pretrained GPT-2 (will be frozen during training)
         # Note: We use GPT2Model (without LM head) to get hidden states
@@ -110,6 +111,14 @@ class TTTTransformerLM(nnx.Module):
         # Instead, we'll filter parameters during optimizer creation
         # This method is kept for compatibility
         pass
+
+    def train(self, **attributes):
+        super().train(**attributes)
+        self.is_training = True
+
+    def eval(self, **attributes):
+        super().eval(**attributes)
+        self.is_training = False
 
     def get_trainable_params(self) -> dict:
         """Get only trainable parameters (fast-weight layer).
@@ -155,7 +164,7 @@ class TTTTransformerLM(nnx.Module):
         # Apply stop_gradient to freeze theta_slow (PLAN.md: only theta_fast is trainable)
         hidden_states = jax.lax.stop_gradient(self.base_model(input_ids))
 
-        train_flag = self.training if hasattr(self, "training") else False
+        train_flag = self.is_training
 
         if use_ttt:
             # Following official TTT-LM Block pattern (model.py Line 696-714):
@@ -260,12 +269,22 @@ def load_ttt_model(
     rngs = nnx.Rngs(seed)
     model = TTTTransformerLM(
         gpt2_config=gpt2_config,
+        rngs=rngs,
         ttt_config=ttt_config,
         lora_config=lora_config,
         model_config=model_config,
-        rngs=rngs,
         tie_word_embeddings=True,
     )
+
+    def _set_param_value(param: nnx.Param | None, value: Any, name: str) -> None:
+        if param is None:
+            raise ValueError(f"Parameter '{name}' is not initialized")
+        param.value = value
+
+    def _get_param_value(param: nnx.Param | None, name: str) -> Any:
+        if param is None:
+            raise ValueError(f"Parameter '{name}' is not initialized")
+        return param.value
 
     # Load pretrained weights if requested
     if load_pretrained:
@@ -277,35 +296,97 @@ def load_ttt_model(
         temp_model = load_huggingface_weights(temp_model, model_name)
 
         # Copy weights to our base_model
-        # Token embeddings
-        model.base_model.wte.embedding.value = temp_model.transformer.wte.embedding.value
-        model.base_model.wpe.embedding.value = temp_model.transformer.wpe.embedding.value
+        _set_param_value(
+            model.base_model.wte.embedding,
+            _get_param_value(temp_model.transformer.wte.embedding, "wte.embedding"),
+            "wte.embedding",
+        )
+        _set_param_value(
+            model.base_model.wpe.embedding,
+            _get_param_value(temp_model.transformer.wpe.embedding, "wpe.embedding"),
+            "wpe.embedding",
+        )
 
         # Transformer blocks
         for i in range(gpt2_config.n_layer):
             src_block = temp_model.transformer.h[i]
             dst_block = model.base_model.h[i]
 
-            # Copy all block parameters
-            dst_block.ln_1.scale.value = src_block.ln_1.scale.value
-            dst_block.ln_1.bias.value = src_block.ln_1.bias.value
+            _set_param_value(
+                dst_block.ln_1.scale,
+                _get_param_value(src_block.ln_1.scale, f"h[{i}].ln_1.scale"),
+                f"h[{i}].ln_1.scale",
+            )
+            _set_param_value(
+                dst_block.ln_1.bias,
+                _get_param_value(src_block.ln_1.bias, f"h[{i}].ln_1.bias"),
+                f"h[{i}].ln_1.bias",
+            )
 
-            dst_block.attn.c_attn.kernel.value = src_block.attn.c_attn.kernel.value
-            dst_block.attn.c_attn.bias.value = src_block.attn.c_attn.bias.value
-            dst_block.attn.c_proj.kernel.value = src_block.attn.c_proj.kernel.value
-            dst_block.attn.c_proj.bias.value = src_block.attn.c_proj.bias.value
+            _set_param_value(
+                dst_block.attn.c_attn.kernel,
+                _get_param_value(src_block.attn.c_attn.kernel, f"h[{i}].attn.c_attn.kernel"),
+                f"h[{i}].attn.c_attn.kernel",
+            )
+            _set_param_value(
+                dst_block.attn.c_attn.bias,
+                _get_param_value(src_block.attn.c_attn.bias, f"h[{i}].attn.c_attn.bias"),
+                f"h[{i}].attn.c_attn.bias",
+            )
+            _set_param_value(
+                dst_block.attn.c_proj.kernel,
+                _get_param_value(src_block.attn.c_proj.kernel, f"h[{i}].attn.c_proj.kernel"),
+                f"h[{i}].attn.c_proj.kernel",
+            )
+            _set_param_value(
+                dst_block.attn.c_proj.bias,
+                _get_param_value(src_block.attn.c_proj.bias, f"h[{i}].attn.c_proj.bias"),
+                f"h[{i}].attn.c_proj.bias",
+            )
 
-            dst_block.ln_2.scale.value = src_block.ln_2.scale.value
-            dst_block.ln_2.bias.value = src_block.ln_2.bias.value
+            _set_param_value(
+                dst_block.ln_2.scale,
+                _get_param_value(src_block.ln_2.scale, f"h[{i}].ln_2.scale"),
+                f"h[{i}].ln_2.scale",
+            )
+            _set_param_value(
+                dst_block.ln_2.bias,
+                _get_param_value(src_block.ln_2.bias, f"h[{i}].ln_2.bias"),
+                f"h[{i}].ln_2.bias",
+            )
 
-            dst_block.mlp.c_fc.kernel.value = src_block.mlp.c_fc.kernel.value
-            dst_block.mlp.c_fc.bias.value = src_block.mlp.c_fc.bias.value
-            dst_block.mlp.c_proj.kernel.value = src_block.mlp.c_proj.kernel.value
-            dst_block.mlp.c_proj.bias.value = src_block.mlp.c_proj.bias.value
+            _set_param_value(
+                dst_block.mlp.c_fc.kernel,
+                _get_param_value(src_block.mlp.c_fc.kernel, f"h[{i}].mlp.c_fc.kernel"),
+                f"h[{i}].mlp.c_fc.kernel",
+            )
+            _set_param_value(
+                dst_block.mlp.c_fc.bias,
+                _get_param_value(src_block.mlp.c_fc.bias, f"h[{i}].mlp.c_fc.bias"),
+                f"h[{i}].mlp.c_fc.bias",
+            )
+            _set_param_value(
+                dst_block.mlp.c_proj.kernel,
+                _get_param_value(src_block.mlp.c_proj.kernel, f"h[{i}].mlp.c_proj.kernel"),
+                f"h[{i}].mlp.c_proj.kernel",
+            )
+            _set_param_value(
+                dst_block.mlp.c_proj.bias,
+                _get_param_value(src_block.mlp.c_proj.bias, f"h[{i}].mlp.c_proj.bias"),
+                f"h[{i}].mlp.c_proj.bias",
+            )
 
         # Final layer norm
-        model.base_model.ln_f.scale.value = temp_model.transformer.ln_f.scale.value
-        model.base_model.ln_f.bias.value = temp_model.transformer.ln_f.bias.value
+        _set_param_value(
+            model.base_model.ln_f.scale,
+            _get_param_value(temp_model.transformer.ln_f.scale, "ln_f.scale"),
+            "ln_f.scale",
+        )
+        _set_param_value(
+            model.base_model.ln_f.bias,
+            _get_param_value(temp_model.transformer.ln_f.bias, "ln_f.bias"),
+            "ln_f.bias",
+        )
 
         print(f"OK Loaded pretrained weights from {model_name}")
 

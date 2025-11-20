@@ -30,16 +30,23 @@ def main() -> None:
     print(f"OK Model: {config.n_layer} layers, dim={config.n_embd}")
 
     print("\n[3/3] Running forward pass...")
-    rng = jax.random.PRNGKey(0)
     test_input = jnp.ones((1, 64), dtype=jnp.int32)
     outputs = model(test_input, use_ttt=False)
     logits = outputs["logits"]
 
-    expected_shape = (1, 64, vocab_size)
+    embedding_vocab_size = model.base_model.wte.embedding.value.shape[0]
+    expected_shape = (1, 64, embedding_vocab_size)
     print(f"OK Forward pass successful, logits shape: {logits.shape}")
 
     if logits.shape != expected_shape:
         raise AssertionError(f"Unexpected logits shape {logits.shape}, expected {expected_shape}")
+
+    # Verify weight tying by recomputing logits from shared embedding
+    hidden_states = model.base_model(test_input)
+    embedding_kernel = model.base_model.wte.embedding.value
+    manual_logits = hidden_states @ embedding_kernel.T
+    if not jnp.allclose(logits, manual_logits, atol=1e-5):
+        raise AssertionError("Logits do not match tied embedding projection")
 
     print("\n" + "=" * 60)
     print("Weight tying verified (shared embedding + LM head).")

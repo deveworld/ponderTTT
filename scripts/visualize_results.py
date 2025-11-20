@@ -15,7 +15,7 @@ import seaborn as sns
 import numpy as np
 
 sns.set_style("whitegrid")
-sns.set_palette("husl")
+sns.set_palette("colorblind")
 
 
 def parse_args():

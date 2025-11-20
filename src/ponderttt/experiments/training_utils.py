@@ -4,13 +4,25 @@ Shared helpers for chunk-level training loops.
 
 from __future__ import annotations
 
+from typing import Protocol
+
+import jax
 import jax.numpy as jnp
 from flax import nnx
 
 from ..utils import cross_entropy_loss
 
 
-def _forward(model: nnx.Module, batch: dict, use_ttt: bool):
+class ChunkModel(Protocol):
+    def __call__(
+        self,
+        input_ids: jax.Array,
+        attention_mask: jax.Array | None = ...,
+        use_ttt: bool = ...,
+    ) -> dict: ...
+
+
+def _forward(model: ChunkModel, batch: dict, use_ttt: bool):
     outputs = model(batch["input_ids"], use_ttt=use_ttt)
     logits = outputs["logits"]
     ttt_stats = outputs.get("ttt_stats", {})
@@ -38,7 +50,7 @@ def metrics_from_loss(loss: jnp.ndarray, ttt_stats: dict | None) -> dict[str, fl
 
 
 def run_chunk_step(
-    model: nnx.Module,
+    model: ChunkModel,
     optimizer: nnx.Optimizer | None,
     batch: dict,
     use_ttt: bool,
@@ -48,7 +60,7 @@ def run_chunk_step(
     Run one chunk step (optionally applying gradients).
     """
 
-    def loss_fn(mdl: nnx.Module):
+    def loss_fn(mdl: ChunkModel):
         return _forward(mdl, batch, use_ttt)
 
     if not apply_update or optimizer is None:

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import jax
 import jax.numpy as jnp
 import argparse
+from functools import partial
 from ponderttt.utils import (
     initialize_jax_distributed,
     create_mesh,
@@ -110,7 +111,7 @@ def test_collective_ops(mesh):
     local_data = jnp.ones(jax.local_device_count()) * jax.process_index()
 
     # pmap all-reduce
-    @jax.pmap(axis_name='i')
+    @partial(jax.pmap, axis_name='i')
     def all_reduce_sum(x):
         return jax.lax.psum(x, 'i')
 

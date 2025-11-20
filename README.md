@@ -3,11 +3,11 @@
 Adaptive, chunk-level Test-Time Training (TTT) for code generation models built with JAX/Flax NNX.
 
 ## What this project provides
-- **Chunk-aware fast weights** – the base GPT-2 model stays frozen while a TTT or LoRA fast-weight module updates per chunk. Actions `SKIP / UPDATE_1 / UPDATE_2 / UPDATE_4` now correspond to 0/1/2/4 gradient-style updates on the selected chunk.
-- **Budget-constrained policy learning** – a PPO + PID Lagrangian agent decides which action to take for each chunk by observing 32-D features (loss deltas, confidence, difficulty history, and remaining budget).
-- **Streaming data pipeline** – The Stack v2 (dedup) is streamed directly from Software Heritage, padded with a dedicated `<|pad|>` token, and reshaped into `(batch, num_chunks, chunk_size)` tensors with aligned masks.
-- **Executable evaluation** – HumanEval, MBPP, and ClassEval now call user provided `generate_fn` and run the associated tests to report pass@k scores.
-- **Operational tooling** – scripts cover quick sanity checks, end-to-end integration, distributed readiness, TPU validation, and policy/baseline training.
+- **Chunk-aware fast weights** – GPT-2 slow weights stay frozen while a TTT or strictly low-rank LoRA adapter updates per chunk. Actions `SKIP / UPDATE_1 / UPDATE_2 / UPDATE_4` map to 0/1/2/4 optimizer steps on the fast weights.
+- **Budget-constrained policy learning** – PPO with PID Lagrangian uses 32-D mask-aware features, cost-penalized rewards, advantage normalization, clipped value loss, multi-epoch updates, grad clipping, and KL logging to respect compute budgets.
+- **Streaming data pipeline** – The Stack v2 (dedup) streamed from Software Heritage with a required `seq_length % chunk_size == 0`, dedicated `<|pad|>` token, aligned masks, and cache keys that include language/tokenizer.
+- **Executable evaluation (gated)** – HumanEval/MBPP/ClassEval helpers are present; unsafe exec is disabled unless `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1` is set in a trusted sandbox.
+- **Operational tooling** – quick sanity tests, end-to-end pipeline checks, distributed/TPU validation, checkpointing, visualization, and baseline/policy trainers.
 
 The code base is TPU-first but runs on CPU or GPU. Everything is dependency-managed through `uv`.
 
@@ -65,7 +65,7 @@ uv run python -m ponderttt.experiments.train_policy \
 Results are saved as JSON (training history); visualize them with `python scripts/visualize_results.py --results_file outputs/policy/...json`.
 
 ## Evaluation
-Use `ponderttt.evaluation.benchmarks` to run executable pass@k tests once a policy/baseline checkpoint is ready. Provide a `generate_fn(prompt) -> Iterable[str]` that yields up to `k` completions; the suite compiles and executes them in-process.
+Use `ponderttt.evaluation.benchmarks` to run pass@k tests with a `generate_fn(prompt) -> Iterable[str]`. For safety, code execution is disabled by default; set `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1` only inside a trusted sandbox before calling `evaluate_all`.
 
 ## Project status
 - Pure NNX GPT-2 implementation with chunk-level TTT

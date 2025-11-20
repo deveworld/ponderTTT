@@ -136,14 +136,6 @@ class LoRALayer(nnx.Module):
             rngs=rngs,
         )
 
-        # Output projection (optional, for combining Q/V adaptations)
-        self.output_proj = nnx.Linear(
-            config.hidden_dim * 2,  # Concatenate Q and V adaptations
-            config.hidden_dim,
-            use_bias=True,
-            rngs=rngs,
-        )
-
     def __call__(
         self,
         hidden_states: jax.Array,
@@ -169,18 +161,16 @@ class LoRALayer(nnx.Module):
         q_adapted = self.q_lora(hidden_states, train=train)  # [batch, seq, hidden]
         v_adapted = self.v_lora(hidden_states, train=train)  # [batch, seq, hidden]
 
-        # Combine adaptations
-        # Simple approach: concatenate and project
-        combined = jnp.concatenate([q_adapted, v_adapted], axis=-1)  # [batch, seq, 2*hidden]
-        adapted_output = self.output_proj(combined)  # [batch, seq, hidden]
+        # Combine adaptations with a low-rank sum (maintains LoRA structure)
+        adapted_output = q_adapted + v_adapted
 
         # Compute statistics (for monitoring)
         stats = {
             "q_norm": jnp.linalg.norm(q_adapted),
             "v_norm": jnp.linalg.norm(v_adapted),
-            "output_norm": jnp.linalg.norm(adapted_output),
             "q_mean": jnp.mean(jnp.abs(q_adapted)),
             "v_mean": jnp.mean(jnp.abs(v_adapted)),
+            "output_norm": jnp.linalg.norm(adapted_output),
         }
 
         return adapted_output, stats
@@ -211,10 +201,7 @@ def count_lora_parameters(config: LoRAConfig) -> int:
     # V LoRA: (hidden x rank) + (rank x hidden)
     v_params = 2 * config.hidden_dim * config.rank
 
-    # Output projection: (2*hidden x hidden) + hidden
-    output_params = 2 * config.hidden_dim * config.hidden_dim + config.hidden_dim
-
-    total = q_params + v_params + output_params
+    total = q_params + v_params
 
     return total
 
@@ -225,8 +212,8 @@ def compare_parameters():
     For GPT-2 (hidden_dim=768):
     - Full attention: 768^2 x 3 (Q,K,V) = 1,769,472
     - TTT Layer: ~2M parameters (mini-batch GD)
-    - LoRA (r=64): 2 x 768 x 64 x 2 + 2 x 768^2 = 1,376,256 (22% reduction)
-    - LoRA (r=128): 2 x 768 x 128 x 2 + 2 x 768^2 = 1,572,864 (11% reduction)
+    - LoRA (r=64): 2 x 768 x 64 = 98,304 (94% reduction)
+    - LoRA (r=128): 2 x 768 x 128 = 196,608 (89% reduction)
     """
     hidden_dim = 768
 

@@ -216,6 +216,12 @@ class GPT2Model(nnx.Module):
         """
         B, T = input_ids.shape
 
+        if T > self.config.n_positions:
+            raise ValueError(
+                f"Input length {T} exceeds position embedding size {self.config.n_positions}. "
+                "Increase n_positions or truncate inputs."
+            )
+
         # Get embeddings
         tok_emb = self.wte(input_ids)  # [B, T, n_embd]
         pos = jnp.arange(0, T, dtype=jnp.int32)  # [T]

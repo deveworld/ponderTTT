@@ -62,6 +62,24 @@ def parse_args():
         help="Learning rate",
     )
     parser.add_argument(
+        "--ppo_epochs",
+        type=int,
+        default=4,
+        help="Number of PPO epochs per rollout",
+    )
+    parser.add_argument(
+        "--value_clip",
+        type=float,
+        default=0.2,
+        help="Value function clipping epsilon",
+    )
+    parser.add_argument(
+        "--max_grad_norm",
+        type=float,
+        default=1.0,
+        help="Global gradient norm clip",
+    )
+    parser.add_argument(
         "--batch_size",
         type=int,
         default=4,
@@ -174,8 +192,15 @@ def main():
 
     # Create optimizer
     print("Creating optimizer...")
-    optimizer = nnx.Optimizer(policy, optax.adam(args.learning_rate), wrt=nnx.All(nnx.Param))
-    print(f"OK Optimizer: Adam (lr={args.learning_rate})")
+    optimizer = nnx.Optimizer(
+        policy,
+        optax.chain(
+            optax.clip_by_global_norm(args.max_grad_norm),
+            optax.adam(args.learning_rate),
+        ),
+        wrt=nnx.All(nnx.Param),
+    )
+    print(f"OK Optimizer: Adam (lr={args.learning_rate}, clip={args.max_grad_norm})")
 
     # Initialize TTT model template for environment rollouts
     print(f"\nPreparing TTT model ({args.fast_weight_type.upper()}) for rollouts...")
@@ -213,14 +238,25 @@ def main():
         model_state_copy = jax.tree_util.tree_map(lambda x: x.copy(), base_state)
         model = nnx.merge(model_graphdef, model_state_copy)
         model.train()
-        optimizer = nnx.Optimizer(model, optax.adam(args.learning_rate), wrt=nnx.All(nnx.Param))
+        optimizer = nnx.Optimizer(
+            model,
+            optax.chain(
+                optax.clip_by_global_norm(args.max_grad_norm),
+                optax.adam(args.learning_rate),
+            ),
+            wrt=nnx.All(nnx.Param),
+        )
         return model, optimizer
 
     print(f"OK Model template ready: {ttt_config.n_layer} layers")
     print(f"  Fast weight type: {args.fast_weight_type}")
 
     # Initialize feature extractor
-    feature_extractor = FeatureExtractor(vocab_size=tokenizer.get_vocab_size())
+    feature_extractor = FeatureExtractor(
+        vocab_size=tokenizer.get_vocab_size(),
+        pad_token_id=tokenizer.token_to_id("<|pad|>"),
+        seq_length_norm=chunk_size,
+    )
     print(f"OK Feature extractor initialized (32D features)")
 
     # PID controller for budget constraint
@@ -317,6 +353,10 @@ def main():
                 )
 
                 actions = policy_output["action"]
+                if not jnp.all(actions == actions[0]):
+                    raise ValueError(
+                        "All actions in the batch must match. Use batch_size=1 or ensure identical actions."
+                    )
                 action_idx = int(actions[0])
                 action_steps = step_map[action_idx]
                 cost = float(costs_map[action_idx])
@@ -381,49 +421,60 @@ def main():
         # Create dones array (all False for continuous rollout)
         dones_array = jnp.zeros_like(rollout_rewards_array)
 
+        # Cost-aware rewards
+        adjusted_rewards = rollout_rewards_array - pid.lambda_value * rollout_costs_array
+
         # Compute advantages and returns using GAE (with jax.lax.scan)
         advantages, returns = compute_gae(
-            rewards=rollout_rewards_array,
+            rewards=adjusted_rewards,
             values=rollout_values_array,
             dones=dones_array,
             gamma=0.99,
             gae_lambda=0.95,
-            last_value=float(rollout_values_array[-1]),
+            last_value=0.0,
         )
 
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # Policy update using vectorized operations (batch processing)
+        old_log_probs = rollout_log_probs_array
+        old_values = rollout_values_array
+
         def policy_loss_fn(mdl):
             """Compute PPO loss for entire rollout in one batch."""
-            # Re-evaluate entire batch with current policy
             outputs = mdl.evaluate_actions(rollout_features_array, rollout_actions_array)
-            new_log_probs = outputs["log_prob"]  # [rollout_length]
-            new_values = outputs["value"]        # [rollout_length]
-            entropies = outputs["entropy"]       # [rollout_length]
+            new_log_probs = outputs["log_prob"]
+            new_values = outputs["value"]
+            entropies = outputs["entropy"]
 
-            # PPO clipped surrogate objective (vectorized)
-            ratios = jnp.exp(new_log_probs - rollout_log_probs_array)
-            clip_ratios = jnp.clip(ratios, 0.8, 1.2)
-            policy_loss = -jnp.mean(jnp.minimum(
-                ratios * advantages,
-                clip_ratios * advantages,
-            ))
+            ratios = jnp.exp(new_log_probs - old_log_probs)
+            clip_ratios = jnp.clip(ratios, 1.0 - args.value_clip, 1.0 + args.value_clip)
+            policy_loss = -jnp.mean(
+                jnp.minimum(ratios * advantages, clip_ratios * advantages)
+            )
 
-            # Value loss (vectorized)
-            value_loss = 0.5 * jnp.mean(jnp.square(new_values - returns))
+            value_pred_clipped = old_values + jnp.clip(
+                new_values - old_values, -args.value_clip, args.value_clip
+            )
+            value_losses = jnp.square(new_values - returns)
+            value_losses_clipped = jnp.square(value_pred_clipped - returns)
+            value_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
 
-            # Entropy bonus (vectorized)
             entropy_loss = -0.01 * jnp.mean(entropies)
 
+            approx_kl = jnp.mean(old_log_probs - new_log_probs)
             total_loss = policy_loss + value_loss + entropy_loss
-            return total_loss
+            return total_loss, {"policy_loss": policy_loss, "value_loss": value_loss, "entropy": jnp.mean(entropies), "approx_kl": approx_kl}
 
-        # Compute gradients and update
-        loss_fn = nnx.value_and_grad(policy_loss_fn)
-        loss, grads = loss_fn(policy)
-        optimizer.update(policy, grads)
+        # Compute gradients and update over multiple epochs
+        last_metrics = {}
+        loss = math.inf
+        for _ in range(args.ppo_epochs):
+            loss_fn = nnx.value_and_grad(policy_loss_fn, has_aux=True)
+            (loss, metrics), grads = loss_fn(policy)
+            optimizer.update(policy, grads)
+            last_metrics = metrics
 
         # Update PID controller
         avg_cost = float(jnp.mean(rollout_costs_array))
@@ -438,6 +489,7 @@ def main():
         print(f"  Average reward: {avg_reward:.4f}")
         print(f"  Lambda (penalty): {pid.lambda_value:.4f}")
         print(f"  Policy loss: {loss:.4f}")
+        print(f"  Approx KL: {float(last_metrics.get('approx_kl', 0.0)):.6f}")
         print(f"  Chunks collected: {chunks_collected}")
 
         # Save iteration results
@@ -448,6 +500,7 @@ def main():
             "lambda": float(pid.lambda_value),
             "policy_loss": float(loss),
             "chunks": chunks_collected,
+            "approx_kl": float(last_metrics.get("approx_kl", 0.0)),
         })
 
     # Final summary

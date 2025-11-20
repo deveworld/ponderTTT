@@ -62,11 +62,11 @@ class PolicyNetwork(nnx.Module):
             Shared features [batch, hidden_dim]
         """
         x = self.fc1(features)
-        x = nnx.relu(x)
+        x = jax.nn.relu(x)
         x = self.dropout1(x, deterministic=not train)
 
         x = self.fc2(x)
-        x = nnx.relu(x)
+        x = jax.nn.relu(x)
         x = self.dropout2(x, deterministic=not train)
 
         return x
@@ -83,7 +83,7 @@ class PolicyNetwork(nnx.Module):
 
         Args:
             features: Input features [batch, feature_dim]
-            deterministic: If True, select argmax action (not dropout control)
+            deterministic: If True, select argmax action and disable dropout
             return_logits: If True, return raw logits
             rng: Random key for action sampling (required if not deterministic)
 
@@ -97,8 +97,8 @@ class PolicyNetwork(nnx.Module):
                 - probs: Action probabilities [batch, num_actions] (if return_logits=True)
 
         Note:
-            Use model.train() / model.eval() to control dropout, not this parameter.
-            The 'deterministic' parameter here only controls action selection.
+            The 'deterministic' parameter controls both dropout and action selection.
+            When True, dropout is disabled and argmax action is selected (inference mode).
         """
         # Shared feature extraction
         x = self.forward_shared(features, train=not deterministic)
