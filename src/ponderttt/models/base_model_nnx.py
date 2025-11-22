@@ -181,7 +181,7 @@ class TTTTransformerLM(nnx.Module):
             if self.tie_word_embeddings:
                 # Use shared embedding weights for LM head
                 # Following official TTT-LM-JAX implementation
-                embedding_kernel = self.base_model.wte.embedding.value  # [vocab_size, n_embd]
+                embedding_kernel = self.base_model.wte.embedding[...]  # [vocab_size, n_embd]
                 logits = adapted_hidden @ embedding_kernel.T  # [batch, seq_len, vocab_size]
             else:
                 logits = self.lm_head(adapted_hidden)
@@ -193,7 +193,7 @@ class TTTTransformerLM(nnx.Module):
         else:
             # SKIP: Project hidden states directly without TTT adaptation
             if self.tie_word_embeddings:
-                embedding_kernel = self.base_model.wte.embedding.value
+                embedding_kernel = self.base_model.wte.embedding[...]
                 logits = hidden_states @ embedding_kernel.T
             else:
                 logits = self.lm_head(hidden_states)
@@ -276,12 +276,12 @@ def load_ttt_model(
     def _set_param_value(param: nnx.Param | None, value: Any, name: str) -> None:
         if param is None:
             raise ValueError(f"Parameter '{name}' is not initialized")
-        param.value = value
+        param.set_value(value)
 
     def _get_param_value(param: nnx.Param | None, name: str) -> Any:
         if param is None:
             raise ValueError(f"Parameter '{name}' is not initialized")
-        return param.value
+        return param.get_value()
 
     # Load pretrained weights if requested
     if load_pretrained:
@@ -293,7 +293,7 @@ def load_ttt_model(
         temp_model = load_huggingface_weights(temp_model, model_name)
 
         # Pad embeddings if vocab_size was expanded (e.g., added pad token)
-        vocab_diff = gpt2_config.vocab_size - temp_model.transformer.wte.embedding.value.shape[0]
+        vocab_diff = gpt2_config.vocab_size - temp_model.transformer.wte.embedding[...].shape[0]
         def _pad_vocab_matrix(x: Any) -> Any:
             if vocab_diff <= 0:
                 return x

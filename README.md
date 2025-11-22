@@ -18,15 +18,13 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install the project in editable mode (CPU only)
 uv pip install -e .
+# GPU
+uv pip install -e . --group gpu
+# TPU
+uv pip install -e . --group tpu
 
 # Optional extras
-uv pip install -e .[dev]      # linting / pytest
-uv pip install -e .[viz]      # matplotlib + seaborn
-```
-
-If you want CUDA support, install a CUDA-enabled `jaxlib` before `uv pip install -e .`:
-```bash
-uv pip install "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+uv pip install -e . --dev
 ```
 
 Tokenizer weights are downloaded from Hugging Face; set `HF_HOME` or mirror the files locally if you are offline. `get_tokenizer` adds `<|pad|>`; datasets will raise if it is missing. If you add tokens, pass the resulting `vocab_size` to `load_ttt_model`.
@@ -38,14 +36,24 @@ python scripts/quick_test.py          # tokenizer/model/feature sanity
 python scripts/test_pipeline.py       # end-to-end chunk pipeline
 python scripts/test_distributed.py    # multi-host primitives (CPU friendly)
 python scripts/test_weight_tying.py   # weight tying regression
-python scripts/compare_gpt2_nnx.py    # compare NNX logits to transformers (requires HF weights)
+python scripts/compare_gpt2_nnx.py    # compare NNX logits to transformers (requires HF, torch)
 ```
 For TPU deployments run `python scripts/validate_tpu_setup.py --multi_host` on all workers before launching long jobs.
+
+### INTERNAL error on CUDA
+If you encounter an error like `jax.errors.JaxRuntimeError: INTERNAL: an unsupported value or parameter was passed to the function`,
+you can set the following environment variable:
+```bash
+export XLA_FLAGS="--xla_gpu_enable_cublaslt=true \
+                  --xla_gpu_cublas_fallback=true \
+                  --xla_gpu_enable_command_buffer=''"
+```
+This is a known workaround mentioned in [jax-ml/jax#29031](https://github.com/jax-ml/jax/issues/29031#issuecomment-3345992686), which I encountered on Vast.ai while doing some experiments.
 
 ## Baseline training
 `train_baseline.py` consumes streamed chunks and applies the specified action to every chunk:
 ```bash
-uv run python -m ponderttt.experiments.train_baseline \
+python -m ponderttt.experiments.train_baseline \
     --model_scale 125m \
     --action UPDATE_2 \
     --max_chunks 200 \
@@ -56,7 +64,7 @@ Outputs include average loss/perplexity and the true compute multiplier accumula
 ## Policy training
 The policy loop collects chunk sequences, queries the policy for each chunk, applies the requested number of fast-weight updates, and computes rewards from loss deltas while enforcing a cost budget.
 ```bash
-uv run python -m ponderttt.experiments.train_policy \
+python -m ponderttt.experiments.train_policy \
     --model_scale 125m \
     --rollout_length 64 \
     --budget_limit 4.0 \

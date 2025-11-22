@@ -38,7 +38,8 @@ def _forward(model: ChunkModel, batch: dict, use_ttt: bool, ssl_weight: float):
             ttt_stats.get("ttt_loss_step_0"),
             ttt_stats.get("ttt_loss_step_1"),
         ]
-        ssl_values = [float(x) for x in ssl_terms if x is not None]
+        # Use .mean() to reduce non-scalar stats and preserve gradients (tracers)
+        ssl_values = [x.mean() for x in ssl_terms if x is not None]
         if ssl_values:
             ssl_loss = sum(ssl_values) / len(ssl_values)
             loss = loss + ssl_weight * ssl_loss

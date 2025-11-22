@@ -5,6 +5,7 @@ Quick test to verify JAX/Flax NNX implementation.
 import sys
 from pathlib import Path
 from typing import cast
+import traceback
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -29,15 +30,32 @@ print("=" * 60)
 
 # Check JAX
 print(f"\nJAX version: {jax.__version__}")
-print(f"JAX devices: {jax.devices()}")
+try:
+    print(f"JAX devices: {jax.devices()}")
+except:
+    print("Could not list JAX devices")
 
 # Track test results
 tests_passed = 0
 tests_failed = 0
-total_tests = 5
+total_tests = 6  # Added sanity check
+
+# Test 0: Sanity Check (Minimal NNX)
+print("\n[0/6] Testing Minimal NNX (Sanity Check)...")
+try:
+    rngs = nnx.Rngs(0)
+    layer = nnx.Linear(32, 32, rngs=rngs)
+    x = jnp.ones((1, 32))
+    y = layer(x)
+    print(f"OK Minimal NNX layer works, output shape: {y.shape}")
+    tests_passed += 1
+except Exception as e:
+    print(f"[FAIL] Minimal NNX test failed: {e}")
+    traceback.print_exc()
+    tests_failed += 1
 
 # Test 1: Tokenizer
-print("\n[1/5] Testing tokenizer...")
+print("\n[1/6] Testing tokenizer...")
 tokenizer = None
 try:
     tokenizer = cast(Tokenizer, get_tokenizer("gpt2"))
@@ -46,10 +64,11 @@ try:
     tests_passed += 1
 except Exception as e:
     print(f"[FAIL] Tokenizer test failed: {e}")
+    traceback.print_exc()
     tests_failed += 1
 
 # Test 2: TTT Transformer Model (NNX)
-print("\n[2/5] Testing TTT transformer model...")
+print("\n[2/6] Testing TTT transformer model...")
 try:
     # Create model without loading pretrained weights (faster)
     model, config = load_ttt_model(
@@ -60,9 +79,11 @@ try:
     )
     print("OK TTT model created")
 
-    # Forward pass
+    # Forward pass (Eager)
     test_input = jnp.ones((1, 64), dtype=jnp.int32)
     model.train()  # Set to training mode
+    
+    # Run EAGERLY first
     outputs = model(test_input, use_ttt=True)
 
     assert isinstance(outputs, dict), "Expected dict output from model"
@@ -72,10 +93,11 @@ try:
 
 except Exception as e:
     print(f"[FAIL] TTT model test failed: {e}")
+    traceback.print_exc()
     tests_failed += 1
 
 # Test 3: TTT Layer
-print("\n[3/5] Testing TTT layer...")
+print("\n[3/6] Testing TTT layer...")
 try:
     ttt_config = TTTConfig(
         hidden_dim=768,
@@ -89,6 +111,7 @@ try:
     test_hidden = jnp.ones((1, 64, 768))
     ttt_layer.train()  # Set to training mode
 
+    # Run EAGERLY
     output, stats = ttt_layer(test_hidden)
     print(f"OK TTT layer works, output shape: {output.shape}")
     if stats:
@@ -97,10 +120,11 @@ try:
 
 except Exception as e:
     print(f"[FAIL] TTT layer test failed: {e}")
+    traceback.print_exc()
     tests_failed += 1
 
 # Test 4: Policy Network (NNX)
-print("\n[4/5] Testing policy network...")
+print("\n[4/6] Testing policy network...")
 try:
     policy_config = PolicyConfig(feature_dim=32, num_actions=4)
     rngs = nnx.Rngs(2)
@@ -109,6 +133,7 @@ try:
     test_features = jnp.ones((4, 32))
     policy.train()  # Set to training mode
 
+    # Run EAGERLY
     policy_outputs = policy(test_features, deterministic=True)
 
     print("OK Policy network works")
@@ -118,10 +143,11 @@ try:
 
 except Exception as e:
     print(f"[FAIL] Policy network test failed: {e}")
+    traceback.print_exc()
     tests_failed += 1
 
 # Test 5: Feature Extraction
-print("\n[5/5] Testing feature extraction...")
+print("\n[5/6] Testing feature extraction...")
 try:
     assert tokenizer is not None, "Tokenizer not initialized"
     vocab_size = tokenizer.get_vocab_size()
@@ -141,6 +167,7 @@ try:
 
 except Exception as e:
     print(f"[FAIL] Feature extraction test failed: {e}")
+    traceback.print_exc()
     tests_failed += 1
 
 # Summary

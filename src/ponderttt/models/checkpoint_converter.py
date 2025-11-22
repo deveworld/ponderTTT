@@ -1,14 +1,17 @@
 """
 Converter for loading HuggingFace GPT-2 pretrained weights into NNX models.
 
-Converts PyTorch checkpoints from HuggingFace to Flax NNX format.
+Uses safetensors and huggingface_hub to load weights directly without PyTorch or Transformers dependencies.
 """
 
 from pathlib import Path
 from typing import Any, Optional
 
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
+from huggingface_hub import hf_hub_download
+from safetensors.numpy import load_file
 
 from ponderttt.models.gpt2_nnx import GPT2LMHeadModel, GPT2Config
 
@@ -18,7 +21,7 @@ def load_huggingface_weights(
     model_name: str = "gpt2",
     cache_dir: Optional[Path] = None
 ) -> GPT2LMHeadModel:
-    """Load pretrained HuggingFace weights into NNX model.
+    """Load pretrained HuggingFace weights into NNX model using safetensors.
 
     Args:
         model: NNX GPT-2 model to load weights into
@@ -27,179 +30,196 @@ def load_huggingface_weights(
 
     Returns:
         Model with loaded weights
-
-    Note:
-        This function temporarily imports transformers to load weights,
-        but transformers is not required at runtime after weights are loaded.
     """
+    print(f"Downloading/Loading weights for {model_name} (safetensors)...")
+    
     try:
-        from transformers import GPT2LMHeadModel as HFModel
-    except ImportError:
-        raise ImportError(
-            "transformers is required for loading pretrained weights. "
-            "Install with: pip install transformers"
+        # Try loading model.safetensors (standard for modern HF repos)
+        file_path = hf_hub_download(
+            repo_id=model_name,
+            filename="model.safetensors",
+            cache_dir=cache_dir
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not find 'model.safetensors' for {model_name}. "
+            "Please ensure the model repo contains safetensors weights.\n"
+            f"Error: {str(e)}"
         )
 
-    # Load HuggingFace model (PyTorch)
-    print(f"Loading pretrained weights from {model_name}...")
-    hf_model = HFModel.from_pretrained(model_name, cache_dir=cache_dir)
-    hf_state_dict = hf_model.state_dict()
+    print(f"Loading weights from {file_path}...")
+    state_dict = load_file(file_path)
 
-    # Convert PyTorch tensors to JAX arrays
     print("Converting weights to JAX format...")
-    _load_weights_from_state_dict(model, hf_state_dict)
+    _load_weights_from_state_dict(model, state_dict)
 
     print(f"OK Successfully loaded {model_name} weights")
     return model
 
 
 def _load_weights_from_state_dict(model: GPT2LMHeadModel, state_dict: dict[str, Any]) -> None:
-    """Load weights from PyTorch state dict into NNX model.
+    """Load weights from safetensors numpy dictionary into NNX model.
 
     Args:
         model: NNX model to load into
-        state_dict: PyTorch state dict from HuggingFace
+        state_dict: Dictionary of numpy arrays from safetensors
     """
     config = model.config
 
-    def _set_param_value(param: nnx.Param | None, value: jnp.ndarray, name: str) -> None:
+    def _set_param_value(param: nnx.Param | None, value: np.ndarray | jnp.ndarray, name: str) -> None:
         if param is None:
             raise ValueError(f"Parameter '{name}' is not initialized")
-        param.value = value
+        # Convert numpy to jax array if needed
+        if isinstance(value, np.ndarray):
+            value = jnp.array(value)
+        param.set_value(value)
 
-    def _pad_to_match(param: nnx.Param | None, value: jnp.ndarray) -> jnp.ndarray:
+    def _pad_to_match(param: nnx.Param | None, value: np.ndarray | jnp.ndarray) -> jnp.ndarray:
+        if isinstance(value, np.ndarray):
+            value = jnp.array(value)
+
         if param is None:
             return value
-        if value.shape == param.value.shape:
+        if value.shape == param[...].shape:
             return value
         # Only pad vocab dimension if needed (assumes vocab dim is first)
-        if value.shape[0] < param.value.shape[0]:
-            pad_rows = param.value.shape[0] - value.shape[0]
+        if value.shape[0] < param[...].shape[0]:
+            pad_rows = param[...].shape[0] - value.shape[0]
             pad_config = [(0, pad_rows)] + [(0, 0) for _ in range(value.ndim - 1)]
             return jnp.pad(value, pad_config)
         return value
+    
+    def get_weight(name: str) -> np.ndarray:
+        """Helper to find weight with or without 'transformer.' prefix."""
+        # Try with "transformer." prefix first (standard HF GPT2)
+        if f"transformer.{name}" in state_dict:
+            return state_dict[f"transformer.{name}"]
+        # Try without prefix
+        if name in state_dict:
+            return state_dict[name]
+        # Fallback for blocks: sometimes h.0 is directly at root
+        if name.startswith("h.") and name in state_dict:
+             return state_dict[name]
+        
+        raise KeyError(f"Could not find weight for {name}")
 
     # Token embeddings
     _set_param_value(
         model.transformer.wte.embedding,
-        _pad_to_match(model.transformer.wte.embedding, jnp.array(state_dict["transformer.wte.weight"].numpy())),
+        _pad_to_match(model.transformer.wte.embedding, get_weight("wte.weight")),
         "transformer.wte.embedding",
     )
 
     # Position embeddings
     _set_param_value(
         model.transformer.wpe.embedding,
-        jnp.array(state_dict["transformer.wpe.weight"].numpy()),
+        get_weight("wpe.weight"),
         "transformer.wpe.embedding",
     )
 
     # Transformer blocks
     for i in range(config.n_layer):
         block = model.transformer.h[i]
-        prefix = f"transformer.h.{i}"
-
+        
         # Layer norm 1
         _set_param_value(
             block.ln_1.scale,
-            jnp.array(state_dict[f"{prefix}.ln_1.weight"].numpy()),
-            f"{prefix}.ln_1.scale",
+            get_weight(f"h.{i}.ln_1.weight"),
+            f"h.{i}.ln_1.scale",
         )
         _set_param_value(
             block.ln_1.bias,
-            jnp.array(state_dict[f"{prefix}.ln_1.bias"].numpy()),
-            f"{prefix}.ln_1.bias",
+            get_weight(f"h.{i}.ln_1.bias"),
+            f"h.{i}.ln_1.bias",
         )
 
         # Attention: combined QKV
-        # Note: GPT-2's Conv1D already uses [in_features, out_features] like Flax
-        qkv_weight = state_dict[f"{prefix}.attn.c_attn.weight"].numpy()
-        qkv_bias = state_dict[f"{prefix}.attn.c_attn.bias"].numpy()
+        # GPT-2 Conv1D weights are [in, out]
         _set_param_value(
             block.attn.c_attn.kernel,
-            jnp.array(qkv_weight),
-            f"{prefix}.attn.c_attn.kernel",
+            get_weight(f"h.{i}.attn.c_attn.weight"),
+            f"h.{i}.attn.c_attn.kernel",
         )
         _set_param_value(
             block.attn.c_attn.bias,
-            jnp.array(qkv_bias),
-            f"{prefix}.attn.c_attn.bias",
+            get_weight(f"h.{i}.attn.c_attn.bias"),
+            f"h.{i}.attn.c_attn.bias",
         )
 
         # Attention: output projection
-        proj_weight = state_dict[f"{prefix}.attn.c_proj.weight"].numpy()
-        proj_bias = state_dict[f"{prefix}.attn.c_proj.bias"].numpy()
         _set_param_value(
             block.attn.c_proj.kernel,
-            jnp.array(proj_weight),
-            f"{prefix}.attn.c_proj.kernel",
+            get_weight(f"h.{i}.attn.c_proj.weight"),
+            f"h.{i}.attn.c_proj.kernel",
         )
         _set_param_value(
             block.attn.c_proj.bias,
-            jnp.array(proj_bias),
-            f"{prefix}.attn.c_proj.bias",
+            get_weight(f"h.{i}.attn.c_proj.bias"),
+            f"h.{i}.attn.c_proj.bias",
         )
 
         # Layer norm 2
         _set_param_value(
             block.ln_2.scale,
-            jnp.array(state_dict[f"{prefix}.ln_2.weight"].numpy()),
-            f"{prefix}.ln_2.scale",
+            get_weight(f"h.{i}.ln_2.weight"),
+            f"h.{i}.ln_2.scale",
         )
         _set_param_value(
             block.ln_2.bias,
-            jnp.array(state_dict[f"{prefix}.ln_2.bias"].numpy()),
-            f"{prefix}.ln_2.bias",
+            get_weight(f"h.{i}.ln_2.bias"),
+            f"h.{i}.ln_2.bias",
         )
 
         # MLP: first projection
-        # Note: GPT-2's Conv1D already uses [in_features, out_features] like Flax
-        fc_weight = state_dict[f"{prefix}.mlp.c_fc.weight"].numpy()
-        fc_bias = state_dict[f"{prefix}.mlp.c_fc.bias"].numpy()
         _set_param_value(
             block.mlp.c_fc.kernel,
-            jnp.array(fc_weight),
-            f"{prefix}.mlp.c_fc.kernel",
+            get_weight(f"h.{i}.mlp.c_fc.weight"),
+            f"h.{i}.mlp.c_fc.kernel",
         )
         _set_param_value(
             block.mlp.c_fc.bias,
-            jnp.array(fc_bias),
-            f"{prefix}.mlp.c_fc.bias",
+            get_weight(f"h.{i}.mlp.c_fc.bias"),
+            f"h.{i}.mlp.c_fc.bias",
         )
 
         # MLP: second projection
-        proj_weight = state_dict[f"{prefix}.mlp.c_proj.weight"].numpy()
-        proj_bias = state_dict[f"{prefix}.mlp.c_proj.bias"].numpy()
         _set_param_value(
             block.mlp.c_proj.kernel,
-            jnp.array(proj_weight),
-            f"{prefix}.mlp.c_proj.kernel",
+            get_weight(f"h.{i}.mlp.c_proj.weight"),
+            f"h.{i}.mlp.c_proj.kernel",
         )
         _set_param_value(
             block.mlp.c_proj.bias,
-            jnp.array(proj_bias),
-            f"{prefix}.mlp.c_proj.bias",
+            get_weight(f"h.{i}.mlp.c_proj.bias"),
+            f"h.{i}.mlp.c_proj.bias",
         )
 
     # Final layer norm
     _set_param_value(
         model.transformer.ln_f.scale,
-        jnp.array(state_dict["transformer.ln_f.weight"].numpy()),
+        get_weight("ln_f.weight"),
         "transformer.ln_f.scale",
     )
     _set_param_value(
         model.transformer.ln_f.bias,
-        jnp.array(state_dict["transformer.ln_f.bias"].numpy()),
+        get_weight("ln_f.bias"),
         "transformer.ln_f.bias",
     )
 
     # LM head (only if not using weight tying)
-    if not model.tie_word_embeddings and "lm_head.weight" in state_dict:
-        lm_head_weight = state_dict["lm_head.weight"].numpy()
-        _set_param_value(
-            model.lm_head.kernel,
-            _pad_to_match(model.lm_head.kernel, jnp.array(lm_head_weight)).T,
-            "lm_head.kernel",
-        )
+    if not model.tie_word_embeddings:
+        try:
+            # Try standard key
+            lm_head_weight = get_weight("lm_head.weight")
+            _set_param_value(
+                model.lm_head.kernel,
+                _pad_to_match(model.lm_head.kernel, lm_head_weight).T,
+                "lm_head.kernel",
+            )
+        except KeyError:
+            # Often weights are tied, so explicit lm_head weights might be missing.
+            print("Warning: 'lm_head.weight' not found in checkpoint. "
+                  "Assuming weights are tied or handled elsewhere.")
 
 
 def save_checkpoint(
@@ -295,69 +315,3 @@ def load_checkpoint(
 
     print(f"OK Checkpoint loaded from {checkpoint_path}")
     return model, config
-
-
-def convert_and_save_pretrained(
-    model_name: str = "gpt2",
-    output_dir: Path = Path("checkpoints"),
-    tie_word_embeddings: bool = True
-) -> None:
-    """Convert HuggingFace checkpoint to NNX format and save.
-
-    This is a one-time conversion utility. After conversion, transformers
-    is no longer needed.
-
-    Args:
-        model_name: HuggingFace model name
-        output_dir: Directory to save converted checkpoint
-        tie_word_embeddings: Whether to use weight tying
-    """
-    from ponderttt.models.gpt2_nnx import load_gpt2_model
-
-    # Create NNX model
-    print(f"Creating NNX model for {model_name}...")
-    model, config = load_gpt2_model(model_name, tie_word_embeddings=tie_word_embeddings)
-
-    # Load pretrained weights from HuggingFace
-    model = load_huggingface_weights(model, model_name)
-
-    # Save in NNX format
-    checkpoint_path = output_dir / model_name
-    save_checkpoint(model, checkpoint_path, config)
-
-    print(f"\nOK Converted {model_name} to NNX format")
-    print(f"  Saved to: {checkpoint_path}")
-    print("  You can now use this checkpoint without transformers dependency")
-
-
-if __name__ == "__main__":
-    """Example: Convert all GPT-2 variants to NNX format."""
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Convert HuggingFace GPT-2 to NNX format")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="gpt2",
-        choices=["gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"],
-        help="Model variant to convert"
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("checkpoints"),
-        help="Output directory for converted checkpoints"
-    )
-    parser.add_argument(
-        "--no-tie-embeddings",
-        action="store_true",
-        help="Don't tie word embeddings (uses more parameters)"
-    )
-
-    args = parser.parse_args()
-
-    convert_and_save_pretrained(
-        model_name=args.model,
-        output_dir=args.output_dir,
-        tie_word_embeddings=not args.no_tie_embeddings
-    )

@@ -87,7 +87,11 @@ class CausalSelfAttention(nnx.Module):
         B, T, C = x.shape  # batch, sequence length, embedding dim
 
         # Calculate Q, K, V
-        qkv = self.c_attn(x)  # [B, T, 3*C]
+        # Flatten inputs for Linear layer compatibility (B*T, C)
+        # Explicitly cast to float32 to avoid potential dtype issues on GPU
+        x_flat = x.astype(jnp.float32).reshape(-1, C)
+        qkv = self.c_attn(x_flat)  # [B*T, 3*C]
+        qkv = qkv.reshape(B, T, 3 * C)  # Reshape back
         q, k, v = jnp.split(qkv, 3, axis=-1)  # Each [B, T, C]
 
         # Reshape to [B, n_head, T, head_dim]
@@ -114,7 +118,11 @@ class CausalSelfAttention(nnx.Module):
         out = out.transpose(0, 2, 1, 3).reshape(B, T, C)
 
         # Output projection and dropout
-        out = self.c_proj(out)
+        # Flatten for Linear layer
+        out_flat = out.astype(jnp.float32).reshape(-1, C)
+        out = self.c_proj(out_flat)
+        out = out.reshape(B, T, C)
+        
         out = self.resid_dropout(out, deterministic=not train)
 
         return out
@@ -146,11 +154,18 @@ class MLP(nnx.Module):
         Returns:
             MLP output [batch, seq_len, n_embd]
         """
-        x = self.c_fc(x)
-        x = jax.nn.gelu(x, approximate=True)  # Use approximate GELU like PyTorch
-        x = self.c_proj(x)
-        x = self.dropout(x, deterministic=not train)
-        return x
+        B, T, C = x.shape
+        
+        # Flatten for Linear layer compatibility
+        x_flat = x.astype(jnp.float32).reshape(-1, C)
+        
+        h = self.c_fc(x_flat)
+        h = jax.nn.gelu(h, approximate=True)  # Use approximate GELU like PyTorch
+        h = self.c_proj(h)
+        h = self.dropout(h, deterministic=not train)
+        
+        # Reshape back
+        return h.reshape(B, T, C)
 
 
 class Block(nnx.Module):

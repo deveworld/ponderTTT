@@ -158,7 +158,14 @@ class TTTLayer(nnx.Module):
         # Q, K, V, O projections
         self.wq = nnx.Linear(config.hidden_dim, config.num_heads * config.head_dim, use_bias=False, rngs=rngs)
         self.wv = nnx.Linear(config.hidden_dim, config.num_heads * config.head_dim, use_bias=False, rngs=rngs)
-        self.wo = nnx.Linear(config.num_heads * config.head_dim, config.hidden_dim, use_bias=False, rngs=rngs)
+        # Zero-init output projection to ensure identity at start of training
+        self.wo = nnx.Linear(
+            config.num_heads * config.head_dim, 
+            config.hidden_dim, 
+            use_bias=False, 
+            kernel_init=nnx.initializers.zeros,
+            rngs=rngs
+        )
         self.wg = nnx.Linear(config.hidden_dim, config.hidden_dim, use_bias=False, rngs=rngs)
 
         # Causal convolutions for Q and K
@@ -235,8 +242,17 @@ class TTTLayer(nnx.Module):
 
     def get_qkv_projections(self, batch: jax.Array) -> Tuple[jax.Array, jax.Array, jax.Array]:
         """Get Q, K, V projections with causal convolution."""
-        xqk = self.wq(batch)
-        XV = self.wv(batch)
+        B, N, C = batch.shape
+        
+        # Flatten for Linear layers
+        batch_flat = batch.astype(jnp.float32).reshape(-1, C)
+        
+        xqk = self.wq(batch_flat)
+        xqk = xqk.reshape(B, N, -1)  # Reshape back
+        
+        XV = self.wv(batch_flat)
+        XV = XV.reshape(B, N, -1)  # Reshape back
+        
         XQ = self._apply_causal_conv(self.conv_q, xqk)
         XK = self._apply_causal_conv(self.conv_k, xqk)
         return XQ, XK, XV
@@ -245,9 +261,13 @@ class TTTLayer(nnx.Module):
         """Compute learnable learning rate (per-head, position-dependent)."""
         # Per-head learnable learning rate
         # X shape: [B, n_mini_batch, mini_batch_size, width]
+        B, N_mini, Mini, W = X.shape
+        X_flat = X.astype(jnp.float32).reshape(-1, W)
+        
         learnable_lrs = []
         for head_idx, lr_layer in enumerate(self.learnable_ttt_lr_layers):
-            lr = lr_layer(X)  # [B, n_mini_batch, mini_batch_size, 1]
+            lr = lr_layer(X_flat)  # [B*n*m, 1]
+            lr = lr.reshape(B, N_mini, Mini, 1)
             learnable_lrs.append(lr)
 
         learnable_ttt_lr = jnp.stack(learnable_lrs, axis=1)  # [B, num_heads, n_mini_batch, mini_batch_size, 1]
@@ -313,10 +333,7 @@ class TTTLayer(nnx.Module):
         # Apply RoPE with true positions (no mini-batch wrapping)
         # Use mini-batch relative positions for RoPE (wrap positions per mini-batch)
         rel_position_ids = position_ids % self.mini_batch_size
-        if rel_position_ids.max() >= self.freqs_cis.shape[0]:
-            raise ValueError(
-                f"Position ids exceed RoPE cache (max {self.freqs_cis.shape[0]-1}, got {int(rel_position_ids.max())})"
-            )
+        # Check removed for JIT compatibility (modulo guarantees bounds if mini_batch_size < max_seq_len)
         freqs_cis = jnp.take(self.freqs_cis, rel_position_ids, axis=0)
         XQ, XK = apply_rotary_emb(XQ, XK, freqs_cis=freqs_cis, dtype=self.config.dtype)
 
@@ -497,12 +514,18 @@ class TTTLayer(nnx.Module):
         Z = self.post_norm(Z)
 
         # Apply gating
-        y = self.wg(hidden_states)
+        B, T, C = hidden_states.shape
+        hidden_states_flat = hidden_states.astype(jnp.float32).reshape(-1, C)
+        
+        y = self.wg(hidden_states_flat)
+        y = y.reshape(B, T, C)
         y = jax.nn.gelu(y, approximate=True)
         Z = y * Z
 
         # Output projection
-        ttt_output = self.wo(Z)
+        Z_flat = Z.astype(jnp.float32).reshape(-1, Z.shape[-1])
+        ttt_output = self.wo(Z_flat)
+        ttt_output = ttt_output.reshape(B, T, -1)
 
         # Combine stats
         all_stats = {
