@@ -90,10 +90,17 @@ class LoRALinear(nnx.Module):
         Returns:
             LoRA output [batch, seq_len, out_features]
         """
+        # Flatten to 2D
+        batch_size, seq_len, in_features = x.shape
+        x_flat = x.astype(jnp.float32).reshape(-1, in_features)
+
         # LoRA path: x -> A -> dropout -> B -> scale
-        lora_out = self.lora_A(x)
+        lora_out = self.lora_A(x_flat)
         lora_out = self.dropout(lora_out, deterministic=not train)
         lora_out = self.lora_B(lora_out)
+
+        # Reshape back
+        lora_out = lora_out.reshape(batch_size, seq_len, self.out_features)
 
         # Scale by alpha/rank
         return lora_out * self.scaling

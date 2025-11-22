@@ -285,7 +285,7 @@ def main():
         model.train()
         optimizer = create_optimizer()
         reset_fast_weights()
-        data_iter = create_data_iter(
+        data_iter = create_data_iterator(
             tokenizer=tokenizer,
             split="train",
             batch_size=batch_size,

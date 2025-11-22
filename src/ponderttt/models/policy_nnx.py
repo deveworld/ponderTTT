@@ -61,7 +61,11 @@ class PolicyNetwork(nnx.Module):
         Returns:
             Shared features [batch, hidden_dim]
         """
-        x = self.fc1(features)
+        # Flatten to 2D [batch, feature_dim]
+        B = features.shape[0]
+        features_flat = features.astype(jnp.float32).reshape(B, -1)
+        
+        x = self.fc1(features_flat)
         x = jax.nn.relu(x)
         x = self.dropout1(x, deterministic=not train)
 

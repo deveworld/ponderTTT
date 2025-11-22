@@ -33,8 +33,9 @@ dependencies = [
     "wandb>=0.23.0",
     # Scientific computing
     "scipy>=1.16.3",
-    # For one-time checkpoint conversion from HuggingFace
-    "transformers>=4.57.1",
+    # Optimized weight loading (No torch/transformers required)
+    "safetensors>=0.4.1",
+    "huggingface_hub>=0.20.0",
 ]
 
 [dependency-groups]
@@ -46,6 +47,8 @@ dev = [
     "ruff>=0.14.5",
     "ty>=0.0.1a26",
 ]
+gpu = ["jax[cuda13]"]
+tpu = ["jax[tpu]"]
 
 [tool.pyright]
 exclude = [".venv/**", "dist/**"]

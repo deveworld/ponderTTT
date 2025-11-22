@@ -39,7 +39,7 @@ def main() -> None:
     outputs = model(test_input, use_ttt=False)
     logits = outputs["logits"]
 
-    embedding_vocab_size = model.base_model.wte.embedding.value.shape[0]
+    embedding_vocab_size = model.base_model.wte.embedding[...].shape[0]
     expected_shape = (1, 64, embedding_vocab_size)
     print(f"OK Forward pass successful, logits shape: {logits.shape}")
 
@@ -48,14 +48,14 @@ def main() -> None:
 
     # Verify weight tying by recomputing logits from shared embedding
     hidden_states = model.base_model(test_input)
-    embedding_kernel = model.base_model.wte.embedding.value
+    embedding_kernel = model.base_model.wte.embedding[...]
     manual_logits = hidden_states @ embedding_kernel.T
     if not jnp.allclose(logits, manual_logits, atol=1e-4):
         raise AssertionError("Logits do not match tied embedding projection")
 
     # Explicitly verify that embedding and LM head share the same underlying array
-    tied_kernel = model.base_model.wte.embedding.value
-    lm_kernel = model.base_model.wte.embedding.value if model.tie_word_embeddings else model.lm_head.kernel
+    tied_kernel = model.base_model.wte.embedding[...]
+    lm_kernel = model.base_model.wte.embedding[...] if model.tie_word_embeddings else model.lm_head.kernel
     if tied_kernel is not lm_kernel:
         raise AssertionError("Embedding and LM head do not share the same parameter object")
 
