@@ -18,7 +18,8 @@ from ..data import create_data_iterator, get_tokenizer
 from ..models import GPT2Model, load_ttt_model
 from ..models.gating_nnx import GatingConfig, GatingNetwork
 from ..utils import FeatureExtractor, cross_entropy_loss
-from ..utils.checkpointing import save_checkpoint, finalize_checkpointing
+from ..utils.checkpointing import save_checkpoint, load_checkpoint, finalize_checkpointing
+import wandb
 
 
 def parse_args():
@@ -86,6 +87,24 @@ def parse_args():
         default=1.0,
         help="Gradient clipping norm",
     )
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default=None,
+        help="WandB project name (if None, WandB is disabled)",
+    )
+    parser.add_argument(
+        "--save_every",
+        type=int,
+        default=100,
+        help="Save checkpoint every N steps",
+    )
+    parser.add_argument(
+        "--resume_from",
+        type=str,
+        default=None,
+        help="Path to checkpoint directory to resume from",
+    )
     
     return parser.parse_args()
 
@@ -151,6 +170,14 @@ def main():
 
     trainable_system = TrainableSystem(ttt_model, gating_net)
 
+    # Initialize WandB
+    if args.wandb_project:
+        wandb.init(
+            project=args.wandb_project,
+            config=vars(args),
+            name=f"diff_{args.model_scale}_budget{args.budget_limit}",
+        )
+
     # Optimizer (No filter needed, as we only included trainable parts)
     optimizer = nnx.Optimizer(
         trainable_system,
@@ -160,6 +187,27 @@ def main():
         ),
         wrt=nnx.All(nnx.Param),
     )
+    
+    # Resume from checkpoint if requested
+    start_iteration = 0
+    if args.resume_from:
+        print(f"Resuming from checkpoint: {args.resume_from}")
+        # Create target structure for correct loading
+        # We save nnx.state(optimizer), so we load into that structure
+        target = {
+            "state": nnx.state(optimizer), 
+            "step": 0,
+            "metadata": {
+                "model_scale": "",
+                "max_steps": 0.0,
+                "budget_limit": 0.0,
+            }
+        }
+        ckpt = load_checkpoint(args.resume_from, target=target)
+        nnx.update(optimizer, ckpt["state"])
+        start_iteration = ckpt.get("step", 0)
+        print(f"Resumed from iteration {start_iteration}")
+
     
     # Feature Extractor
     feature_extractor = FeatureExtractor(
@@ -277,8 +325,13 @@ def main():
     history = []
     
     print("Starting training...")
+    # Skip data iterator to resume point if needed (naive skip)
+    # CodeDataset is streaming, so exact resume is hard without saving dataset state.
+    # We'll just start from current iterator.
+    
+    iter_count = start_iteration
     for i, sequence_batch in enumerate(data_iter):
-        if i >= args.num_iterations:
+        if iter_count >= args.num_iterations:
             break
             
         # Process chunks in sequence
@@ -288,27 +341,11 @@ def main():
         num_chunks = chunks.shape[1]
         
         # Per-sequence budget tracking
-        # budget_limit is avg steps per chunk. Total budget = budget_limit * num_chunks
         total_budget = args.budget_limit * num_chunks
         current_spend = 0.0
         
         avg_gate_val = 0.0
         avg_ce_loss = 0.0
-        
-        # Iterate through chunks in the sequence
-        # Note: In a real "Budget-Aware" setting, we should carry over TTT state if chunks are dependent.
-        # But here we treat chunks as segments of a stream. 
-        # Since TTTLayer resets per call (stateless usage in this script), we treat them as independent
-        # except for the budget state.
-        
-        # Update: TTTLayer logic IS stateless w.r.t weights unless we pass state explicitly or use stateful mode.
-        # `load_ttt_model` gives us a stateful NNX model.
-        # However, `train_step` calls `ttt_model(...)`.
-        # If we want proper TTT history (fast weights accumulating), we should NOT reset it.
-        # But `train_step` might need to handle state carefully with gradients.
-        # For now, let's assume chunks are processed independently (standard TTT-chunk approach) 
-        # or effectively "resetting" fast weights each chunk for simplicity of gradient implementation.
-        # (Full BPTT through multiple chunks is heavy).
         
         feature_extractor.reset_history()
         
@@ -336,40 +373,68 @@ def main():
                 budget_rem_fraction
             )
             
-            # Accumulate spend (using the mean gate value of the batch as proxy for budget tracking)
-            # Ideally, we track per-sample, but we use batch mean for simple features.
             current_spend += float(gate)
-            
             avg_gate_val += float(gate)
             avg_ce_loss += float(ce)
             
-            # Update feature extractor history
             feature_extractor.update_history(float(ce), float(gate))
             
         avg_gate_val /= num_chunks
         avg_ce_loss /= num_chunks
+        budget_util = current_spend / total_budget
         
-        print(f"Iter {i+1}: Loss={loss:.4f}, CE={avg_ce_loss:.4f}, L_TTT={float(l_ttt):.4f}, Gate={avg_gate_val:.4f}, RemBudget={1.0 - (current_spend/total_budget):.2f}")
+        print(f"Iter {iter_count+1}: Loss={loss:.4f}, CE={avg_ce_loss:.4f}, L_TTT={float(l_ttt):.4f}, Gate={avg_gate_val:.4f}, RemBudget={1.0 - budget_util:.2f}")
         
+        # WandB Logging
+        if args.wandb_project:
+            wandb.log({
+                "train/loss": float(loss),
+                "train/ce_loss": float(avg_ce_loss),
+                "train/l_ttt": float(l_ttt),
+                "train/gate_mean": float(avg_gate_val),
+                "train/budget_utilization": budget_util,
+                "iteration": iter_count + 1,
+            })
+
         history.append({
-            "iteration": i,
+            "iteration": iter_count,
             "loss": float(loss),
             "ce_loss": float(avg_ce_loss),
             "l_ttt": float(l_ttt),
             "gate_mean": float(avg_gate_val),
-            "budget_utilization": current_spend / total_budget
+            "budget_utilization": budget_util
         })
+        
+        # Periodic Checkpoint
+        if (iter_count + 1) % args.save_every == 0 and (iter_count + 1) < args.num_iterations:
+            print(f"Saving checkpoint at iter {iter_count + 1}...")
+            train_state = nnx.state(optimizer)
+            save_checkpoint(
+                checkpoint_dir=output_dir,
+                step=iter_count + 1,
+                state=train_state,
+                metadata={
+                    "model_scale": args.model_scale,
+                    "max_steps": args.max_steps,
+                    "budget_limit": args.budget_limit,
+                }
+            )
+            # Also save to WandB if enabled
+            # if args.wandb_project:
+            #     wandb.save(str(output_dir / f"checkpoint_{iter_count + 1}/*"))
+
+        iter_count += 1
 
     # Save results
     with open(output_dir / "history_continuous.json", "w") as f:
         json.dump(history, f, indent=2)
     
-    # Save Checkpoint
-    print("Saving checkpoint...")
-    train_state = nnx.state(trainable_system)
+    # Save Final Checkpoint
+    print("Saving final checkpoint...")
+    train_state = nnx.state(optimizer)
     save_checkpoint(
         checkpoint_dir=output_dir,
-        step=args.num_iterations,
+        step=iter_count,
         state=train_state,
         metadata={
             "model_scale": args.model_scale,
@@ -379,6 +444,9 @@ def main():
     )
     finalize_checkpointing()
     print(f"Checkpoint saved to {output_dir}")
+    
+    if args.wandb_project:
+        wandb.finish()
 
 if __name__ == "__main__":
     main()

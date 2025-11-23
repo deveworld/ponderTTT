@@ -9,17 +9,18 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from tqdm import tqdm
+
+from ponderttt.models.ttt_layer_nnx import TTTConfig
 
 from ..data import get_tokenizer
-from ..evaluation.benchmarks import BenchmarkSuite, CodeProblem
+from ..evaluation.benchmarks import BenchmarkSuite
 from ..models import TTTTransformerLM, load_ttt_model
 from ..models.gating_nnx import GatingConfig, GatingNetwork
+from ..utils import FeatureExtractor
 from ..utils.checkpointing import load_checkpoint
 
 
@@ -52,6 +53,13 @@ class SimpleGenerator:
         self.gating_net = gating_net
         self.pad_token_id = tokenizer.token_to_id("<|pad|>")
         self.eos_token_id = tokenizer.token_to_id("<|endoftext|>")
+        
+        # Feature extractor for gating
+        self.feature_extractor = FeatureExtractor(
+            vocab_size=tokenizer.get_vocab_size(),
+            pad_token_id=self.pad_token_id,
+            seq_length_norm=512, # approximate norm
+        )
 
     def generate(
         self, 
@@ -66,14 +74,65 @@ class SimpleGenerator:
         
         # Generation loop (inefficient, no KV cache)
         for _ in range(max_new_tokens):
-            # Forward pass
-            # TODO: In real TTT inference, we should process the prompt with TTT update first,
-            # then generate with fixed weights (or update continuously).
-            # For this smoke test, we run in 'SKIP' mode (Base Model only) or simple forward.
+            current_len = input_ids.shape[1]
             
-            # We use use_ttt=False for stability in this basic generator unless we implement full TTT state management
-            outputs = self.model(input_ids, use_ttt=False)
-            logits = outputs["logits"][:, -1, :]  # [1, vocab_size]
+            # Prepare TTT inputs (padding if needed)
+            mini_batch_size = 16
+            if hasattr(self.model, "fast_layer") and hasattr(self.model.fast_layer, "config"):
+                if isinstance(self.model.fast_layer.config, TTTConfig):
+                    mini_batch_size = self.model.fast_layer.config.mini_batch_size
+            
+            pad_len = (mini_batch_size - (current_len % mini_batch_size)) % mini_batch_size
+            
+            if pad_len > 0:
+                pads = jnp.full((1, pad_len), self.pad_token_id, dtype=jnp.int32)
+                padded_input = jnp.concatenate([input_ids, pads], axis=1)
+                attention_mask = jnp.concatenate([
+                    jnp.ones((1, current_len), dtype=jnp.int32),
+                    jnp.zeros((1, pad_len), dtype=jnp.int32)
+                ], axis=1)
+            else:
+                padded_input = input_ids
+                attention_mask = jnp.ones((1, current_len), dtype=jnp.int32)
+            
+            # Determine gating / TTT usage
+            use_ttt = False
+            gating_scale = None
+            
+            if self.gating_net is not None:
+                # Get baseline output for features
+                out_base = self.model(padded_input, use_ttt=False)
+                # Extract features
+                # Note: budget_remaining is hard to estimate during generation, using 1.0 (no pressure)
+                features = self.feature_extractor.extract(
+                    input_ids=padded_input,
+                    logits=out_base["logits"],
+                    attention_mask=attention_mask,
+                    budget_remaining=1.0, 
+                )
+                
+                # Predict scale
+                # GatingNetwork vs PolicyNetwork check
+                if hasattr(self.gating_net, "evaluate_actions"): # PolicyNetwork
+                     policy_out = self.gating_net(features, deterministic=True)
+                     action = int(policy_out["action"][0])
+                     # Map action to scale (0, 1, 2, 4)
+                     step_map = [0, 1, 2, 4]
+                     scale = float(step_map[action])
+                else: # GatingNetwork
+                     scale = float(self.gating_net(features, train=False)[0, 0])
+                
+                if scale > 0.01:
+                    use_ttt = True
+                    gating_scale = jnp.array([[scale]])
+            
+            # Forward pass
+            outputs = self.model(padded_input, use_ttt=use_ttt, gating_scale=gating_scale)
+            
+            # Get logits for the last REAL token
+            # padded_input shape [1, L_pad]
+            # real token is at index current_len - 1
+            logits = outputs["logits"][:, current_len - 1, :]  # [1, vocab_size]
             
             # Sampling
             if temperature > 0:
@@ -113,14 +172,91 @@ def main():
     # Load Checkpoint if provided
     if args.checkpoint:
         print(f"Loading checkpoint from {args.checkpoint}...")
-        # Simplified loading - assuming we want to load trainable parts
-        # Real usage would require the TrainableSystem wrapper if saved that way
-        pass # TODO: Implement robust loading based on saved structure
+        
+        # Helper to reconstruct TrainableSystem for loading diff checkpoints
+        class TrainableSystem(nnx.Module):
+            def __init__(self, ttt_model, gating_net):
+                self.fast_layer = ttt_model.fast_layer
+                self.fast_norm = ttt_model.fast_norm
+                self.gating_net = gating_net
+                if hasattr(ttt_model, 'lm_head'):
+                    self.lm_head = ttt_model.lm_head
+                else:
+                    self.lm_head = None
+        
+        # Create a dummy gating net to match structure if needed
+        dummy_gating = GatingNetwork(GatingConfig(), nnx.Rngs(0))
+        trainable_sys = TrainableSystem(model, dummy_gating)
+        
+        try:
+            # Try loading as Differentiable Training checkpoint
+            # This expects keys: fast_layer, fast_norm, gating_net, etc.
+            # And likely wrapped in optimizer state structure.
+            # We try to restore into trainable_sys.
+            # Note: Since we saved nnx.state(optimizer), the top level keys match the optimizer target.
+            # If optimizer wraps TrainableSystem, the keys are the attributes of TrainableSystem.
+            
+            # We create a temporary target
+            target = nnx.state(trainable_sys)
+            ckpt = load_checkpoint(args.checkpoint, target=target)
+            nnx.update(trainable_sys, ckpt["state"] if "state" in ckpt else ckpt)
+            print("Loaded as Differentiable Training checkpoint")
+            
+            # If we successfully loaded, we might want to use the loaded gating net if not provided separately
+            if args.gating_checkpoint is None and "gating_net" in (ckpt["state"] if "state" in ckpt else ckpt):
+                 print("Using gating network from model checkpoint")
+                 # We need to extract it? No, trainable_sys.gating_net is already updated.
+                 # But SimpleGenerator needs it passed explicitly if we want to use it.
+                 # However, the generator is init later. We can pass dummy_gating if we want.
+                 # But args.gating_checkpoint takes precedence.
+                 pass 
+
+        except Exception as e_diff:
+            print(f"Not a Differentiable Training checkpoint ({e_diff}), trying Baseline...")
+            try:
+                # Try loading as Baseline checkpoint (Model structure)
+                # Baseline saves nnx.state(optimizer) where optimizer wraps model
+                target = nnx.state(model)
+                ckpt = load_checkpoint(args.checkpoint, target=target)
+                nnx.update(model, ckpt["state"] if "state" in ckpt else ckpt)
+                print("Loaded as Baseline checkpoint")
+            except Exception as e_base:
+                 print(f"Failed to load checkpoint: {e_base}")
+                 raise ValueError("Could not load checkpoint as either Differentiable or Baseline format")
+
+    # Load Gating/Policy Checkpoint if provided
+    gating_net = None
+    if args.gating_checkpoint:
+        print(f"Loading gating checkpoint from {args.gating_checkpoint}...")
+        # Try PolicyNetwork first
+        try:
+            from ..models import PolicyConfig, PolicyNetwork
+            # Assume default config or infer? hard to infer. using default for now.
+            p_config = PolicyConfig(feature_dim=32, hidden_dim=128, num_actions=4)
+            p_net = PolicyNetwork(p_config, nnx.Rngs(0))
+            target = nnx.state(p_net)
+            ckpt = load_checkpoint(args.gating_checkpoint, target=target)
+            nnx.update(p_net, ckpt["state"] if "state" in ckpt else ckpt)
+            gating_net = p_net
+            print("Loaded PolicyNetwork")
+        except Exception:
+             # Try GatingNetwork
+             try:
+                 g_config = GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0)
+                 g_net = GatingNetwork(g_config, nnx.Rngs(0))
+                 target = nnx.state(g_net)
+                 ckpt = load_checkpoint(args.gating_checkpoint, target=target)
+                 nnx.update(g_net, ckpt["state"] if "state" in ckpt else ckpt)
+                 gating_net = g_net
+                 print("Loaded GatingNetwork")
+             except Exception as e:
+                 print(f"Failed to load gating checkpoint: {e}")
+                 raise
     
     tokenizer = get_tokenizer({"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[args.model_scale])
-    
+
     # Initialize Generator
-    generator = SimpleGenerator(model, tokenizer)
+    generator = SimpleGenerator(model, tokenizer, gating_net)
     
     # Select Benchmarks
     suite = BenchmarkSuite(
