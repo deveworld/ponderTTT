@@ -105,6 +105,12 @@ def parse_args():
         default=None,
         help="Path to checkpoint directory to resume from",
     )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=32,
+        help="Number of parallel workers for data downloading",
+    )
     
     return parser.parse_args()
 
@@ -221,9 +227,10 @@ def main():
         tokenizer=tokenizer,
         split="train",
         batch_size=args.batch_size,
-        seq_length=2048,
+        seq_length=1024,
         chunk_size=512,
-        max_examples=args.batch_size * args.num_iterations * 10,
+        max_examples=args.batch_size * args.num_iterations * 2,
+        num_workers=args.num_workers,
     )
     
     # Training Step
@@ -241,11 +248,16 @@ def main():
         """
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
+        position_ids = batch.get("position_ids")
         labels = input_ids
         
         # 1. Base Model Forward (Frozen)
         # We stop gradient to ensure no grads flow to base_model
-        hidden_states = jax.lax.stop_gradient(base_model(input_ids, train=False))
+        hidden_states = jax.lax.stop_gradient(base_model(
+            input_ids, 
+            position_ids=position_ids,
+            train=False
+        ))
         
         # Compute logits for features (also frozen base)
         if ttt_model.tie_word_embeddings:
@@ -282,7 +294,7 @@ def main():
             fast_output, fast_stats = sys.fast_layer(
                 hidden_states_normed,
                 mask=attention_mask,
-                position_ids=None,
+                position_ids=position_ids,
                 train=True,
                 gating_scale=gating_scale
             )
@@ -356,8 +368,18 @@ def main():
         for c_idx in range(num_chunks):
             chunk_batch = {
                 "input_ids": chunks[:, c_idx],
-                "attention_mask": masks[:, c_idx]
+                "attention_mask": masks[:, c_idx],
+                "position_ids": jnp.arange(
+                    c_idx * 512, # hardcoded chunk_size, consider using args/config
+                    (c_idx + 1) * 512,
+                    dtype=jnp.int32
+                )[None, :].repeat(chunks.shape[0], axis=0)
             }
+            
+            # Check for valid tokens
+            num_valid_tokens = jnp.sum(chunk_batch["attention_mask"][:, 1:])
+            if num_valid_tokens < 16:
+                continue
             
             # Calculate remaining budget fraction
             if total_budget > 1e-6:
@@ -373,15 +395,20 @@ def main():
                 budget_rem_fraction
             )
             
+            # Stability check
+            if not jnp.isfinite(loss) or float(ce) > 20.0:
+                print(f"Warning: Skipping unstable batch (loss={loss:.4f}, ce={ce:.4f})")
+                continue
+            
             current_spend += float(gate)
             avg_gate_val += float(gate)
             avg_ce_loss += float(ce)
             
             feature_extractor.update_history(float(ce), float(gate))
             
-        avg_gate_val /= num_chunks
-        avg_ce_loss /= num_chunks
-        budget_util = current_spend / total_budget
+        avg_gate_val /= max(1, num_chunks) # prevent div by zero if all skipped, though unlikely
+        avg_ce_loss /= max(1, num_chunks)
+        budget_util = current_spend / max(1e-6, total_budget)
         
         print(f"Iter {iter_count+1}: Loss={loss:.4f}, CE={avg_ce_loss:.4f}, L_TTT={float(l_ttt):.4f}, Gate={avg_gate_val:.4f}, RemBudget={1.0 - budget_util:.2f}")
         

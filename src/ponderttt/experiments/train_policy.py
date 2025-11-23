@@ -146,6 +146,12 @@ def parse_args():
         default=None,
         help="Path to checkpoint directory to resume from",
     )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=32,
+        help="Number of parallel workers for data downloading",
+    )
 
     return parser.parse_args()
 
@@ -196,7 +202,7 @@ def main():
     # Create data iterator
     print("Creating data iterator...")
     batch_size = args.batch_size
-    seq_length = 2048
+    seq_length = 1024
     chunk_size = 512
     chunks_per_sequence = max(1, seq_length // chunk_size)
 
@@ -212,6 +218,7 @@ def main():
             seq_length=seq_length,
             chunk_size=chunk_size,
             max_examples=num_examples,
+            num_workers=args.num_workers,
         )
 
     # Initialize policy network
@@ -412,6 +419,11 @@ def main():
 
                     if is_new_sequence:
                         ttt_model, ttt_optimizer = reset_ttt_model()
+
+                    # Check for valid tokens
+                    num_valid_tokens = jnp.sum(chunk_batch["attention_mask"][:, 1:])
+                    if num_valid_tokens < 16:
+                        continue
 
                     outputs = ttt_model(chunk_batch["input_ids"], use_ttt=False)
                     logits = outputs["logits"]

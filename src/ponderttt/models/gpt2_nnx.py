@@ -223,11 +223,18 @@ class GPT2Model(nnx.Module):
         # Final layer norm
         self.ln_f = nnx.LayerNorm(config.n_embd, epsilon=config.layer_norm_epsilon, rngs=rngs)
 
-    def __call__(self, input_ids: jax.Array, *, train: bool = False) -> jax.Array:
+    def __call__(
+        self,
+        input_ids: jax.Array,
+        position_ids: jax.Array | None = None,
+        *,
+        train: bool = False
+    ) -> jax.Array:
         """Forward pass.
 
         Args:
             input_ids: Token IDs [batch, seq_len]
+            position_ids: Position IDs [batch, seq_len]
             train: Whether to enable dropout
 
         Returns:
@@ -243,8 +250,12 @@ class GPT2Model(nnx.Module):
 
         # Get embeddings
         tok_emb = self.wte(input_ids)  # [B, T, n_embd]
-        pos = jnp.arange(0, T, dtype=jnp.int32)  # [T]
-        pos_emb = self.wpe(pos)  # [T, n_embd]
+
+        if position_ids is None:
+            pos = jnp.arange(0, T, dtype=jnp.int32)  # [T]
+            pos_emb = self.wpe(pos)  # [T, n_embd]
+        else:
+            pos_emb = self.wpe(position_ids)  # [B, T, n_embd]
 
         # Combine token + position embeddings
         x = self.drop(tok_emb + pos_emb, deterministic=not train)

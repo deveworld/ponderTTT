@@ -27,6 +27,7 @@ class ModelConfig:
     mesh: Optional[jax.sharding.Mesh] = None
     shard_params: bool = False  # Enable parameter sharding for TPU Pods
     fast_weight_type: str = "ttt"  # "ttt" or "lora"
+    pad_token_id: Optional[int] = None  # Optional pad token id to mask logits
 
 
 class TTTTransformerLM(nnx.Module):
@@ -70,6 +71,7 @@ class TTTTransformerLM(nnx.Module):
         self.tie_word_embeddings = tie_word_embeddings
         self.fast_weight_type = model_config.fast_weight_type
         self.is_training = False
+        self.pad_token_id = model_config.pad_token_id
 
         # Slow weights: Pretrained GPT-2 (will be frozen during training)
         # Note: We use GPT2Model (without LM head) to get hidden states
@@ -135,6 +137,7 @@ class TTTTransformerLM(nnx.Module):
         self,
         input_ids: jax.Array,
         attention_mask: Optional[jax.Array] = None,
+        position_ids: Optional[jax.Array] = None,
         use_ttt: bool = True,
         gating_scale: Optional[jax.Array] = None,
     ) -> dict:
@@ -144,6 +147,7 @@ class TTTTransformerLM(nnx.Module):
         Args:
             input_ids: Input token IDs [batch, seq_len]
             attention_mask: Attention mask [batch, seq_len] (currently unused)
+            position_ids: Position IDs [batch, seq_len]
             use_ttt: Whether to apply TTT layer (False for SKIP baseline)
             gating_scale: Optional scaling factor for TTT update (for differentiable gating)
 
@@ -158,7 +162,17 @@ class TTTTransformerLM(nnx.Module):
         # Get hidden states from frozen base model
         # Apply stop_gradient to freeze theta_slow (PLAN.md: only theta_fast is trainable)
         train_flag = self.is_training
-        hidden_states = jax.lax.stop_gradient(self.base_model(input_ids, train=train_flag))
+        
+        # If position_ids not provided, generate them (0..T)
+        if position_ids is None:
+            batch_size, seq_len = input_ids.shape
+            position_ids = jnp.arange(seq_len, dtype=jnp.int32)[None, :].repeat(batch_size, axis=0)
+
+        hidden_states = jax.lax.stop_gradient(self.base_model(
+            input_ids, 
+            position_ids=position_ids,
+            train=train_flag
+        ))
 
         if use_ttt:
             # Following official TTT-LM Block pattern (model.py Line 696-714):
@@ -174,7 +188,7 @@ class TTTTransformerLM(nnx.Module):
                 fast_output, fast_stats = self.fast_layer(
                     hidden_states_normed,
                     mask=attention_mask,
-                    position_ids=None,
+                    position_ids=position_ids,  # Pass correct positions
                     train=train_flag,
                     gating_scale=gating_scale,
                 )
@@ -183,7 +197,7 @@ class TTTTransformerLM(nnx.Module):
                 fast_output, fast_stats = self.fast_layer(
                     hidden_states_normed,
                     mask=attention_mask,
-                    position_ids=None,
+                    position_ids=position_ids,
                     train=train_flag,
                 )
 
@@ -199,6 +213,9 @@ class TTTTransformerLM(nnx.Module):
             else:
                 logits = self.lm_head(adapted_hidden)
 
+            if self.pad_token_id is not None:
+                logits = logits.at[..., self.pad_token_id].set(-1e9)
+
             return {
                 "logits": logits,
                 "ttt_stats": fast_stats,  # Works for both TTT and LoRA
@@ -211,10 +228,11 @@ class TTTTransformerLM(nnx.Module):
             else:
                 logits = self.lm_head(hidden_states)
 
-            return {
-                "logits": logits,
-                "ttt_stats": None,
-            }
+            # Mask out pad token logits (added vocab entry) to avoid skewing softmax
+            if self.pad_token_id is not None:
+                logits = logits.at[..., self.pad_token_id].set(-1e9)
+
+            return {"logits": logits, "ttt_stats": None}
 
 
 def load_ttt_model(
@@ -226,6 +244,7 @@ def load_ttt_model(
     seed: int = 0,
     load_pretrained: bool = True,
     vocab_size: int | None = None,
+    pad_token_id: int | None = None,
 ) -> Tuple[TTTTransformerLM, GPT2Config]:
     """
     Load TTT-augmented transformer model.
@@ -239,16 +258,23 @@ def load_ttt_model(
         seed: Random seed
         load_pretrained: Whether to load pretrained weights from HuggingFace
         vocab_size: Optional override for tokenizer vocab size (e.g., if a pad token was added)
+        pad_token_id: Optional pad token id to explicitly mask in logits. If None and
+            vocab_size increases beyond the pretrained value, we assume the new final id
+            is the pad token.
 
     Returns:
         (model, config) tuple
     """
     # Get GPT-2 config
     gpt2_config = GPT2Config.from_pretrained(model_name)
+    base_vocab_size = gpt2_config.vocab_size
     if vocab_size is not None:
         if vocab_size < gpt2_config.vocab_size:
             raise ValueError(f"vocab_size override ({vocab_size}) is smaller than base config ({gpt2_config.vocab_size})")
         gpt2_config.vocab_size = vocab_size
+        # If vocab was expanded (e.g., to add pad), assume the new last token is pad unless provided
+        if pad_token_id is None and vocab_size > base_vocab_size:
+            pad_token_id = vocab_size - 1
 
     # Default configs if not provided
     if fast_weight_type == "ttt" and ttt_config is None:
@@ -273,6 +299,7 @@ def load_ttt_model(
         model_name=model_name,
         dtype=dtype,
         fast_weight_type=fast_weight_type,
+        pad_token_id=pad_token_id,
     )
 
     # Create model

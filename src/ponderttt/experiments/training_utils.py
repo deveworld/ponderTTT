@@ -18,12 +18,18 @@ class ChunkModel(Protocol):
         self,
         input_ids: jax.Array,
         attention_mask: jax.Array | None = ...,
+        position_ids: jax.Array | None = ...,
         use_ttt: bool = ...,
     ) -> dict: ...
 
 
 def _forward(model: ChunkModel, batch: dict, use_ttt: bool, ssl_weight: float):
-    outputs = model(batch["input_ids"], use_ttt=use_ttt)
+    outputs = model(
+        batch["input_ids"], 
+        attention_mask=batch.get("attention_mask"),
+        position_ids=batch.get("position_ids"),
+        use_ttt=use_ttt
+    )
     logits = outputs["logits"]
     ttt_stats = outputs.get("ttt_stats", {})
 

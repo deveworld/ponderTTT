@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--language", type=str, default="Python", help="Programming language for OOD testing")
     parser.add_argument("--split", type=str, default="test", help="Dataset split (train/validation/test)")
+    parser.add_argument("--num_workers", type=int, default=32, help="Number of parallel workers for data downloading")
     return parser.parse_args()
 
 
@@ -50,6 +51,7 @@ def evaluate_model(
     model: Optional[TTTTransformerLM] = None,  # Accept pre-loaded model
     language: str = "Python",
     split: str = "test",
+    num_workers: int = 32,
 ):
     print(f"\nEvaluating {method_name} on {language} ({split})...")
     
@@ -79,9 +81,10 @@ def evaluate_model(
         split=split,
         language=language,
         batch_size=batch_size,
-        seq_length=2048,
+        seq_length=1024,
         chunk_size=512,
         max_examples=batch_size * num_batches * 2,
+        num_workers=num_workers,
     )
     
     results = {
@@ -275,7 +278,8 @@ def main():
         None,
         is_rl=False,
         language=args.language,
-        split=args.split
+        split=args.split,
+        num_workers=args.num_workers,
     )
     all_results.append(df_skip)
     
@@ -292,7 +296,8 @@ def main():
         is_rl=False,
         model=diff_ttt_model, # Pass the loaded model
         language=args.language,
-        split=args.split
+        split=args.split,
+        num_workers=args.num_workers,
     )
     all_results.append(df_diff)
     
@@ -308,7 +313,8 @@ def main():
         rl_net, 
         is_rl=True,
         language=args.language,
-        split=args.split
+        split=args.split,
+        num_workers=args.num_workers,
     )
     all_results.append(df_rl)
     

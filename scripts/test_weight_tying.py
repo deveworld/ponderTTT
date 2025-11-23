@@ -49,6 +49,11 @@ def main() -> None:
     hidden_states = model.base_model(test_input)
     embedding_kernel = model.base_model.wte.embedding[...]
     manual_logits = hidden_states @ embedding_kernel.T
+    
+    # Apply pad token masking if model does it
+    if model.pad_token_id is not None:
+        manual_logits = manual_logits.at[..., model.pad_token_id].set(-1e9)
+        
     if not jnp.allclose(logits, manual_logits, atol=1e-4):
         raise AssertionError("Logits do not match tied embedding projection")
 

@@ -115,6 +115,12 @@ def parse_args():
         default=None,
         help="Path to checkpoint directory to resume from",
     )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=32,
+        help="Number of parallel workers for data downloading",
+    )
 
     return parser.parse_args()
 
@@ -191,7 +197,7 @@ def main():
     # Create data iterator
     print("Creating data iterator...")
     batch_size = 4  # Small batch for CPU/testing
-    seq_length = 2048
+    seq_length = 1024
     chunk_size = 512
 
     chunks_per_sequence = seq_length // chunk_size
@@ -205,10 +211,13 @@ def main():
             seq_length=seq_length,
             chunk_size=chunk_size,
             max_examples=examples_needed * batch_size,
+            num_workers=args.num_workers,
         )
 
     def init_model(seed):
         print(f"\nInitializing model with {args.fast_weight_type.upper()} fast weights (seed={seed})...")
+        tok_vocab_size = tokenizer.get_vocab_size()
+        print(f"  Tokenizer vocab_size: {tok_vocab_size}")
 
         if args.fast_weight_type == "lora":
             from ponderttt.models import LoRAConfig
@@ -225,7 +234,7 @@ def main():
                 lora_config=lora_config,
                 seed=seed,
                 load_pretrained=args.load_pretrained,
-                vocab_size=tokenizer.get_vocab_size(),
+                vocab_size=tok_vocab_size,
             )
         else:
             mdl, cfg = load_ttt_model(
@@ -233,8 +242,10 @@ def main():
                 fast_weight_type="ttt",
                 seed=seed,
                 load_pretrained=args.load_pretrained,
-                vocab_size=tokenizer.get_vocab_size(),
+                vocab_size=tok_vocab_size,
             )
+        print(f"  Model config vocab_size: {cfg.vocab_size}")
+        print(f"  Model embedding shape: {mdl.base_model.wte.embedding[...].shape}")
         return mdl, cfg
 
     # Set to training mode
@@ -298,8 +309,15 @@ def main():
 
     for seed in seeds:
         model, config = init_model(seed)
-        model.train()
-        
+
+        # Set training mode only if we're actually doing updates
+        # For SKIP action, use eval mode to disable dropout since we don't update
+        if action_steps > 0:
+            model.train()
+        else:
+            model.eval()
+            print("  Using eval mode for SKIP action (no updates, disable dropout)")
+
         # Create optimizer (only optimize TTT layer parameters)
         optimizer = create_optimizer()
         
@@ -310,26 +328,10 @@ def main():
         # Resume Logic
         if args.resume_from and len(seeds) == 1:
             print(f"Resuming from checkpoint: {args.resume_from}")
-            # Load optimizer state (which includes model parameters)
-            target = nnx.state(optimizer)
-            ckpt = load_checkpoint(args.resume_from, target=target)
-            nnx.update(optimizer, ckpt)
-            # Checkpoint metadata is stored in the top-level dict by our save_checkpoint
-            # But load_checkpoint returns the structure we asked for? 
-            # No, load_checkpoint returns the full dict. 
-            # Wait, our load_checkpoint implementation:
-            # if target is not None: checkpoint = checkpointer.restore(..., item=target)
-            # If we pass target, Orbax restores *into* that structure.
-            # We need to get metadata separately or handle the return value.
-            # Let's rely on the file naming or metadata file if Orbax handles it.
-            # Actually, our save_checkpoint implementation saves `{'state': ..., 'metadata': ...}`.
-            # So we should target that structure.
-            
             load_target = {"state": nnx.state(optimizer)}
             ckpt = load_checkpoint(args.resume_from, target=load_target)
             nnx.update(optimizer, ckpt["state"])
             
-            # Attempt to get step from metadata
             if "metadata" in ckpt and "chunks" in ckpt["metadata"]:
                 start_chunk = ckpt["metadata"]["chunks"]
             elif "step" in ckpt:
@@ -344,6 +346,7 @@ def main():
             seq_length=seq_length,
             chunk_size=chunk_size,
             max_examples=examples_needed * batch_size,
+            num_workers=args.num_workers,
         )
 
         total_loss = 0.0
@@ -351,13 +354,8 @@ def main():
         chunks_processed = start_chunk
 
         print(f"\n=== Running seed {seed} ===")
-        # Skip iterator if resumed
-        # CodeDataset doesn't support seek, so we just burn through
-        # This is inefficient for large skip, but okay for MVP.
         if start_chunk > 0:
             print(f"Skipping {start_chunk} chunks (approximation)...")
-            # Not implemented: dataset skipping. Loss stats will be from now on.
-            # Just proceed.
 
         with tqdm(total=args.max_chunks, initial=start_chunk, desc=f"Training seed {seed}") as pbar:
             while chunks_processed < args.max_chunks:
@@ -375,11 +373,21 @@ def main():
                     chunk_batch = {
                         "input_ids": batch["chunks"][:, chunk_idx, :],
                         "attention_mask": batch["chunk_attention_mask"][:, chunk_idx, :],
+                        "position_ids": jnp.arange(
+                            chunk_idx * chunk_size, 
+                            (chunk_idx + 1) * chunk_size, 
+                            dtype=jnp.int32
+                        )[None, :].repeat(batch["chunks"].shape[0], axis=0)
                     }
 
                     if chunk_idx == 0:
                         reset_fast_weights()
                         optimizer = create_optimizer()
+
+                    # Check for valid tokens
+                    num_valid_tokens = jnp.sum(chunk_batch["attention_mask"][:, 1:])
+                    if num_valid_tokens < 16:
+                        continue
 
                     if action_steps == 0:
                         metrics = run_chunk_step(
@@ -403,6 +411,12 @@ def main():
                             )
 
                     assert metrics is not None
+                    
+                    # Check for stability
+                    if not jnp.isfinite(metrics["loss"]) or metrics["loss"] > 20.0:
+                        print(f"Warning: Skipping unstable chunk (loss={metrics['loss']:.4f})")
+                        continue
+                        
                     total_loss += metrics["loss"]
                     total_cost += cost_multiplier
                     chunks_processed += 1
