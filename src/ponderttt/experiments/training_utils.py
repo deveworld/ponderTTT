@@ -76,7 +76,7 @@ def metrics_from_loss(loss: jnp.ndarray, ttt_stats: dict | None) -> dict[str, fl
     return metrics
 
 
-@nnx.jit
+@nnx.jit(static_argnames=("use_ttt", "ssl_weight"))
 def train_step_jit(
     model: ChunkModel,
     optimizer: nnx.Optimizer,
@@ -93,7 +93,7 @@ def train_step_jit(
     return loss, ttt_stats
 
 
-@nnx.jit
+@nnx.jit(static_argnames=("use_ttt", "ssl_weight"))
 def eval_step_jit(
     model: ChunkModel,
     batch: dict,
