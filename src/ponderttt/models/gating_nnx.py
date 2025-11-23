@@ -3,7 +3,6 @@ Gating network for differentiable TTT decisions.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 import jax
 import jax.numpy as jnp

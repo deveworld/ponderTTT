@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import jax.numpy as jnp
 import numpy as np
-from flax import nnx
 
 from ponderttt.models import load_ttt_model
 
@@ -36,8 +35,8 @@ def main() -> None:
     args = parse_args()
 
     try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
-        import torch  # type: ignore
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
     except Exception as exc:  # pragma: no cover
         print(f"[FAIL] transformers/torch not available: {exc}")
         return

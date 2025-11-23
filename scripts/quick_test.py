@@ -4,7 +4,6 @@ Quick test to verify JAX/Flax NNX implementation.
 
 import sys
 from pathlib import Path
-from typing import cast
 import traceback
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -12,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from tokenizers import Tokenizer
 
 from ponderttt.data import get_tokenizer
 from ponderttt.models import (
@@ -32,7 +30,7 @@ print("=" * 60)
 print(f"\nJAX version: {jax.__version__}")
 try:
     print(f"JAX devices: {jax.devices()}")
-except:
+except Exception:
     print("Could not list JAX devices")
 
 # Track test results
@@ -57,8 +55,9 @@ except Exception as e:
 # Test 1: Tokenizer
 print("\n[1/6] Testing tokenizer...")
 tokenizer = None
+vocab_size = 50257  # Default GPT-2 vocab size
 try:
-    tokenizer = cast(Tokenizer, get_tokenizer("gpt2"))
+    tokenizer = get_tokenizer("gpt2")
     vocab_size = tokenizer.get_vocab_size()
     print(f"OK Tokenizer loaded (vocab size: {vocab_size})")
     tests_passed += 1

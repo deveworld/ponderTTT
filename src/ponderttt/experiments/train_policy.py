@@ -9,13 +9,11 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import cast
 
 import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
-from tokenizers import Tokenizer
 from tqdm import tqdm
 
 from ..data import create_data_iterator, get_tokenizer
@@ -173,7 +171,7 @@ def main():
 
     # Load tokenizer
     print("Loading tokenizer...")
-    tokenizer = cast(Tokenizer, get_tokenizer(model_name))
+    tokenizer = get_tokenizer(model_name)
 
     # Create data iterator
     print("Creating data iterator...")
@@ -229,6 +227,21 @@ def main():
 
     for seed in seeds:
         print(f"\n=== Running seed {seed} ===")
+        
+        # Initialize loop variables to prevent unbound errors
+        rollout_features = []
+        rollout_actions = []
+        rollout_log_probs = []
+        rollout_values = []
+        rollout_rewards = []
+        rollout_costs = []
+        chunks_collected = 0
+        iteration = 0
+        avg_cost = 0.0
+        avg_reward = 0.0
+        loss = 0.0
+        last_metrics = {}
+
         # reinitialize policy RNGs for each seed
         rngs = nnx.Rngs(seed)
         policy = PolicyNetwork(config=policy_config, rngs=rngs)
@@ -291,7 +304,7 @@ def main():
             pad_token_id=tokenizer.token_to_id("<|pad|>"),
             seq_length_norm=chunk_size,
         )
-        print(f"OK Feature extractor initialized (32D features)")
+        print("OK Feature extractor initialized (32D features)")
 
         # PID controller for budget constraint
         pid = PIDController(

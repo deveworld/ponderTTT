@@ -12,9 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import jax.numpy as jnp
-from flax import nnx
 
-from ponderttt.models import load_ttt_model, count_trainable_parameters
+from ponderttt.models import load_ttt_model, count_trainable_parameters, LoRAConfig
 
 
 def compare_models():
@@ -28,7 +27,7 @@ def compare_models():
     seq_len = 512
     model_name = "gpt2"
 
-    print(f"\nTest setup:")
+    print("\nTest setup:")
     print(f"  Model: {model_name}")
     print(f"  Batch size: {batch_size}")
     print(f"  Sequence length: {seq_len}")
@@ -47,7 +46,7 @@ def compare_models():
     )
     ttt_trainable, ttt_total = count_trainable_parameters(ttt_model)
 
-    print(f"   OK TTT model loaded")
+    print("   OK TTT model loaded")
     print(f"     - Total params: {ttt_total:,}")
     print(f"     - Trainable: {ttt_trainable:,} ({ttt_trainable/ttt_total*100:.1f}%)")
 
@@ -56,7 +55,6 @@ def compare_models():
     for rank in [64, 128, 256]:
         print(f"\n2. Loading LoRA model (rank={rank})...")
 
-        from ponderttt.models import LoRAConfig
 
         lora_config = LoRAConfig(hidden_dim=hidden_dim, rank=rank)
         lora_model, _ = load_ttt_model(
@@ -67,7 +65,7 @@ def compare_models():
         )
         lora_trainable, lora_total = count_trainable_parameters(lora_model)
 
-        print(f"   OK LoRA model loaded")
+        print("   OK LoRA model loaded")
         print(f"     - Total params: {lora_total:,}")
         print(f"     - Trainable: {lora_trainable:,} ({lora_trainable/lora_total*100:.1f}%)")
 

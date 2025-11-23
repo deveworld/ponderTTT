@@ -6,21 +6,18 @@ Usage:
 """
 
 import argparse
-import json
-import math
 from pathlib import Path
-from typing import Dict, List
 
-import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 from flax import nnx
 from tqdm import tqdm
+from typing import Optional, cast
 
 from ..data import create_data_iterator, get_tokenizer
-from ..models import load_ttt_model, TTTConfig, PolicyConfig, PolicyNetwork
+from ..models import load_ttt_model, PolicyConfig, PolicyNetwork
 from ..models.gating_nnx import GatingConfig, GatingNetwork
 from ..utils import FeatureExtractor, cross_entropy_loss
 
@@ -45,7 +42,7 @@ def evaluate_model(
     num_batches: int,
     batch_size: int,
     seed: int,
-    gating_net: nnx.Module = None,  # GatingNetwork or PolicyNetwork
+    gating_net: Optional[GatingNetwork | PolicyNetwork] = None,  # GatingNetwork or PolicyNetwork
     is_rl: bool = False,
 ):
     print(f"\nEvaluating {method_name}...")
@@ -118,6 +115,10 @@ def evaluate_model(
             )
             
             # Decision
+            scale = 0.0
+            cost = 1.0
+            loss = 0.0
+
             if gating_net is None:
                 # Fixed Baseline (e.g. Skip) or Oracle
                 # Let's implement Fixed Baseline: Always use budget_target roughly
@@ -128,7 +129,7 @@ def evaluate_model(
                 # If None, run SKIP baseline.
                 scale = 0.0
                 cost = 1.0
-            elif is_rl:
+            elif is_rl and isinstance(gating_net, PolicyNetwork):
                 # RL Policy
                 # Policy outputs action index
                 out = gating_net(features, deterministic=True)
@@ -150,8 +151,22 @@ def evaluate_model(
                 # This puts Differentiable at disadvantage? No, Continuous is often better.
                 # Let's standardize: BOTH use "Single Pass with Scaled LR" for this evaluation?
                 # OR: We use the `action_steps` for RL to actually run loop.
-                pass # Implemented below
-            else:
+
+                # RL: Discrete Steps
+                # Run K updates
+                # We need to manually run TTT update K times or use a helper.
+                # For simplicity in comparison script, let's use `ttt_model` with `use_ttt=True` (1 step)
+                # looped K times? 
+                # `ttt_model` doesn't support external loop easily without state management.
+                # Let's assume RL chooses "Scale" from {0, 1, 2, 4} and we apply it as `gating_scale`.
+                # This makes comparison fair: "Discrete Scale" vs "Continuous Scale".
+                
+                # If RL chooses 4, we use scale=4.0 in one step.
+                # (Approximation: 4 small steps ~= 1 big step with 4x LR)
+                
+                out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=True, gating_scale=jnp.array([[scale]]))
+                loss = float(cross_entropy_loss(out_ttt["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
+            elif isinstance(gating_net, GatingNetwork):
                 # Differentiable Gating
                 # Outputs scalar scale
                 scale = float(gating_net(features, train=False)[0, 0])
@@ -169,27 +184,7 @@ def evaluate_model(
                     cost = 1.0 # Skip
                 else:
                     cost = 3.0 # 1-step update
-                
-            
-            # Execution
-            if is_rl:
-                # RL: Discrete Steps
-                # Run K updates
-                # We need to manually run TTT update K times or use a helper.
-                # For simplicity in comparison script, let's use `ttt_model` with `use_ttt=True` (1 step)
-                # looped K times? 
-                # `ttt_model` doesn't support external loop easily without state management.
-                # Let's assume RL chooses "Scale" from {0, 1, 2, 4} and we apply it as `gating_scale`.
-                # This makes comparison fair: "Discrete Scale" vs "Continuous Scale".
-                
-                # If RL chooses 4, we use scale=4.0 in one step.
-                # (Approximation: 4 small steps ~= 1 big step with 4x LR)
-                real_scale = float(costs_map[step_map.index(int(scale))] if scale in step_map else scale)
-                
-                out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=True, gating_scale=jnp.array([[scale]]))
-                loss = float(cross_entropy_loss(out_ttt["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
-                
-            else:
+                    
                 # Differentiable: Continuous Scale
                 # If scale close to 0, use SKIP (cost 1)
                 if scale < 0.01:
@@ -200,6 +195,7 @@ def evaluate_model(
                     cost = 3.0 # Fixed cost for 1-step
                 
                 loss = float(cross_entropy_loss(out_ttt["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
+                
             
             results["loss"].append(loss)
             results["cost"].append(cost)
@@ -253,7 +249,7 @@ def main():
     full_df = pd.concat(all_results)
     
     print("\n=== Final Results ===")
-    summary = full_df.groupby("method").agg({"loss": "mean", "cost": "mean"}).sort_values("loss")
+    summary = cast(pd.DataFrame, full_df.groupby("method").agg({"loss": "mean", "cost": "mean"})).sort_values(by="loss")
     print(summary)
     
     output_path = Path(args.output_dir)
@@ -265,7 +261,9 @@ def main():
     # Plot
     plt.figure(figsize=(10, 6))
     sns.scatterplot(data=full_df, x="cost", y="loss", hue="method", alpha=0.6)
-    plt.axhline(y=summary.loc["SKIP (Baseline)", "loss"], color='gray', linestyle='--', label="Baseline Loss")
+    if "SKIP (Baseline)" in summary.index:
+        baseline_loss = cast(float, summary.loc["SKIP (Baseline)", "loss"])
+        plt.axhline(y=baseline_loss, color='gray', linestyle='--', label="Baseline Loss")
     plt.title(f"Cost-Quality Tradeoff (Budget ~{args.budget}x)")
     plt.savefig(output_path / "tradeoff_plot.png")
     print(f"\nPlots saved to {output_path}")

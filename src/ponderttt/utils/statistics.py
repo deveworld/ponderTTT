@@ -4,12 +4,13 @@ Statistical utilities for evaluation.
 
 from collections.abc import Callable
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
 
 def bootstrap_ci(
-    data: np.ndarray,
+    data: np.ndarray | jax.Array,
     statistic: Callable = np.mean,
     n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
@@ -54,7 +55,7 @@ def bootstrap_ci(
 
 
 def compute_iqm(
-    data: np.ndarray,
+    data: np.ndarray | jax.Array,
     lower_quantile: float = 0.25,
     upper_quantile: float = 0.75,
 ) -> float:

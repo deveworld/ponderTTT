@@ -249,7 +249,8 @@ class ClassEvalBenchmark:
         k: int = 100,
     ) -> dict[str, float]:
         scores = []
-        attempts = []
+        attempts: list[int] = []
+
         for problem in self.problems:
             samples = list(generate_fn(problem.prompt))
             if not samples:
@@ -258,13 +259,13 @@ class ClassEvalBenchmark:
                 continue
 
             total = min(k, len(samples))
-            correct = 0
+            n_correct = 0
             for completion in samples[:total]:
                 if _check_solution(problem, completion):
-                    correct += 1
+                    n_correct += 1
             attempts.append(total)
             scores.append(
-                compute_pass_at_k(total, correct, k) if total > 0 else 0.0
+                compute_pass_at_k(total, n_correct, k) if total > 0 else 0.0
             )
 
         if not scores:

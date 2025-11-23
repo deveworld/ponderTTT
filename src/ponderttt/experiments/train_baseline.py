@@ -13,12 +13,11 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import cast
 
 import jax
+import jax.numpy as jnp
 import optax
 from flax import nnx
-from tokenizers import Tokenizer
 from tqdm import tqdm
 
 from ..data import create_data_iterator, get_tokenizer
@@ -160,7 +159,7 @@ def main():
 
     # Load tokenizer
     print("\nLoading tokenizer...")
-    tokenizer = cast(Tokenizer, get_tokenizer(model_name))
+    tokenizer = get_tokenizer(model_name)
 
     # Create data iterator
     print("Creating data iterator...")
@@ -258,16 +257,6 @@ def main():
     cost_multiplier = action_to_cost(args.action)
 
     fast_graphdef, fast_state_template = nnx.split(model.fast_layer)
-
-    def create_optimizer():
-        return nnx.Optimizer(
-            model,
-            optax.chain(
-                optax.clip_by_global_norm(1.0),
-                optax.adam(args.learning_rate),
-            ),
-            wrt=nnx.All(nnx.Param),
-        )
 
     def clone_state(state):
         return jax.tree_util.tree_map(
