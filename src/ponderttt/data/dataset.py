@@ -72,6 +72,7 @@ class CodeDataset:
                 signature_version=UNSIGNED,
                 connect_timeout=5,
                 read_timeout=10,
+                max_pool_connections=50,
             ),
         )
 

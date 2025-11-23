@@ -3,6 +3,8 @@ Compare GPT-2 Flax NNX logits to Hugging Face Transformers logits.
 
 Usage:
     python scripts/compare_gpt2_nnx.py --text "Hello world"
+    # If you added a pad token for training, pass --add_pad_token to resize both models
+    python scripts/compare_gpt2_nnx.py --text "Hello world" --add_pad_token
 
 Notes:
 - Requires `transformers` (PyTorch) and the GPT-2 checkpoint available locally or
@@ -28,6 +30,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model_name", type=str, default="gpt2", help="GPT-2 variant")
     parser.add_argument("--text", type=str, default="Hello world", help="Input text")
     parser.add_argument("--max_length", type=int, default=32, help="Max tokens to compare")
+    parser.add_argument(
+        "--add_pad_token",
+        action="store_true",
+        help="Add <|pad|> to tokenizer and resize models (matches training pipeline)",
+    )
+    parser.add_argument(
+        "--pad_token",
+        type=str,
+        default="<|pad|>",
+        help="Pad token string to add when --add_pad_token is set",
+    )
     return parser.parse_args()
 
 
@@ -47,8 +60,18 @@ def main() -> None:
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    base_vocab_size = tokenizer.vocab_size
+
+    if args.add_pad_token:
+        # Align with training pipeline that adds a dedicated pad token
+        if tokenizer.pad_token is None:
+            tokenizer.add_special_tokens({"pad_token": args.pad_token})
+        pad_token_id = tokenizer.pad_token_id
+    else:
+        # For vanilla GPT-2 comparison, reuse EOS as pad to avoid resizing
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        pad_token_id = None
 
     inputs = tokenizer(
         args.text,
@@ -61,6 +84,9 @@ def main() -> None:
 
     # Transformers (PyTorch) reference
     hf_model = AutoModelForCausalLM.from_pretrained(args.model_name)
+    if args.add_pad_token:
+        # Resize to accommodate newly added pad token
+        hf_model.resize_token_embeddings(len(tokenizer))
     hf_model.eval()
     with torch.no_grad():
         logits_pt = hf_model(input_ids_pt).logits.cpu().numpy()
@@ -71,6 +97,7 @@ def main() -> None:
         fast_weight_type="ttt",
         load_pretrained=True,
         vocab_size=tokenizer.vocab_size,
+        pad_token_id=pad_token_id,
     )
     model_nnx.eval()
 
