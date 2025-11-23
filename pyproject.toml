@@ -40,8 +40,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "mypy>=1.18.2",
-    "pyrefly>=0.41.3",  # Fast type checker by Facebook (alternative to mypy/pyright)
+    "pyrefly>=0.41.3",
     "pyright>=1.1.407",
     "pytest>=9.0.1",
     "ruff>=0.14.5",

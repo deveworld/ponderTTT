@@ -185,7 +185,22 @@ class ClassEvalBenchmark:
 
     def _load_problems(self):
         """Load ClassEval problems."""
-        raise NotImplementedError("ClassEval dataset is not yet publicly available")
+        from datasets import load_dataset
+
+        dataset = load_dataset("FudanSELab/ClassEval", split="test")
+
+        for example in dataset:
+            if isinstance(example, dict):
+                # ClassEval provides skeleton (class definition with method stubs)
+                # and test cases for class-level code generation
+                problem = CodeProblem(
+                    task_id=example["task_id"],
+                    prompt=example["skeleton"],  # Class skeleton with method stubs
+                    canonical_solution=example["solution_code"],
+                    test_code=example["test"],  # Test cases
+                    entry_point=example["class_name"],  # Class name
+                )
+                self.problems.append(problem)
 
     def __len__(self) -> int:
         """Number of problems."""
@@ -228,7 +243,6 @@ class ClassEvalBenchmark:
             "num_problems": len(scores),
             "avg_attempts": float(sum(attempts) / len(attempts)),
         }
-
 
 
 class BenchmarkSuite:

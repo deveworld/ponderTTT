@@ -21,11 +21,9 @@ Thanks for helping improve PonderTTT!
 - Policy training uses mini-batch PPO (`--ppo_minibatch_size`) with value clipping and PID anti-windup; keep new training loops consistent with that interface.
 
 ## Tests & formatting
-- We rely on `pytest`, `ruff`, and `mypy` (see extras in `pyproject.toml`). The CI expectation is:
+- We rely on `pytest`, `ruff`, `pyright`, and `ty`. The CI expectation is:
   ```bash
-  ruff check src tests
-  mypy src
-  pytest
+  make check
   ```
 - Long-running TPU/GPU tests are not part of CI; keep lightweight regressions under `scripts/` and `tests/`.
 

@@ -64,23 +64,27 @@ python -m ponderttt.experiments.train_differentiable \
     --num_iterations 1000 \
     --output_dir outputs/differentiable
 ```
-- `--max_steps`: Max scaling factor ($\lambda_{max}$).
-- `--budget_limit`: Target average compute cost (e.g., 2.0).
+Checkpoints will be saved to `outputs/differentiable` (e.g., `checkpoint_1000`).
 
 ### 3. Compare Methods
-Evaluate your trained model against fixed baselines and RL (PPO) approaches:
+Evaluate your trained model against fixed baselines and RL (PPO) approaches. You can load trained checkpoints for evaluation:
 ```bash
 python -m ponderttt.experiments.compare_methods \
     --model_scale 125m \
     --budget 2.0 \
-    --num_eval_batches 20
+    --num_eval_batches 20 \
+    --diff_checkpoint outputs/differentiable/checkpoint_1000 \
+    --rl_checkpoint outputs/policy_nnx/seed_42/checkpoint_100
 ```
 
 ### 4. Evaluation (Benchmarks)
-Use `ponderttt.evaluation.benchmarks` for HumanEval/MBPP. Code execution is unsafe and gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1`. Only set this in a sandboxed environment.
+Use `ponderttt.evaluation.benchmarks` for HumanEval/MBPP/ClassEval. Code execution is unsafe and gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1`. Only set this in a sandboxed environment.
+
+### 5. Checkpointing
+Models are saved using [Orbax](https://github.com/google/orbax). Checkpoints capture the full NNX state, including the Gating Network, TTT parameters, and optimizer state.
 
 ## Project Status
-- **Complete**: Pure NNX GPT-2, TTT Layer with Continuous Gating, End-to-End Differentiable Training Loop, Budget-Awareness, Comparison Script.
+- **Complete**: Pure NNX GPT-2, TTT Layer with Continuous Gating, End-to-End Differentiable Training Loop, Budget-Awareness, Comparison Script, Checkpointing (Orbax), Benchmarks (HumanEval, MBPP, ClassEval).
 - **In Progress**: Large-scale fine-tuning experiments and OOD (Out-of-Distribution) testing.
 
 See `PLAN.md` for the detailed research roadmap.
