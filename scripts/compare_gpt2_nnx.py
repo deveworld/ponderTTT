@@ -60,7 +60,6 @@ def main() -> None:
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    base_vocab_size = tokenizer.vocab_size
 
     if args.add_pad_token:
         # Align with training pipeline that adds a dedicated pad token
