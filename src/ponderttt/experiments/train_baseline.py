@@ -121,6 +121,12 @@ def parse_args():
         default=32,
         help="Number of parallel workers for data downloading",
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=8,
+        help="Batch size for training",
+    )
 
     return parser.parse_args()
 
@@ -196,7 +202,7 @@ def main():
 
     # Create data iterator
     print("Creating data iterator...")
-    batch_size = 4  # Small batch for CPU/testing
+    batch_size = args.batch_size
     seq_length = 1024
     chunk_size = 512
 
