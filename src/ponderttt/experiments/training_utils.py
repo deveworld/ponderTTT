@@ -88,7 +88,7 @@ def train_step_jit(
         return _forward(model, batch, use_ttt, ssl_weight)
 
     (loss, ttt_stats), grads = nnx.value_and_grad(loss_fn, has_aux=True)(optimizer.model)
-    optimizer.update(grads)
+    optimizer.update(optimizer.model, grads)
     return loss, ttt_stats
 
 
