@@ -123,7 +123,7 @@ class TTTLayerNorm(nnx.Module):
         mean = jnp.mean(x, axis=-1, keepdims=True)
         var = jnp.var(x, axis=-1, keepdims=True)
         normalized = (x - mean) / jnp.sqrt(var + self.epsilon)
-        return normalized * self.scale.value[head_idx] + self.bias.value[head_idx]
+        return normalized * self.scale[...][head_idx] + self.bias[...][head_idx]
 
 
 class TTTLayer(nnx.Module):
@@ -257,7 +257,7 @@ class TTTLayer(nnx.Module):
         XK = self._apply_causal_conv(self.conv_k, xqk)
         return XQ, XK, XV
 
-    def get_eta(self, X: jax.Array) -> jax.Array:
+    def get_eta(self, X: jax.Array, gating_scale: Optional[jax.Array] = None) -> jax.Array:
         """Compute learnable learning rate (per-head, position-dependent)."""
         # Per-head learnable learning rate
         # X shape: [B, n_mini_batch, mini_batch_size, width]
@@ -274,7 +274,7 @@ class TTTLayer(nnx.Module):
         learnable_ttt_lr = jax.nn.sigmoid(learnable_ttt_lr)
 
         # Position-dependent base learning rate
-        token_idx = self.learnable_token_idx.value + self.token_idx
+        token_idx = self.learnable_token_idx[...] + self.token_idx
         token_idx = jnp.clip(token_idx, a_min=0.0)
 
         # Combined learning rate
@@ -283,10 +283,25 @@ class TTTLayer(nnx.Module):
             * learnable_ttt_lr
             / self.head_dim
         )
+
+        # Apply gating scale if provided
+        if gating_scale is not None:
+            if gating_scale.ndim == 2:
+                # [B, 1]
+                gating_scale = gating_scale[:, None, None, None, :]
+            elif gating_scale.ndim == 3:
+                # [B, N_mini, 1]
+                gating_scale = gating_scale[:, None, :, None, :]
+                
+            eta = eta * gating_scale
+            
         return eta
 
     def get_ttt_inputs(
-        self, batch: jax.Array, position_ids: jax.Array
+        self, 
+        batch: jax.Array, 
+        position_ids: jax.Array,
+        gating_scale: Optional[jax.Array] = None,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, Tuple]:
         """Prepare inputs for TTT processing."""
         B, N, F = batch.shape
@@ -343,7 +358,7 @@ class TTTLayer(nnx.Module):
         XV = self._split_mini_batches(XV)
 
         # Get learning rate
-        eta = self.get_eta(X)
+        eta = self.get_eta(X, gating_scale=gating_scale)
 
         return (XQ, XK, XV, eta, (ssl_tgt_last_in_mini_batch_from_mean_mse,))
 
@@ -462,7 +477,7 @@ class TTTLayer(nnx.Module):
             # Create head indices
             head_indices = jnp.arange(self.num_heads)
             outputs = parallelize_over_heads(
-                XQ, XK, XV, eta, self.W1.value, self.b1.value, head_indices
+                XQ, XK, XV, eta, self.W1[...], self.b1[...], head_indices
             )
             return outputs
 
@@ -484,6 +499,7 @@ class TTTLayer(nnx.Module):
         position_ids: Optional[jax.Array] = None,
         *,
         train: bool = False,
+        gating_scale: Optional[jax.Array] = None,
     ) -> Tuple[jax.Array, dict]:
         """Apply TTT layer.
 
@@ -491,6 +507,7 @@ class TTTLayer(nnx.Module):
             hidden_states: Input [batch, seq_len, hidden_dim]
             mask: Attention mask (not used)
             position_ids: Position indices for RoPE
+            gating_scale: Optional scaling factor for learning rate (for differentiable TTT)
 
         Returns:
             (output, ttt_stats) tuple
@@ -505,7 +522,11 @@ class TTTLayer(nnx.Module):
             position_ids = jnp.arange(seq_len)[None, :].repeat(batch_size, axis=0)
 
         # Get TTT inputs
-        XQ, XK, XV, eta, precompute_stats = self.get_ttt_inputs(hidden_states, position_ids=position_ids)
+        XQ, XK, XV, eta, precompute_stats = self.get_ttt_inputs(
+            hidden_states, 
+            position_ids=position_ids,
+            gating_scale=gating_scale,
+        )
 
         # Perform TTT
         Z, ttt_stats = self.ttt(XQ, XK, XV, eta)

@@ -162,7 +162,7 @@ class FeatureExtractor:
         mean_act = jnp.sum(last_hidden * mask, axis=(1, 2)) / denom.squeeze(-1)
         centered = last_hidden - mean_act[:, None, None]
         std_act = jnp.sqrt(
-            jnp.sum((centered**2) * mask, axis=(1, 2)) / denom.squeeze(-1)
+            jnp.maximum(jnp.sum((centered**2) * mask, axis=(1, 2)) / denom.squeeze(-1), 1e-10)
         )
         sparsity = jnp.sum(
             (jnp.abs(last_hidden) < 0.01).astype(jnp.float32) * mask, axis=(1, 2)
@@ -248,9 +248,9 @@ class FeatureExtractor:
         # Higher std = more diverse tokens
         token_diversity = (
             jnp.sqrt(
-                jnp.sum(((input_ids.astype(jnp.float32) - jnp.mean(input_ids.astype(jnp.float32), axis=-1, keepdims=True)) ** 2) * mask,
+                jnp.maximum(jnp.sum(((input_ids.astype(jnp.float32) - jnp.mean(input_ids.astype(jnp.float32), axis=-1, keepdims=True)) ** 2) * mask,
                         axis=-1)
-                / valid_tokens.squeeze(-1)
+                / valid_tokens.squeeze(-1), 1e-10)
             )
             / self.vocab_size
         )
@@ -267,7 +267,7 @@ class FeatureExtractor:
         )
         centered_tokens = (input_ids.astype(jnp.float32) - jnp.expand_dims(avg_token_id * self.vocab_size, -1))
         std_token_id = (
-            jnp.sqrt(jnp.sum((centered_tokens**2) * mask, axis=-1) / valid_tokens.squeeze(-1)) / self.vocab_size
+            jnp.sqrt(jnp.maximum(jnp.sum((centered_tokens**2) * mask, axis=-1) / valid_tokens.squeeze(-1), 1e-10)) / self.vocab_size
         )
 
         # Prediction confidence
@@ -286,7 +286,7 @@ class FeatureExtractor:
             input_ids[:, 1:].astype(jnp.float32) - input_ids[:, :-1].astype(jnp.float32)
         )
         token_variation = (
-            jnp.sqrt(jnp.sum((token_diffs ** 2) * mask[:, 1:], axis=-1) / jnp.maximum(valid_tokens.squeeze(-1) - 1, 1.0))
+            jnp.sqrt(jnp.maximum(jnp.sum((token_diffs ** 2) * mask[:, 1:], axis=-1) / jnp.maximum(valid_tokens.squeeze(-1) - 1, 1.0), 1e-10))
             / self.vocab_size
         )
 
@@ -343,7 +343,7 @@ class FeatureExtractor:
         positions = jnp.arange(seq_len, dtype=jnp.float32)[None, :] / jnp.maximum(seq_len - 1, 1)
         position_mean = jnp.sum(positions * mask, axis=-1) / valid_tokens
         position_std = jnp.sqrt(
-            jnp.sum(((positions - position_mean[:, None]) ** 2) * mask, axis=-1) / valid_tokens
+            jnp.maximum(jnp.sum(((positions - position_mean[:, None]) ** 2) * mask, axis=-1) / valid_tokens, 1e-10)
         )
 
         # Compression ratio (proxy: fraction of non-pad tokens)

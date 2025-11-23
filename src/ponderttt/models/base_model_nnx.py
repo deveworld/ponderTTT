@@ -135,6 +135,7 @@ class TTTTransformerLM(nnx.Module):
         input_ids: jax.Array,
         attention_mask: Optional[jax.Array] = None,
         use_ttt: bool = True,
+        gating_scale: Optional[jax.Array] = None,
     ) -> dict:
         """
         Forward pass combining slow and fast weights.
@@ -143,6 +144,7 @@ class TTTTransformerLM(nnx.Module):
             input_ids: Input token IDs [batch, seq_len]
             attention_mask: Attention mask [batch, seq_len] (currently unused)
             use_ttt: Whether to apply TTT layer (False for SKIP baseline)
+            gating_scale: Optional scaling factor for TTT update (for differentiable gating)
 
         Returns:
             Dictionary with:
@@ -167,11 +169,20 @@ class TTTTransformerLM(nnx.Module):
             hidden_states_normed = self.fast_norm(hidden_states)
 
             # Apply fast-weight layer (TTT or LoRA)
+            # Prepare kwargs for fast layer
+            fast_kwargs = {
+                "mask": attention_mask,
+                "position_ids": None,
+                "train": train_flag,
+            }
+            
+            # Only pass gating_scale if it's TTT layer (LoRA doesn't support it yet)
+            if self.fast_weight_type == "ttt" and gating_scale is not None:
+                fast_kwargs["gating_scale"] = gating_scale
+
             fast_output, fast_stats = self.fast_layer(
                 hidden_states_normed,
-                mask=attention_mask,
-                position_ids=None,
-                train=train_flag,
+                **fast_kwargs
             )
 
             # Residual connection (official pattern: hidden_states = hidden_states + seq_modeling_output)
@@ -276,12 +287,13 @@ def load_ttt_model(
     def _set_param_value(param: nnx.Param | None, value: Any, name: str) -> None:
         if param is None:
             raise ValueError(f"Parameter '{name}' is not initialized")
-        param.set_value(value)
+        # NNX Variable in-place update (reading uses [...], writing uses .value)
+        param.value = value
 
     def _get_param_value(param: nnx.Param | None, name: str) -> Any:
         if param is None:
             raise ValueError(f"Parameter '{name}' is not initialized")
-        return param.get_value()
+        return param[...]
 
     # Load pretrained weights if requested
     if load_pretrained:

@@ -302,7 +302,7 @@ class GPT2LMHeadModel(nnx.Module):
         if self.tie_word_embeddings:
             # Share weights with token embedding (reduces parameters by 31%)
             # Use transpose: embedding is [vocab_size, n_embd], need [n_embd, vocab_size]
-            embedding_kernel = self.transformer.wte.embedding.value
+            embedding_kernel = self.transformer.wte.embedding[...]
             logits = hidden_states @ embedding_kernel.T
         else:
             logits = self.lm_head(hidden_states)

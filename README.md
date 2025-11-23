@@ -1,17 +1,35 @@
 # PonderTTT
 
-Adaptive, chunk-level Test-Time Training (TTT) for code generation models built with JAX/Flax NNX.
+Adaptive, budget-aware Test-Time Training (TTT) for code generation models built with JAX/Flax NNX.
 
-## What this project provides
-- **Chunk-aware fast weights** – GPT-2 slow weights stay frozen while a TTT or strictly low-rank LoRA adapter updates per chunk. Actions `SKIP / UPDATE_1 / UPDATE_2 / UPDATE_4` map to 0/1/2/4 optimizer steps on the fast weights. A small SSL auxiliary loss from the TTT layer is included (configurable weight).
-- **Budget-constrained policy learning** – PPO with PID Lagrangian uses 32-D mask-aware features, cost-penalized rewards, advantage normalization, value clipping, mini-batch updates, grad clipping, PID anti-windup, and KL logging to respect compute budgets.
-- **Streaming data pipeline** – The Stack v2 (dedup) streamed from Software Heritage with a required `seq_length % chunk_size == 0`, dedicated `<|pad|>` token (enforced), aligned masks, and cache keys that include language/tokenizer identity.
-- **Executable evaluation (gated)** – HumanEval/MBPP/ClassEval helpers are present; unsafe exec is disabled unless `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1` is set in a trusted sandbox.
-- **Operational tooling** – quick sanity tests, end-to-end pipeline checks, distributed/TPU validation, checkpointing, visualization, and baseline/policy trainers.
+## Core Idea: Differentiable Continuous Gating
 
-The code base is TPU-first but runs on CPU or GPU. Everything is dependency-managed through `uv`.
+PonderTTT introduces **Differentiable Adaptive Test-Time Training**. Instead of using fixed update schedules or unstable Reinforcement Learning (RL), we learn **how strongly** to update fast weights during inference using a continuous, gradient-based approach.
+
+| Feature | Discrete (RL/PPO) | PonderTTT (Continuous Gating) |
+| :--- | :--- | :--- |
+| **Control Signal** | Action $a_t ∈ \{0, 1, 2, 4\}$ | Scalar $\lambda_t \in [0, n]$ |
+| **Update Logic** | Select $k$ distinct gradient steps | Scale the learning rate $\eta$ by $\lambda_t$ |
+| **Optimization** | Policy Gradient (High Variance) | End-to-End Backprop (Stable) |
+| **Benefit** | Hard exploration | Smooth loss landscape, "Soft Skips" |
+
+This allows the model to allocate compute resources optimally—spending more updates on difficult code chunks and saving on boilerplate—while being trained efficiently via standard backpropagation.
+
+## Technical Architecture
+
+This project is a pure JAX/Flax NNX rewrite of the official TTT-LM, enhanced with adaptive capabilities.
+
+- **Base Model**: Pretrained GPT-2 (125M~1.5B) implementation in NNX. The backbone weights are frozen (`stop_gradient`) during fine-tuning.
+- **Fast-Weight Layer (`TTTLayer`)**: Implements TTT-Linear with causal convolutions and dual-form updates. We extended the update rule to accept a `gating_scale` ($\lambda_t$), effectively scaling the learning rate element-wise.
+- **Gating Network**: A lightweight MLP that observes 32-D features (loss, entropy, budget remaining) and predicts $\lambda_t$.
+- **End-to-End Loss**:
+  $$L_{total} = L_{CE} + \beta \cdot L_{TTT} + \gamma \cdot \text{Mean}(\lambda_t)$$
+  - $L_{CE}$: Main task cross-entropy.
+  - $L_{TTT}$: Reconstruction loss of the TTT layer (ensures fast weights learn useful representations).
+  - $\gamma \cdot \text{Mean}(\lambda_t)$: Soft penalty to enforce the compute budget.
 
 ## Installation
+
 ```bash
 # Install uv if you do not have it yet
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -27,64 +45,42 @@ uv pip install -e . --group tpu
 uv pip install -e . --dev
 ```
 
-Tokenizer weights are downloaded from Hugging Face; set `HF_HOME` or mirror the files locally if you are offline. `get_tokenizer` adds `<|pad|>`; datasets will raise if it is missing. If you add tokens, pass the resulting `vocab_size` to `load_ttt_model`.
+## Quick Start
 
-## Quick validation
-Run the lightweight smoke tests once after installation:
+### 1. Validate Setup
+Run the lightweight smoke tests to ensure tokenizer and model loading work:
 ```bash
-python scripts/quick_test.py          # tokenizer/model/feature sanity
-python scripts/test_pipeline.py       # end-to-end chunk pipeline
-python scripts/test_distributed.py    # multi-host primitives (CPU friendly)
-python scripts/test_weight_tying.py   # weight tying regression
-python scripts/compare_gpt2_nnx.py    # compare NNX logits to transformers (requires HF, torch)
+python scripts/quick_test.py
+python scripts/test_pipeline.py
 ```
-For TPU deployments run `python scripts/validate_tpu_setup.py --multi_host` on all workers before launching long jobs.
 
-### INTERNAL error on CUDA
-If you encounter an error like `jax.errors.JaxRuntimeError: INTERNAL: an unsupported value or parameter was passed to the function`,
-you can set the following environment variable:
+### 2. Differentiable Training (Fine-tuning)
+This is the main workflow. Train the gating network and TTT parameters jointly on The Stack v2:
 ```bash
-export XLA_FLAGS="--xla_gpu_enable_cublaslt=true \
-                  --xla_gpu_cublas_fallback=true \
-                  --xla_gpu_enable_command_buffer=''"
-```
-This is a known workaround mentioned in [jax-ml/jax#29031](https://github.com/jax-ml/jax/issues/29031#issuecomment-3345992686), which I encountered on Vast.ai while doing some experiments.
-
-## Baseline training
-`train_baseline.py` consumes streamed chunks and applies the specified action to every chunk:
-```bash
-python -m ponderttt.experiments.train_baseline \
+python -m ponderttt.experiments.train_differentiable \
     --model_scale 125m \
-    --action UPDATE_2 \
-    --max_chunks 200 \
-    --output_dir outputs/baselines
+    --max_steps 4.0 \
+    --budget_limit 2.0 \
+    --num_iterations 1000 \
+    --output_dir outputs/differentiable
 ```
-Outputs include average loss/perplexity and the true compute multiplier accumulated over processed chunks. `--fast_weight_type lora --lora_rank 128` switches the fast-weight adapter.
+- `--max_steps`: Max scaling factor ($\lambda_{max}$).
+- `--budget_limit`: Target average compute cost (e.g., 2.0).
 
-## Policy training
-The policy loop collects chunk sequences, queries the policy for each chunk, applies the requested number of fast-weight updates, and computes rewards from loss deltas while enforcing a cost budget.
+### 3. Compare Methods
+Evaluate your trained model against fixed baselines and RL (PPO) approaches:
 ```bash
-python -m ponderttt.experiments.train_policy \
+python -m ponderttt.experiments.compare_methods \
     --model_scale 125m \
-    --rollout_length 64 \
-    --budget_limit 4.0 \
-    --num_iterations 50 \
-    --ppo_minibatch_size 32 \
-    --ssl_weight 0.1 \
-    --output_dir outputs/policy
+    --budget 2.0 \
+    --num_eval_batches 20
 ```
-Results are saved as JSON (training history); visualize them with `python scripts/visualize_results.py --results_file outputs/policy/...json`.
 
-`load_ttt_model` accepts `vocab_size` to align model embeddings with tokenizer extensions (e.g., added pad token). Policy/baseline trainers support multi-seed runs (`--seeds 0,1,2`) and report bootstrap CIs.
+### 4. Evaluation (Benchmarks)
+Use `ponderttt.evaluation.benchmarks` for HumanEval/MBPP. Code execution is unsafe and gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1`. Only set this in a sandboxed environment.
 
-## Evaluation
-Use `ponderttt.evaluation.benchmarks` to run pass@k tests with a `generate_fn(prompt) -> Iterable[str]`. For safety, code execution is disabled by default; set `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1` only inside a trusted sandbox before calling `evaluate_all`.
+## Project Status
+- **Complete**: Pure NNX GPT-2, TTT Layer with Continuous Gating, End-to-End Differentiable Training Loop, Budget-Awareness, Comparison Script.
+- **In Progress**: Large-scale fine-tuning experiments and OOD (Out-of-Distribution) testing.
 
-## Project status
-- Pure NNX GPT-2 implementation with chunk-level TTT
-- Streaming data + chunk masks with dedicated padding
-- Policy training loop with real budgets, history-aware features, and fixed GAE
-- Executable benchmark suite
-- ⏳ Large-scale experiments (TPU v4-64) once hardware is available
-
-See `PLAN.md` for the research roadmap and `PROJECT_STATUS.md` for the current milestone tracker.
+See `PLAN.md` for the detailed research roadmap.
