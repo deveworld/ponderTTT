@@ -16,7 +16,6 @@ from flax import nnx
 from jax import vmap
 from jax.tree_util import tree_map
 
-_REMAT_SCAN = getattr(jax, "checkpoint", getattr(jax, "remat"))
 
 def scan_remat_every_n_iterations_scan(f, n, carry, x):
     """
@@ -28,7 +27,7 @@ def scan_remat_every_n_iterations_scan(f, n, carry, x):
     """
     x_grouped = tree_map(lambda x: x.reshape((-1, n, *x.shape[1:])), x)
     carry, y_grouped = jax.lax.scan(
-        _REMAT_SCAN(partial(jax.lax.scan, f), prevent_cse=False),
+        jax.remat(partial(jax.lax.scan, f), prevent_cse=False), # type: ignore[arg-type]
         carry,
         x_grouped
     )

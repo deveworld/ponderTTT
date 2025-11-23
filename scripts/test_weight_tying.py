@@ -7,7 +7,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import jax
 import jax.numpy as jnp
 
 from ponderttt.data import get_tokenizer

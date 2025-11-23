@@ -6,7 +6,7 @@ Uses native GPT-2 implementation for TPU optimization.
 """
 
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -81,6 +81,7 @@ class TTTTransformerLM(nnx.Module):
         self.fast_norm = nnx.LayerNorm(gpt2_config.n_embd, epsilon=1e-5, rngs=rngs)
 
         # Fast weights: TTT layer or LoRA (adaptive, trainable)
+        self.fast_layer: Union[TTTLayer, LoRALayer]
         if self.fast_weight_type == "ttt":
             if ttt_config is None:
                 raise ValueError("ttt_config required when fast_weight_type='ttt'")
@@ -120,11 +121,11 @@ class TTTTransformerLM(nnx.Module):
         super().eval(**attributes)
         self.is_training = False
 
-    def get_trainable_params(self) -> dict:
+    def get_trainable_params(self) -> nnx.State:
         """Get only trainable parameters (fast-weight layer).
 
         Returns:
-            Dictionary containing only fast-weight layer parameters
+            nnx.State containing only fast-weight layer parameters
         """
         # Extract only fast-weight layer parameters (TTT or LoRA)
         _, fast_state = nnx.split(self.fast_layer)
@@ -169,21 +170,22 @@ class TTTTransformerLM(nnx.Module):
             hidden_states_normed = self.fast_norm(hidden_states)
 
             # Apply fast-weight layer (TTT or LoRA)
-            # Prepare kwargs for fast layer
-            fast_kwargs = {
-                "mask": attention_mask,
-                "position_ids": None,
-                "train": train_flag,
-            }
-            
-            # Only pass gating_scale if it's TTT layer (LoRA doesn't support it yet)
-            if self.fast_weight_type == "ttt" and gating_scale is not None:
-                fast_kwargs["gating_scale"] = gating_scale
-
-            fast_output, fast_stats = self.fast_layer(
-                hidden_states_normed,
-                **fast_kwargs
-            )
+            if isinstance(self.fast_layer, TTTLayer):
+                fast_output, fast_stats = self.fast_layer(
+                    hidden_states_normed,
+                    mask=attention_mask,
+                    position_ids=None,
+                    train=train_flag,
+                    gating_scale=gating_scale,
+                )
+            else:
+                # LoRA or other layer
+                fast_output, fast_stats = self.fast_layer(
+                    hidden_states_normed,
+                    mask=attention_mask,
+                    position_ids=None,
+                    train=train_flag,
+                )
 
             # Residual connection (official pattern: hidden_states = hidden_states + seq_modeling_output)
             adapted_hidden = hidden_states + fast_output

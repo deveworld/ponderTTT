@@ -8,7 +8,7 @@ by PID Lagrangian Methods", ICML 2020
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 import jax
 import jax.numpy as jnp

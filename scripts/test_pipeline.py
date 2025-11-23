@@ -12,14 +12,12 @@ Tests:
 
 import sys
 from pathlib import Path
-from typing import cast
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from tokenizers import Tokenizer
 
 print("=" * 60)
 print("PonderTTT Pipeline Integration Test (NNX)")
@@ -30,7 +28,7 @@ print("\n[1/6] Testing data loading...")
 try:
     from ponderttt.data import get_tokenizer
 
-    tokenizer = cast(Tokenizer, get_tokenizer("gpt2"))
+    tokenizer = get_tokenizer("gpt2")
 
     # Create dummy batch for unit testing
     batch_size = 2

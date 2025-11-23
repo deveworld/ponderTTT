@@ -7,19 +7,15 @@ Usage:
 
 import argparse
 import json
-import math
 from pathlib import Path
-from typing import cast, Tuple
 
 import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
-from tokenizers import Tokenizer
-from tqdm import tqdm
 
 from ..data import create_data_iterator, get_tokenizer
-from ..models import load_ttt_model, TTTConfig
+from ..models import GPT2Model, load_ttt_model
 from ..models.gating_nnx import GatingConfig, GatingNetwork
 from ..utils import FeatureExtractor, cross_entropy_loss
 
@@ -117,7 +113,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     model_name = get_model_name(args.model_scale)
-    tokenizer = cast(Tokenizer, get_tokenizer(model_name))
+    tokenizer = get_tokenizer(model_name)
     
     # Load TTT Model (Frozen Backbone)
     print("Loading TTT model...")
@@ -186,7 +182,7 @@ def main():
     def train_step(
         trainable_sys: TrainableSystem,
         optimizer: nnx.Optimizer,
-        base_model: nnx.Module, # Passed separately, treated as constant/static if not optimized
+        base_model: GPT2Model, # Passed separately, treated as constant/static if not optimized
         batch: dict, 
         budget_remaining: float,
         beta_ttt: float = 0.1,
@@ -204,7 +200,7 @@ def main():
         
         # Compute logits for features (also frozen base)
         if ttt_model.tie_word_embeddings:
-            embedding_kernel = base_model.wte.embedding[...]
+            embedding_kernel = base_model.wte.embedding[...]  # type: ignore
             logits_base = hidden_states @ embedding_kernel.T
         else:
             # If lm_head is separate, it might be in trainable_sys or not?
@@ -227,6 +223,7 @@ def main():
         
         def loss_fn(sys):
             # 2. Predict Gating
+            # Assuming gating_net is callable via __call__
             gating_scale = sys.gating_net(features, train=True)
             
             # 3. Apply TTT (Fast Path)
@@ -236,7 +233,7 @@ def main():
             fast_output, fast_stats = sys.fast_layer(
                 hidden_states_normed,
                 mask=attention_mask,
-                position_ids=None, # Auto-generated in layer if None
+                position_ids=None,
                 train=True,
                 gating_scale=gating_scale
             )
@@ -245,7 +242,7 @@ def main():
             
             # Final Logits
             if ttt_model.tie_word_embeddings:
-                embedding_kernel = base_model.wte.embedding[...]
+                embedding_kernel = base_model.wte.embedding[...]  # type: ignore
                 logits = adapted_hidden @ embedding_kernel.T
             elif sys.lm_head:
                 logits = sys.lm_head(adapted_hidden)
@@ -257,7 +254,8 @@ def main():
             
             if fast_stats is not None and "ttt_loss_step_1" in fast_stats:
                 l_ttt = jnp.mean(fast_stats["ttt_loss_step_1"])
-                if l_ttt is None: l_ttt = 0.0
+                if l_ttt is None:
+                    l_ttt = 0.0
             else:
                 l_ttt = 0.0
                 
@@ -312,6 +310,10 @@ def main():
         # (Full BPTT through multiple chunks is heavy).
         
         feature_extractor.reset_history()
+        
+        # Initialize stats for logging
+        loss, l_ttt, cost = 0.0, 0.0, 0.0
+        avg_ce_loss, avg_gate_val = 0.0, 0.0
         
         for c_idx in range(num_chunks):
             chunk_batch = {
