@@ -123,6 +123,7 @@ def finalize_checkpointing():
 def load_checkpoint(
     checkpoint_dir: str | Path,
     step: int | None = None,
+    target: Any | None = None,
 ) -> dict[str, Any]:
     """
     Load checkpoint using Orbax.
@@ -130,6 +131,7 @@ def load_checkpoint(
     Args:
         checkpoint_dir: Directory containing checkpoints
         step: Specific step to load (if None, load latest)
+        target: Optional target structure for restoration (e.g., for NNX State)
 
     Returns:
         Checkpoint dictionary
@@ -142,19 +144,27 @@ def load_checkpoint(
         # Find latest checkpoint (exclude temporary files)
         checkpoints = [
             cp for cp in checkpoint_dir.glob("checkpoint_*")
-            if not cp.name.endswith(".orbax-checkpoint-tmp")
+            if not cp.name.endswith(".orbax-checkpoint-tmp") and cp.is_dir()
         ]
+        
         if not checkpoints:
-            raise ValueError(f"No checkpoints found in {checkpoint_dir}")
-
-        # Sort by step number
-        checkpoints.sort(key=lambda x: int(x.name.split("_")[1]))
-        checkpoint_path = checkpoints[-1]
+            # Fallback: check if the directory itself is a checkpoint
+            checkpoint_path = checkpoint_dir
+        else:
+            # Sort by step number
+            checkpoints.sort(key=lambda x: int(x.name.split("_")[1]))
+            checkpoint_path = checkpoints[-1]
     else:
         checkpoint_path = checkpoint_dir / f"checkpoint_{step}"
 
     # Load
-    checkpoint = checkpointer.restore(checkpoint_path)
+    try:
+        if target is not None:
+            checkpoint = checkpointer.restore(checkpoint_path, item=target)
+        else:
+            checkpoint = checkpointer.restore(checkpoint_path)
+    except Exception as e:
+        raise ValueError(f"Failed to load checkpoint from {checkpoint_path}: {e}")
 
     return checkpoint
 

@@ -219,7 +219,20 @@ def main():
         
         # Reconstruct system and update state
         trainable_system = TrainableSystem(diff_ttt_model, diff_net)
-        ckpt = load_checkpoint(args.diff_checkpoint)
+        
+        # Create target for restoration to preserve NNX State structure
+        # We must match the saved structure exactly, including metadata, to avoid Orbax errors.
+        target = {
+            "state": nnx.state(trainable_system),
+            "step": 0,
+            "metadata": {
+                "model_scale": "",
+                "max_steps": 0.0,
+                "budget_limit": 0.0,
+            }
+        }
+        
+        ckpt = load_checkpoint(args.diff_checkpoint, target=target)
         nnx.update(trainable_system, ckpt["state"])
         print("Differentiable Gating and TTT weights loaded.")
 
@@ -230,7 +243,16 @@ def main():
     )
     if args.rl_checkpoint:
         print(f"Loading RL Policy checkpoint from {args.rl_checkpoint}...")
-        ckpt = load_checkpoint(args.rl_checkpoint)
+        target = {
+            "state": nnx.state(rl_net),
+            "step": 0,
+            "metadata": {
+                "seed": 0,
+                "model_scale": "",
+                "budget_limit": 0.0,
+            }
+        }
+        ckpt = load_checkpoint(args.rl_checkpoint, target=target)
         nnx.update(rl_net, ckpt["state"])
         print("RL Policy weights loaded.")
     
