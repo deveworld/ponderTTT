@@ -329,20 +329,27 @@ def main():
         model_graphdef, model_state = nnx.split(ttt_model_template)
         base_state = jax.tree_util.tree_map(lambda x: x.copy(), model_state)
 
+        # Create initial instances once
+        ttt_model = nnx.merge(model_graphdef, base_state)
+        ttt_model.train()
+        ttt_optimizer = nnx.Optimizer(
+            ttt_model,
+            optax.chain(
+                optax.clip_by_global_norm(args.max_grad_norm),
+                optax.adam(args.learning_rate),
+            ),
+            wrt=nnx.All(nnx.Param),
+        )
+        # Capture initial optimizer state
+        _, ttt_opt_state_init = nnx.split(ttt_optimizer)
+
         def reset_ttt_model():
-            """Create a fresh copy of the TTT model + optimizer."""
-            model_state_copy = jax.tree_util.tree_map(lambda x: x.copy(), base_state)
-            model = nnx.merge(model_graphdef, model_state_copy)
-            model.train()
-            optimizer_model = nnx.Optimizer(
-                model,
-                optax.chain(
-                    optax.clip_by_global_norm(args.max_grad_norm),
-                    optax.adam(args.learning_rate),
-                ),
-                wrt=nnx.All(nnx.Param),
-            )
-            return model, optimizer_model
+            """Reset TTT model and optimizer state."""
+            # Reset model parameters
+            nnx.update(ttt_model, base_state)
+            # Reset optimizer state
+            nnx.update(ttt_optimizer, ttt_opt_state_init)
+            return ttt_model, ttt_optimizer
 
         print(f"OK Model template ready: {ttt_config.n_layer} layers")
         print(f"  Fast weight type: {args.fast_weight_type}")
@@ -549,6 +556,53 @@ def main():
             loss = math.inf
             data_size = rollout_features_array.shape[0]
             update_rng = jax.random.PRNGKey(args.seed + iteration + 100)
+
+            @nnx.jit
+            def train_step_policy(
+                policy_model: PolicyNetwork,
+                optimizer: nnx.Optimizer,
+                mb_features: jax.Array,
+                mb_actions: jax.Array,
+                mb_old_log_probs: jax.Array,
+                mb_old_values: jax.Array,
+                mb_advantages: jax.Array,
+                mb_returns: jax.Array,
+            ):
+                def policy_loss_fn(mdl):
+                    """Compute PPO loss for minibatch."""
+                    outputs = mdl.evaluate_actions(mb_features, mb_actions)
+                    new_log_probs = outputs["log_prob"]
+                    new_values = outputs["value"]
+                    entropies = outputs["entropy"]
+
+                    ratios = jnp.exp(new_log_probs - mb_old_log_probs)
+                    clip_ratios = jnp.clip(ratios, 1.0 - args.value_clip, 1.0 + args.value_clip)
+                    policy_loss = -jnp.mean(
+                        jnp.minimum(ratios * mb_advantages, clip_ratios * mb_advantages)
+                    )
+
+                    value_pred_clipped = mb_old_values + jnp.clip(
+                        new_values - mb_old_values, -args.value_clip, args.value_clip
+                    )
+                    value_losses = jnp.square(new_values - mb_returns)
+                    value_losses_clipped = jnp.square(value_pred_clipped - mb_returns)
+                    value_loss = 0.5 * jnp.mean(jnp.minimum(value_losses, value_losses_clipped))
+
+                    entropy_loss = -0.01 * jnp.mean(entropies)
+
+                    approx_kl = jnp.mean(mb_old_log_probs - new_log_probs)
+                    total_loss = policy_loss + value_loss + entropy_loss
+                    return total_loss, {
+                        "policy_loss": policy_loss,
+                        "value_loss": value_loss,
+                        "entropy": jnp.mean(entropies),
+                        "approx_kl": approx_kl,
+                    }
+
+                (loss, metrics), grads = nnx.value_and_grad(policy_loss_fn, has_aux=True)(policy_model)
+                optimizer.update(policy_model, grads)
+                return loss, metrics
+
             for _ in range(args.ppo_epochs):
                 update_rng, perm_key = jax.random.split(update_rng)
                 perm = jax.random.permutation(perm_key, data_size)
@@ -561,41 +615,16 @@ def main():
                     mb_advantages = advantages[mb_idx]
                     mb_returns = returns[mb_idx]
 
-                    def policy_loss_fn(mdl):
-                        """Compute PPO loss for minibatch."""
-                        outputs = mdl.evaluate_actions(mb_features, mb_actions)
-                        new_log_probs = outputs["log_prob"]
-                        new_values = outputs["value"]
-                        entropies = outputs["entropy"]
-
-                        ratios = jnp.exp(new_log_probs - mb_old_log_probs)
-                        clip_ratios = jnp.clip(ratios, 1.0 - args.value_clip, 1.0 + args.value_clip)
-                        policy_loss = -jnp.mean(
-                            jnp.minimum(ratios * mb_advantages, clip_ratios * mb_advantages)
-                        )
-
-                        value_pred_clipped = mb_old_values + jnp.clip(
-                            new_values - mb_old_values, -args.value_clip, args.value_clip
-                        )
-                        value_losses = jnp.square(new_values - mb_returns)
-                        value_losses_clipped = jnp.square(value_pred_clipped - mb_returns)
-                        value_loss = 0.5 * jnp.mean(jnp.minimum(value_losses, value_losses_clipped))
-
-                        entropy_loss = -0.01 * jnp.mean(entropies)
-
-                        approx_kl = jnp.mean(mb_old_log_probs - new_log_probs)
-                        total_loss = policy_loss + value_loss + entropy_loss
-                        return total_loss, {
-                            "policy_loss": policy_loss,
-                            "value_loss": value_loss,
-                            "entropy": jnp.mean(entropies),
-                            "approx_kl": approx_kl,
-                        }
-
-                    loss_fn = nnx.value_and_grad(policy_loss_fn, has_aux=True)
-                    (loss, metrics), grads = loss_fn(policy)
-                    optimizer.update(policy, grads)
-                    last_metrics = metrics
+                    loss, last_metrics = train_step_policy(
+                        policy,
+                        optimizer,
+                        mb_features,
+                        mb_actions,
+                        mb_old_log_probs,
+                        mb_old_values,
+                        mb_advantages,
+                        mb_returns,
+                    )
 
             # Update PID controller
             avg_cost = float(jnp.mean(rollout_costs_array))
