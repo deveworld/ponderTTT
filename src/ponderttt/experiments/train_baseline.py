@@ -289,8 +289,7 @@ def main():
             ),
             wrt=nnx.All(nnx.Param),
         )
-    # optimizer = create_optimizer() # Original code did this, we can do it inside loop or here. 
-    # The original code created it here just to print. We'll skip printing redundancy.
+    
     print(f"OK Optimizer: Adam (lr={args.learning_rate}, base_model frozen via stop_gradient)")
 
     # Training loop
@@ -300,16 +299,12 @@ def main():
     action_steps = action_to_steps(args.action)
     cost_multiplier = action_to_cost(args.action)
 
-    fast_graphdef, fast_state_template = nnx.split(model.fast_layer)
-
-    def clone_state(state):
-        return jax.tree_util.tree_map(
-            lambda x: x.copy() if hasattr(x, "copy") else x,
-            state,
-        )
+    # Capture initial state for fast weights
+    _, fast_state_template = nnx.split(model.fast_layer)
 
     def reset_fast_weights():
-        model.fast_layer = nnx.merge(fast_graphdef, clone_state(fast_state_template))
+        # Update existing layer with initial state instead of replacing module
+        nnx.update(model.fast_layer, fast_state_template)
 
     seed_results = []
 
@@ -324,8 +319,10 @@ def main():
             model.eval()
             print("  Using eval mode for SKIP action (no updates, disable dropout)")
 
-        # Create optimizer (only optimize TTT layer parameters)
+        # Create optimizer once per seed
         optimizer = create_optimizer()
+        # Capture initial optimizer state
+        _, initial_opt_state = nnx.split(optimizer)
         
         reset_fast_weights()
         
@@ -389,7 +386,8 @@ def main():
 
                     if chunk_idx == 0:
                         reset_fast_weights()
-                        optimizer = create_optimizer()
+                        # Reset optimizer state instead of creating new optimizer
+                        nnx.update(optimizer, initial_opt_state)
 
                     # Check for valid tokens
                     num_valid_tokens = jnp.sum(chunk_batch["attention_mask"][:, 1:])
