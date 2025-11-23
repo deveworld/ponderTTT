@@ -190,35 +190,38 @@ def main():
         
         try:
             # Try loading as Differentiable Training checkpoint
-            # This expects keys: fast_layer, fast_norm, gating_net, etc.
-            # And likely wrapped in optimizer state structure.
-            # We try to restore into trainable_sys.
-            # Note: Since we saved nnx.state(optimizer), the top level keys match the optimizer target.
-            # If optimizer wraps TrainableSystem, the keys are the attributes of TrainableSystem.
-            
-            # We create a temporary target
-            target = nnx.state(trainable_sys)
+            # New format saves both model and optimizer: {"model": ..., "optimizer": ...}
+            import optax
+            dummy_optimizer = nnx.Optimizer(trainable_sys, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+            target = {
+                "state": {"model": nnx.state(trainable_sys), "optimizer": nnx.state(dummy_optimizer)},
+                "step": 0,
+                "metadata": {}
+            }
             ckpt = load_checkpoint(args.checkpoint, target=target)
-            nnx.update(trainable_sys, ckpt["state"] if "state" in ckpt else ckpt)
+            nnx.update(trainable_sys, ckpt["state"]["model"])
             print("Loaded as Differentiable Training checkpoint")
-            
+
             # If we successfully loaded, we might want to use the loaded gating net if not provided separately
-            if args.gating_checkpoint is None and "gating_net" in (ckpt["state"] if "state" in ckpt else ckpt):
+            if args.gating_checkpoint is None:
                  print("Using gating network from model checkpoint")
-                 # We need to extract it? No, trainable_sys.gating_net is already updated.
-                 # But SimpleGenerator needs it passed explicitly if we want to use it.
-                 # However, the generator is init later. We can pass dummy_gating if we want.
-                 # But args.gating_checkpoint takes precedence.
-                 pass 
+                 # trainable_sys.gating_net is already updated
+                 pass
 
         except Exception as e_diff:
             print(f"Not a Differentiable Training checkpoint ({e_diff}), trying Baseline...")
             try:
                 # Try loading as Baseline checkpoint (Model structure)
-                # Baseline saves nnx.state(optimizer) where optimizer wraps model
-                target = nnx.state(model)
+                # New format saves both model and optimizer: {"model": ..., "optimizer": ...}
+                import optax
+                dummy_optimizer = nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+                target = {
+                    "state": {"model": nnx.state(model), "optimizer": nnx.state(dummy_optimizer)},
+                    "step": 0,
+                    "metadata": {}
+                }
                 ckpt = load_checkpoint(args.checkpoint, target=target)
-                nnx.update(model, ckpt["state"] if "state" in ckpt else ckpt)
+                nnx.update(model, ckpt["state"]["model"])
                 print("Loaded as Baseline checkpoint")
             except Exception as e_base:
                  print(f"Failed to load checkpoint: {e_base}")
@@ -234,23 +237,37 @@ def main():
             # Assume default config or infer? hard to infer. using default for now.
             p_config = PolicyConfig(feature_dim=32, hidden_dim=128, num_actions=4)
             p_net = PolicyNetwork(p_config, nnx.Rngs(0))
-            target = nnx.state(p_net)
+            # New format saves both policy and optimizer
+            import optax
+            dummy_optimizer = nnx.Optimizer(p_net, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+            target = {
+                "state": {"policy": nnx.state(p_net), "optimizer": nnx.state(dummy_optimizer)},
+                "step": 0,
+                "metadata": {}
+            }
             ckpt = load_checkpoint(args.gating_checkpoint, target=target)
-            nnx.update(p_net, ckpt["state"] if "state" in ckpt else ckpt)
+            nnx.update(p_net, ckpt["state"]["policy"])
             gating_net = p_net
             print("Loaded PolicyNetwork")
-        except Exception:
-             # Try GatingNetwork
+        except Exception as e_policy:
+             # Try GatingNetwork (part of differentiable training checkpoint)
              try:
                  g_config = GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0)
                  g_net = GatingNetwork(g_config, nnx.Rngs(0))
-                 target = nnx.state(g_net)
+                 # GatingNetwork is part of the differentiable model, so use model format
+                 import optax
+                 dummy_optimizer = nnx.Optimizer(g_net, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+                 target = {
+                     "state": {"model": nnx.state(g_net), "optimizer": nnx.state(dummy_optimizer)},
+                     "step": 0,
+                     "metadata": {}
+                 }
                  ckpt = load_checkpoint(args.gating_checkpoint, target=target)
-                 nnx.update(g_net, ckpt["state"] if "state" in ckpt else ckpt)
+                 nnx.update(g_net, ckpt["state"]["model"])
                  gating_net = g_net
                  print("Loaded GatingNetwork")
              except Exception as e:
-                 print(f"Failed to load gating checkpoint: {e}")
+                 print(f"Failed to load gating checkpoint as PolicyNetwork ({e_policy}) or GatingNetwork ({e})")
                  raise
     
     tokenizer = get_tokenizer({"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[args.model_scale])

@@ -283,7 +283,7 @@ def main():
         if args.resume_from and len(seeds) == 1:
             print(f"Resuming from checkpoint: {args.resume_from}")
             target = {
-                "state": nnx.state(optimizer), 
+                "state": {"policy": nnx.state(policy), "optimizer": nnx.state(optimizer)},
                 "step": 0,
                 "metadata": {
                     "seed": 0,
@@ -292,7 +292,8 @@ def main():
                 }
             }
             ckpt = load_checkpoint(args.resume_from, target=target)
-            nnx.update(optimizer, ckpt["state"])
+            nnx.update(policy, ckpt["state"]["policy"])
+            nnx.update(optimizer, ckpt["state"]["optimizer"])
             start_iteration = ckpt.get("step", 0)
             print(f"Resumed from iteration {start_iteration}")
 
@@ -639,11 +640,10 @@ def main():
             if (iteration + 1) % args.save_every == 0 and (iteration + 1) < args.num_iterations:
                 checkpoint_dir = output_dir / f"seed_{seed}"
                 print(f"Saving checkpoint to {checkpoint_dir} at iter {iteration + 1}...")
-                policy_state = nnx.state(optimizer)
                 save_checkpoint(
                     checkpoint_dir=checkpoint_dir,
                     step=iteration + 1,
-                    state=policy_state,
+                    state={"policy": nnx.state(policy), "optimizer": nnx.state(optimizer)},
                     metadata={
                         "seed": seed,
                         "model_scale": args.model_scale,
@@ -676,11 +676,10 @@ def main():
             if iteration + 1 == args.num_iterations:
                 checkpoint_dir = output_dir / f"seed_{seed}"
                 print(f"Saving final checkpoint to {checkpoint_dir}...")
-                policy_state = nnx.state(optimizer)
                 save_checkpoint(
                     checkpoint_dir=checkpoint_dir,
                     step=args.num_iterations,
-                    state=policy_state,
+                    state={"policy": nnx.state(policy), "optimizer": nnx.state(optimizer)},
                     metadata={
                         "seed": seed,
                         "model_scale": args.model_scale,
