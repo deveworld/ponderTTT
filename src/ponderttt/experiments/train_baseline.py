@@ -278,6 +278,14 @@ def main():
     print(f"  Trainable parameters (TTT layer only): {trainable_param_count:,}")
     print(f"  Frozen parameters (base model): {total_params - trainable_param_count:,}")
 
+    # Get action configuration
+    action_steps = action_to_steps(args.action)
+    cost_multiplier = action_to_cost(args.action)
+    
+    # Scale learning rate inversely with number of updates to prevent overfitting
+    # UPDATE_1: lr = 3e-4, UPDATE_2: lr = 1.5e-4, UPDATE_4: lr = 0.75e-4
+    effective_lr = args.learning_rate / max(action_steps, 1)
+    
     # Create optimizer for all parameters
     # Base model will be frozen via stop_gradient in the model's forward pass
     def create_optimizer():
@@ -285,19 +293,17 @@ def main():
             model,
             optax.chain(
                 optax.clip_by_global_norm(1.0),
-                optax.adam(args.learning_rate),
+                optax.adam(effective_lr),
             ),
             wrt=nnx.All(nnx.Param),
         )
     
-    print(f"OK Optimizer: Adam (lr={args.learning_rate}, base_model frozen via stop_gradient)")
+    print(f"OK Optimizer: Adam (base_lr={args.learning_rate}, effective_lr={effective_lr}, scaled by 1/{max(action_steps, 1)})")
+    print(f"   Base model frozen via stop_gradient")
 
     # Training loop
     print("\nStarting training...")
     print(f"Processing {args.max_chunks} chunks...")
-
-    action_steps = action_to_steps(args.action)
-    cost_multiplier = action_to_cost(args.action)
 
     # Capture initial state for fast weights
     _, fast_state_template = nnx.split(model.fast_layer)
