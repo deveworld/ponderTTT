@@ -17,9 +17,10 @@ from tqdm import tqdm
 from typing import Optional, cast
 
 from ..data import create_data_iterator, get_tokenizer
-from ..models import load_ttt_model, PolicyConfig, PolicyNetwork
+from ..models import load_ttt_model, PolicyConfig, PolicyNetwork, TTTTransformerLM
 from ..models.gating_nnx import GatingConfig, GatingNetwork
 from ..utils import FeatureExtractor, cross_entropy_loss
+from ..utils.checkpointing import load_checkpoint
 
 
 def parse_args():
@@ -42,22 +43,26 @@ def evaluate_model(
     num_batches: int,
     batch_size: int,
     seed: int,
-    gating_net: Optional[GatingNetwork | PolicyNetwork] = None,  # GatingNetwork or PolicyNetwork
+    gating_net: Optional[GatingNetwork | PolicyNetwork] = None,
     is_rl: bool = False,
+    model: Optional[TTTTransformerLM] = None,  # Accept pre-loaded model
 ):
     print(f"\nEvaluating {method_name}...")
     
-    # Load Model & Data
     model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
     tokenizer = get_tokenizer(model_name)
     
-    ttt_model, _ = load_ttt_model(
-        model_name=model_name,
-        fast_weight_type="ttt",
-        seed=seed,
-        load_pretrained=True,
-        vocab_size=tokenizer.get_vocab_size(),
-    )
+    # Load TTT Model if not provided
+    if model is None:
+        ttt_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=seed,
+            load_pretrained=True,
+            vocab_size=tokenizer.get_vocab_size(),
+        )
+    else:
+        ttt_model = model
     
     feature_extractor = FeatureExtractor(
         vocab_size=tokenizer.get_vocab_size(),
@@ -120,82 +125,43 @@ def evaluate_model(
             loss = 0.0
 
             if gating_net is None:
-                # Fixed Baseline (e.g. Skip) or Oracle
-                # Let's implement Fixed Baseline: Always use budget_target roughly
-                # E.g. if budget=2.0, use UPDATE_1 (cost 3) mixed with SKIP? 
-                # For simplicity, "Baseline" = Fixed UPDATE_1 (Cost 3) if budget >= 3, else SKIP?
-                # Or better: "Random" policy respecting budget?
-                # Let's assume this function is called with trained networks.
-                # If None, run SKIP baseline.
+                # Fixed Baseline (e.g. Skip) 
                 scale = 0.0
                 cost = 1.0
+                
+                # If using standard SKIP, we just use out_base
+                loss = float(cross_entropy_loss(out_base["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
+                
             elif is_rl and isinstance(gating_net, PolicyNetwork):
                 # RL Policy
-                # Policy outputs action index
                 out = gating_net(features, deterministic=True)
-                action = int(out["action"][0]) # Assume batch consistency or take first
+                action = int(out["action"][0]) 
                 steps = step_map[action]
                 cost = costs_map[action]
-                scale = float(steps) # Not used for continuous scaling but for logging
+                scale = float(steps) 
                 
-                # Run TTT with steps (Simulated by calling TTTLayer iteratively or modifying it)
-                # Our TTTLayer supports `gating_scale`.
-                # For discrete steps, we can map 0->0, 1->1, 2->2, 4->4.
-                # But TTTLayer is "Continuous" implementation now?
-                # Actually `gating_scale` multiplies `eta`.
-                # If we want Discrete Update, we set `gating_scale` such that it mimics K steps?
-                # No, `gating_scale` scales the LR of ONE step.
-                # To support K steps, we need the loop in `train_policy` or `TTTLayer`.
-                # For comparison fairness, let's assume Differentiable approach uses `gating_scale` (single pass),
-                # and RL approach uses Multi-step (iterative).
-                # This puts Differentiable at disadvantage? No, Continuous is often better.
-                # Let's standardize: BOTH use "Single Pass with Scaled LR" for this evaluation?
-                # OR: We use the `action_steps` for RL to actually run loop.
-
-                # RL: Discrete Steps
-                # Run K updates
-                # We need to manually run TTT update K times or use a helper.
-                # For simplicity in comparison script, let's use `ttt_model` with `use_ttt=True` (1 step)
-                # looped K times? 
-                # `ttt_model` doesn't support external loop easily without state management.
-                # Let's assume RL chooses "Scale" from {0, 1, 2, 4} and we apply it as `gating_scale`.
-                # This makes comparison fair: "Discrete Scale" vs "Continuous Scale".
+                # For discrete RL, we simulate K steps or use scaling approximation
+                # Assuming scaling approx for fairness in this script
+                if steps == 0:
+                    out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=False)
+                else:
+                    out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=True, gating_scale=jnp.array([[scale]]))
                 
-                # If RL chooses 4, we use scale=4.0 in one step.
-                # (Approximation: 4 small steps ~= 1 big step with 4x LR)
-                
-                out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=True, gating_scale=jnp.array([[scale]]))
                 loss = float(cross_entropy_loss(out_ttt["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
+                
             elif isinstance(gating_net, GatingNetwork):
                 # Differentiable Gating
-                # Outputs scalar scale
                 scale = float(gating_net(features, train=False)[0, 0])
-                cost = 1.0 + scale * 0.5 # Approximate cost model? 
-                # Real cost model: 
-                # TTT cost = 1 (fwd) + 2 (bwd) * scale? 
-                # No, Diff TTT is constant cost (1 fwd + 1 bwd + 1 fwd) = 3x ?
-                # Wait. "Differentiable TTT" is usually 1-step unrolled.
-                # So cost is Fixed at ~3x (Update_1).
-                # Scaling `eta` doesn't change FLOPs.
-                # So Diff TTT is always Cost=3.0?
-                # If gate=0, we can skip.
-                # If we implement dynamic skip:
-                if scale < 0.1:
-                    cost = 1.0 # Skip
-                else:
-                    cost = 3.0 # 1-step update
-                    
-                # Differentiable: Continuous Scale
-                # If scale close to 0, use SKIP (cost 1)
+                
                 if scale < 0.01:
                     out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=False)
                     cost = 1.0
                 else:
                     out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=True, gating_scale=jnp.array([[scale]]))
-                    cost = 3.0 # Fixed cost for 1-step
+                    # Cost model (1 step update)
+                    cost = 3.0 
                 
                 loss = float(cross_entropy_loss(out_ttt["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
-                
             
             results["loss"].append(loss)
             results["cost"].append(cost)
@@ -217,32 +183,100 @@ def main():
     # 1. Initialize/Load Networks
     rngs = nnx.Rngs(args.seed)
     
-    # Differentiable Network (Random Init if no checkpoint)
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[args.model_scale]
+    tokenizer = get_tokenizer(model_name)
+    vocab_size = tokenizer.get_vocab_size()
+
+    # Differentiable Network
     diff_net = GatingNetwork(
         config=GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0), 
         rngs=rngs
     )
-    # TODO: Load checkpoint if args.diff_checkpoint
     
-    # RL Network (Random Init if no checkpoint)
+    diff_ttt_model = None
+    
+    if args.diff_checkpoint:
+        print(f"Loading Differentiable Gating checkpoint from {args.diff_checkpoint}...")
+        
+        # Instantiate fresh TTT model to load weights into
+        diff_ttt_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=args.seed,
+            load_pretrained=True,
+            vocab_size=vocab_size,
+        )
+        
+        class TrainableSystem(nnx.Module):
+            def __init__(self, ttt_model, gating_net):
+                self.fast_layer = ttt_model.fast_layer
+                self.fast_norm = ttt_model.fast_norm
+                self.gating_net = gating_net
+                if hasattr(ttt_model, 'lm_head'):
+                    self.lm_head = ttt_model.lm_head
+                else:
+                    self.lm_head = None
+        
+        # Reconstruct system and update state
+        trainable_system = TrainableSystem(diff_ttt_model, diff_net)
+        ckpt = load_checkpoint(args.diff_checkpoint)
+        nnx.update(trainable_system, ckpt["state"])
+        print("Differentiable Gating and TTT weights loaded.")
+
+    # RL Network
     rl_net = PolicyNetwork(
         config=PolicyConfig(feature_dim=32, hidden_dim=128, num_actions=4),
         rngs=rngs
     )
-    # TODO: Load checkpoint if args.rl_checkpoint
+    if args.rl_checkpoint:
+        print(f"Loading RL Policy checkpoint from {args.rl_checkpoint}...")
+        ckpt = load_checkpoint(args.rl_checkpoint)
+        nnx.update(rl_net, ckpt["state"])
+        print("RL Policy weights loaded.")
     
     all_results = []
     
-    # 2. Evaluate Baselines
-    df_skip = evaluate_model("SKIP (Baseline)", args.model_scale, 0.0, args.num_eval_batches, args.batch_size, args.seed, None)
+    # 2. Evaluate Baselines (SKIP)
+    # Use fresh model for baseline
+    df_skip = evaluate_model(
+        "SKIP (Baseline)", 
+        args.model_scale, 
+        0.0, 
+        args.num_eval_batches, 
+        args.batch_size, 
+        args.seed, 
+        None,
+        is_rl=False
+    )
     all_results.append(df_skip)
     
     # 3. Evaluate Differentiable
-    df_diff = evaluate_model("Differentiable", args.model_scale, args.budget, args.num_eval_batches, args.batch_size, args.seed, diff_net, is_rl=False)
+    # Use loaded model if available
+    df_diff = evaluate_model(
+        "Differentiable", 
+        args.model_scale, 
+        args.budget, 
+        args.num_eval_batches, 
+        args.batch_size, 
+        args.seed, 
+        diff_net, 
+        is_rl=False,
+        model=diff_ttt_model # Pass the loaded model
+    )
     all_results.append(df_diff)
     
     # 4. Evaluate RL
-    df_rl = evaluate_model("RL (PPO)", args.model_scale, args.budget, args.num_eval_batches, args.batch_size, args.seed, rl_net, is_rl=True)
+    # RL uses standard model (policy chooses actions)
+    df_rl = evaluate_model(
+        "RL (PPO)", 
+        args.model_scale, 
+        args.budget, 
+        args.num_eval_batches, 
+        args.batch_size, 
+        args.seed, 
+        rl_net, 
+        is_rl=True
+    )
     all_results.append(df_rl)
     
     # 5. Visualize & Report

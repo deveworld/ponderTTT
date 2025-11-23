@@ -3,7 +3,6 @@ Code generation benchmarks (HumanEval, MBPP, ClassEval).
 """
 
 import os
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Iterable
@@ -37,37 +36,20 @@ class HumanEvalBenchmark:
 
     def _load_problems(self):
         """Load HumanEval problems."""
-        try:
-            from datasets import load_dataset
+        from datasets import load_dataset
 
-            dataset = load_dataset("openai_humaneval", split="test")
+        dataset = load_dataset("openai_humaneval", split="test")
 
-            for example in dataset:
-                if isinstance(example, dict):
-                    problem = CodeProblem(
-                        task_id=example["task_id"],
-                        prompt=example["prompt"],
-                        canonical_solution=example["canonical_solution"],
-                        test_code=example["test"],
-                        entry_point=example["entry_point"],
-                    )
-                    self.problems.append(problem)
-
-        except Exception as e:
-            warnings.warn(
-                f"Failed to load HumanEval: {e}. Using placeholder.", stacklevel=2
-            )
-            # Create placeholder problems for testing
-            for i in range(5):
-                self.problems.append(
-                    CodeProblem(
-                        task_id=f"HumanEval/{i}",
-                        prompt=f"def example_{i}(n):\n    # TODO: Implement\n    ",
-                        canonical_solution="    return n * 2\n",
-                        test_code=f"assert example_{i}(2) == 4",
-                        entry_point=f"example_{i}",
-                    )
+        for example in dataset:
+            if isinstance(example, dict):
+                problem = CodeProblem(
+                    task_id=example["task_id"],
+                    prompt=example["prompt"],
+                    canonical_solution=example["canonical_solution"],
+                    test_code=example["test"],
+                    entry_point=example["entry_point"],
                 )
+                self.problems.append(problem)
 
     def __len__(self) -> int:
         """Number of problems."""
@@ -128,35 +110,20 @@ class MBPPBenchmark:
 
     def _load_problems(self):
         """Load MBPP problems."""
-        try:
-            from datasets import load_dataset
+        from datasets import load_dataset
 
-            dataset = load_dataset("mbpp", split="test")
+        dataset = load_dataset("mbpp", split="test")
 
-            for example in dataset:
-                if isinstance(example, dict):
-                    problem = CodeProblem(
-                        task_id=f"mbpp/{example['task_id']}",
-                        prompt=example["text"],
-                        canonical_solution=example["code"],
-                        test_code="\n".join(example["test_list"]),
-                        entry_point="solution",  # MBPP doesn't specify
-                    )
-                    self.problems.append(problem)
-
-        except Exception as e:
-            warnings.warn(f"Failed to load MBPP: {e}. Using placeholder.", stacklevel=2)
-            # Create placeholder problems
-            for i in range(5):
-                self.problems.append(
-                    CodeProblem(
-                        task_id=f"mbpp/{i}",
-                        prompt=f"Write a function to compute {i}",
-                        canonical_solution=f"def solution(n):\n    return n + {i}",
-                        test_code=f"assert solution(1) == {1 + i}",
-                        entry_point="solution",
-                    )
+        for example in dataset:
+            if isinstance(example, dict):
+                problem = CodeProblem(
+                    task_id=f"mbpp/{example['task_id']}",
+                    prompt=example["text"],
+                    canonical_solution=example["code"],
+                    test_code="\n".join(example["test_list"]),
+                    entry_point="solution",  # MBPP doesn't specify
                 )
+                self.problems.append(problem)
 
     def __len__(self) -> int:
         """Number of problems."""
@@ -214,26 +181,11 @@ class ClassEvalBenchmark:
     def __init__(self):
         """Initialize ClassEval benchmark."""
         self.problems: list[CodeProblem] = []
-        warnings.warn(
-            "ClassEval dataset is not yet publicly available on HuggingFace. "
-            "Using placeholder.",
-            stacklevel=2,
-        )
         self._load_problems()
 
     def _load_problems(self):
         """Load ClassEval problems."""
-        # Placeholder: ClassEval not yet on HuggingFace
-        for i in range(5):
-            self.problems.append(
-                CodeProblem(
-                    task_id=f"ClassEval/{i}",
-                    prompt=f"class Example{i}:\n    def method(self, x):\n        # TODO\n        ",
-                    canonical_solution="        return x * 2",
-                    test_code=f"assert Example{i}().method(2) == 4",
-                    entry_point=f"Example{i}",
-                )
-            )
+        raise NotImplementedError("ClassEval dataset is not yet publicly available")
 
     def __len__(self) -> int:
         """Number of problems."""
@@ -276,6 +228,7 @@ class ClassEvalBenchmark:
             "num_problems": len(scores),
             "avg_attempts": float(sum(attempts) / len(attempts)),
         }
+
 
 
 class BenchmarkSuite:

@@ -21,6 +21,7 @@ from ..models import PolicyConfig, PolicyNetwork, load_ttt_model
 from ..models.policy_nnx import compute_gae
 from ..training import PIDController
 from ..utils import FeatureExtractor, cross_entropy_loss
+from ..utils.checkpointing import save_checkpoint, finalize_checkpointing
 from .training_utils import run_chunk_step
 
 
@@ -590,6 +591,22 @@ def main():
                 json.dump(results, f, indent=2)
             print(f"\nOK Results saved to: {results_file}")
             seed_histories.append(results)
+            
+            # Save Checkpoint for this seed
+            checkpoint_dir = output_dir / f"seed_{seed}"
+            print(f"Saving checkpoint to {checkpoint_dir}...")
+            policy_state = nnx.state(policy)
+            save_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                step=args.num_iterations,
+                state=policy_state,
+                metadata={
+                    "seed": seed,
+                    "model_scale": args.model_scale,
+                    "budget_limit": args.budget_limit,
+                }
+            )
+            finalize_checkpointing()
         else:
             print("\nNo training completed for this seed!")
 
