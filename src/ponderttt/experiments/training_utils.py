@@ -78,6 +78,7 @@ def metrics_from_loss(loss: jnp.ndarray, ttt_stats: dict | None) -> dict[str, fl
 
 @nnx.jit
 def train_step_jit(
+    model: ChunkModel,
     optimizer: nnx.Optimizer,
     batch: dict,
     use_ttt: bool,
@@ -87,8 +88,8 @@ def train_step_jit(
     def loss_fn(model):
         return _forward(model, batch, use_ttt, ssl_weight)
 
-    (loss, ttt_stats), grads = nnx.value_and_grad(loss_fn, has_aux=True)(optimizer.model)
-    optimizer.update(optimizer.model, grads)
+    (loss, ttt_stats), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    optimizer.update(model, grads)
     return loss, ttt_stats
 
 
@@ -116,7 +117,7 @@ def run_chunk_step(
     Wraps JIT-compiled steps.
     """
     if apply_update and optimizer is not None:
-        loss, ttt_stats = train_step_jit(optimizer, batch, use_ttt, ssl_weight)
+        loss, ttt_stats = train_step_jit(model, optimizer, batch, use_ttt, ssl_weight)
     else:
         loss, ttt_stats = eval_step_jit(model, batch, use_ttt, ssl_weight)
     
