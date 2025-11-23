@@ -106,7 +106,7 @@ def parse_args():
     parser.add_argument(
         "--save_every",
         type=int,
-        default=100,
+        default=1000,
         help="Save checkpoint every N chunks",
     )
     parser.add_argument(
@@ -328,9 +328,10 @@ def main():
         # Resume Logic
         if args.resume_from and len(seeds) == 1:
             print(f"Resuming from checkpoint: {args.resume_from}")
-            load_target = {"state": nnx.state(optimizer)}
+            load_target = {"state": {"model": nnx.state(model), "optimizer": nnx.state(optimizer)}}
             ckpt = load_checkpoint(args.resume_from, target=load_target)
-            nnx.update(optimizer, ckpt["state"])
+            nnx.update(model, ckpt["state"]["model"])
+            nnx.update(optimizer, ckpt["state"]["optimizer"])
             
             if "metadata" in ckpt and "chunks" in ckpt["metadata"]:
                 start_chunk = ckpt["metadata"]["chunks"]
@@ -451,7 +452,7 @@ def main():
                         save_checkpoint(
                             checkpoint_dir=checkpoint_dir,
                             step=chunks_processed,
-                            state=nnx.state(optimizer),
+                            state={"model": nnx.state(model), "optimizer": nnx.state(optimizer)},
                             metadata={"chunks": chunks_processed},
                         )
 
@@ -498,7 +499,7 @@ def main():
             save_checkpoint(
                 checkpoint_dir=output_dir / "checkpoints",
                 step=chunks_processed,
-                state=nnx.state(optimizer),
+                state={"model": nnx.state(model), "optimizer": nnx.state(optimizer)},
                 metadata=results,
             )
             wait_for_checkpoints()

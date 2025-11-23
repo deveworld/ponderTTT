@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+import optax
 from flax import nnx
 from tqdm import tqdm
 from typing import Optional, cast
@@ -230,8 +231,10 @@ def main():
         
         # Create target for restoration to preserve NNX State structure
         # We must match the saved structure exactly, including metadata, to avoid Orbax errors.
+        # Note: Checkpoints now save both model and optimizer states
+        dummy_optimizer = nnx.Optimizer(trainable_system, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
         target = {
-            "state": nnx.state(trainable_system),
+            "state": {"model": nnx.state(trainable_system), "optimizer": nnx.state(dummy_optimizer)},
             "step": 0,
             "metadata": {
                 "model_scale": "",
@@ -239,9 +242,9 @@ def main():
                 "budget_limit": 0.0,
             }
         }
-        
+
         ckpt = load_checkpoint(args.diff_checkpoint, target=target)
-        nnx.update(trainable_system, ckpt["state"])
+        nnx.update(trainable_system, ckpt["state"]["model"])
         print("Differentiable Gating and TTT weights loaded.")
 
     # RL Network
@@ -251,8 +254,10 @@ def main():
     )
     if args.rl_checkpoint:
         print(f"Loading RL Policy checkpoint from {args.rl_checkpoint}...")
+        # Note: Checkpoints now save both policy and optimizer states
+        dummy_optimizer = nnx.Optimizer(rl_net, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
         target = {
-            "state": nnx.state(rl_net),
+            "state": {"policy": nnx.state(rl_net), "optimizer": nnx.state(dummy_optimizer)},
             "step": 0,
             "metadata": {
                 "seed": 0,
@@ -261,7 +266,7 @@ def main():
             }
         }
         ckpt = load_checkpoint(args.rl_checkpoint, target=target)
-        nnx.update(rl_net, ckpt["state"])
+        nnx.update(rl_net, ckpt["state"]["policy"])
         print("RL Policy weights loaded.")
     
     all_results = []

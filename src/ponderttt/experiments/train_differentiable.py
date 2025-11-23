@@ -199,9 +199,8 @@ def main():
     if args.resume_from:
         print(f"Resuming from checkpoint: {args.resume_from}")
         # Create target structure for correct loading
-        # We save nnx.state(optimizer), so we load into that structure
         target = {
-            "state": nnx.state(optimizer), 
+            "state": {"model": nnx.state(trainable_system), "optimizer": nnx.state(optimizer)},
             "step": 0,
             "metadata": {
                 "model_scale": "",
@@ -210,7 +209,8 @@ def main():
             }
         }
         ckpt = load_checkpoint(args.resume_from, target=target)
-        nnx.update(optimizer, ckpt["state"])
+        nnx.update(trainable_system, ckpt["state"]["model"])
+        nnx.update(optimizer, ckpt["state"]["optimizer"])
         start_iteration = ckpt.get("step", 0)
         print(f"Resumed from iteration {start_iteration}")
 
@@ -435,11 +435,10 @@ def main():
         # Periodic Checkpoint
         if (iter_count + 1) % args.save_every == 0 and (iter_count + 1) < args.num_iterations:
             print(f"Saving checkpoint at iter {iter_count + 1}...")
-            train_state = nnx.state(optimizer)
             save_checkpoint(
                 checkpoint_dir=output_dir,
                 step=iter_count + 1,
-                state=train_state,
+                state={"model": nnx.state(trainable_system), "optimizer": nnx.state(optimizer)},
                 metadata={
                     "model_scale": args.model_scale,
                     "max_steps": args.max_steps,
@@ -458,11 +457,10 @@ def main():
     
     # Save Final Checkpoint
     print("Saving final checkpoint...")
-    train_state = nnx.state(optimizer)
     save_checkpoint(
         checkpoint_dir=output_dir,
         step=iter_count,
-        state=train_state,
+        state={"model": nnx.state(trainable_system), "optimizer": nnx.state(optimizer)},
         metadata={
             "model_scale": args.model_scale,
             "max_steps": args.max_steps,
