@@ -240,7 +240,7 @@ def main():
         optimizer: nnx.Optimizer,
         base_model: GPT2Model, # Passed separately, treated as constant/static if not optimized
         batch: dict, 
-        budget_remaining: float,
+        budget_remaining: jax.Array,
         beta_ttt: float = 0.1,
     ):
         """
@@ -392,7 +392,7 @@ def main():
                 optimizer, 
                 ttt_model.base_model,
                 chunk_batch, 
-                budget_rem_fraction
+                jnp.array(budget_rem_fraction)
             )
             
             # Stability check
