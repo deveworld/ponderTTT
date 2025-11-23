@@ -18,6 +18,7 @@ from ..data import create_data_iterator, get_tokenizer
 from ..models import GPT2Model, load_ttt_model
 from ..models.gating_nnx import GatingConfig, GatingNetwork
 from ..utils import FeatureExtractor, cross_entropy_loss
+from ..utils.checkpointing import save_checkpoint, finalize_checkpointing
 
 
 def parse_args():
@@ -362,6 +363,22 @@ def main():
     # Save results
     with open(output_dir / "history_continuous.json", "w") as f:
         json.dump(history, f, indent=2)
-        
+    
+    # Save Checkpoint
+    print("Saving checkpoint...")
+    train_state = nnx.state(trainable_system)
+    save_checkpoint(
+        checkpoint_dir=output_dir,
+        step=args.num_iterations,
+        state=train_state,
+        metadata={
+            "model_scale": args.model_scale,
+            "max_steps": args.max_steps,
+            "budget_limit": args.budget_limit,
+        }
+    )
+    finalize_checkpointing()
+    print(f"Checkpoint saved to {output_dir}")
+
 if __name__ == "__main__":
     main()
