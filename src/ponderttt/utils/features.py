@@ -46,7 +46,7 @@ class FeatureExtractor:
         hidden_states: list[jnp.ndarray] | None = None,
         attentions: list[jnp.ndarray] | None = None,
         attention_mask: jnp.ndarray | None = None,
-        budget_remaining: float = 1.0,
+        budget_remaining: float | jax.Array = 1.0,
     ) -> jnp.ndarray:
         """
         Extract features from model outputs.
@@ -311,7 +311,7 @@ class FeatureExtractor:
     def _extract_history(
         self,
         batch_size: int,
-        budget_remaining: float,
+        budget_remaining: float | jax.Array,
     ) -> jnp.ndarray:
         """Extract historical context (4D)."""
         difficulty = jnp.full((batch_size,), self.difficulty_ema)
