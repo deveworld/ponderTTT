@@ -547,15 +547,15 @@ def main():
         print(f"  Chunks collected: {chunks_collected}")
 
         # Save iteration results
-            training_history.append({
-                "iteration": iteration + 1,
-                "avg_cost": avg_cost,
-                "avg_reward": avg_reward,
-                "lambda": float(pid.lambda_value),
-                "policy_loss": float(loss),
-                "chunks": chunks_collected,
-                "approx_kl": float(last_metrics.get("approx_kl", 0.0)),
-            })
+        training_history.append({
+            "iteration": iteration + 1,
+            "avg_cost": avg_cost,
+            "avg_reward": avg_reward,
+            "lambda": float(pid.lambda_value),
+            "policy_loss": float(loss),
+            "chunks": chunks_collected,
+            "approx_kl": float(last_metrics.get("approx_kl", 0.0)),
+        })
 
         # Save per-seed results
         if training_history:

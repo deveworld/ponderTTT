@@ -196,11 +196,12 @@ class LoRALayer(nnx.Module):
     def reset_parameters(self):
         """Reset LoRA parameters (for test-time training)."""
         # Re-initialize B matrices to zero (A keeps random init)
+        # NNX Variable in-place update (reading uses [...], writing uses .value)
         self.q_lora.lora_B.kernel.value = jnp.zeros_like(
-            self.q_lora.lora_B.kernel.value
+            self.q_lora.lora_B.kernel[...]
         )
         self.v_lora.lora_B.kernel.value = jnp.zeros_like(
-            self.v_lora.lora_B.kernel.value
+            self.v_lora.lora_B.kernel[...]
         )
 
 

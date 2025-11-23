@@ -72,7 +72,8 @@ def _load_weights_from_state_dict(model: GPT2LMHeadModel, state_dict: dict[str, 
         # Convert numpy to jax array if needed
         if isinstance(value, np.ndarray):
             value = jnp.array(value)
-        param.set_value(value)
+        # NNX Variable in-place update (reading uses [...], writing uses .value)
+        param.value = value
 
     def _pad_to_match(param: nnx.Param | None, value: np.ndarray | jnp.ndarray) -> jnp.ndarray:
         if isinstance(value, np.ndarray):
