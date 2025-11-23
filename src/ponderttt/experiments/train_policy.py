@@ -21,8 +21,9 @@ from ..models import PolicyConfig, PolicyNetwork, load_ttt_model
 from ..models.policy_nnx import compute_gae
 from ..training import PIDController
 from ..utils import FeatureExtractor, cross_entropy_loss
-from ..utils.checkpointing import save_checkpoint, finalize_checkpointing
+from ..utils.checkpointing import save_checkpoint, load_checkpoint, finalize_checkpointing
 from .training_utils import run_chunk_step
+import wandb
 
 
 def parse_args():
@@ -127,6 +128,24 @@ def parse_args():
         default=None,
         help="Optional comma-separated list of seeds for multi-seed runs (e.g., '0,1,2')",
     )
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default=None,
+        help="WandB project name (if None, WandB is disabled)",
+    )
+    parser.add_argument(
+        "--save_every",
+        type=int,
+        default=100,
+        help="Save checkpoint every N steps",
+    )
+    parser.add_argument(
+        "--resume_from",
+        type=str,
+        default=None,
+        help="Path to checkpoint directory to resume from",
+    )
 
     return parser.parse_args()
 
@@ -211,18 +230,6 @@ def main():
 
     print(f"OK Policy: {policy_config.feature_dim}D -> {policy_config.hidden_dim}D -> {policy_config.num_actions} actions")
 
-    # Create optimizer
-    print("Creating optimizer...")
-    optimizer = nnx.Optimizer(
-        policy,
-        optax.chain(
-            optax.clip_by_global_norm(args.max_grad_norm),
-            optax.adam(args.learning_rate),
-        ),
-        wrt=nnx.All(nnx.Param),
-    )
-    print(f"OK Optimizer: Adam (lr={args.learning_rate}, clip={args.max_grad_norm})")
-
     training_history = []
     seed_histories = []
 
@@ -248,6 +255,39 @@ def main():
         policy = PolicyNetwork(config=policy_config, rngs=rngs)
         policy.train()
         policy_rng = jax.random.PRNGKey(seed + 2)
+        
+        # Create optimizer for this seed's policy
+        optimizer = nnx.Optimizer(
+            policy,
+            optax.chain(
+                optax.clip_by_global_norm(args.max_grad_norm),
+                optax.adam(args.learning_rate),
+            ),
+            wrt=nnx.All(nnx.Param),
+        )
+        
+        start_iteration = 0
+        
+        # Resume logic (Per Seed Resume is tricky if seeds are in one command)
+        # Assuming resume_from points to a specific seed checkpoint directory or general structure.
+        # If resume_from is provided, we assume it matches the current seed if we run 1 seed.
+        # If multiple seeds, standard practice is to not resume or handle paths carefully.
+        # For simplicity, if len(seeds) == 1 and resume_from is set:
+        if args.resume_from and len(seeds) == 1:
+            print(f"Resuming from checkpoint: {args.resume_from}")
+            target = {
+                "state": nnx.state(optimizer), 
+                "step": 0,
+                "metadata": {
+                    "seed": 0,
+                    "model_scale": "",
+                    "budget_limit": 0.0,
+                }
+            }
+            ckpt = load_checkpoint(args.resume_from, target=target)
+            nnx.update(optimizer, ckpt["state"])
+            start_iteration = ckpt.get("step", 0)
+            print(f"Resumed from iteration {start_iteration}")
 
         # Prepare TTT model template per seed
         if args.fast_weight_type == "lora":
@@ -341,7 +381,7 @@ def main():
         chunks_per_sequence = seq_length // chunk_size
         training_history = []
 
-        for iteration in range(args.num_iterations):
+        for iteration in range(start_iteration, args.num_iterations):
             print(f"\n{'=' * 60}")
             print(f"Iteration {iteration + 1}/{args.num_iterations}")
             print(f"{'=' * 60}")
@@ -459,117 +499,145 @@ def main():
                 print("No rollout data collected, stopping")
                 break
 
-        # Convert to arrays [num_steps]
-        feature_dim = rollout_features[0].shape[-1]
-        rollout_features_array = jnp.reshape(
-            jnp.stack(rollout_features), (-1, feature_dim)
-        )
-        rollout_actions_array = jnp.reshape(jnp.stack(rollout_actions), (-1,))
-        rollout_log_probs_array = jnp.reshape(jnp.stack(rollout_log_probs), (-1,))
-        rollout_values_array = jnp.reshape(jnp.stack(rollout_values), (-1,))
-        rollout_rewards_array = jnp.reshape(jnp.stack(rollout_rewards), (-1,))
-        rollout_costs_array = jnp.reshape(jnp.stack(rollout_costs), (-1,))
+            # Convert to arrays [num_steps]
+            feature_dim = rollout_features[0].shape[-1]
+            rollout_features_array = jnp.reshape(
+                jnp.stack(rollout_features), (-1, feature_dim)
+            )
+            rollout_actions_array = jnp.reshape(jnp.stack(rollout_actions), (-1,))
+            rollout_log_probs_array = jnp.reshape(jnp.stack(rollout_log_probs), (-1,))
+            rollout_values_array = jnp.reshape(jnp.stack(rollout_values), (-1,))
+            rollout_rewards_array = jnp.reshape(jnp.stack(rollout_rewards), (-1,))
+            rollout_costs_array = jnp.reshape(jnp.stack(rollout_costs), (-1,))
 
-        # Create dones array (all False for continuous rollout)
-        dones_array = jnp.zeros_like(rollout_rewards_array)
+            # Create dones array (all False for continuous rollout)
+            dones_array = jnp.zeros_like(rollout_rewards_array)
 
-        # Cost-aware rewards
-        adjusted_rewards = rollout_rewards_array - pid.lambda_value * rollout_costs_array
+            # Cost-aware rewards
+            adjusted_rewards = rollout_rewards_array - pid.lambda_value * rollout_costs_array
 
-        # Compute advantages and returns using GAE (with jax.lax.scan)
-        advantages, returns = compute_gae(
-            rewards=adjusted_rewards,
-            values=rollout_values_array,
-            dones=dones_array,
-            gamma=0.99,
-            gae_lambda=0.95,
-            last_value=0.0,
-        )
+            # Compute advantages and returns using GAE (with jax.lax.scan)
+            advantages, returns = compute_gae(
+                rewards=adjusted_rewards,
+                values=rollout_values_array,
+                dones=dones_array,
+                gamma=0.99,
+                gae_lambda=0.95,
+                last_value=0.0,
+            )
 
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            # Normalize advantages
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # Policy update using minibatches
-        old_log_probs = rollout_log_probs_array
-        old_values = rollout_values_array
-        last_metrics = {}
-        loss = math.inf
-        data_size = rollout_features_array.shape[0]
-        update_rng = jax.random.PRNGKey(args.seed + iteration + 100)
-        for _ in range(args.ppo_epochs):
-            update_rng, perm_key = jax.random.split(update_rng)
-            perm = jax.random.permutation(perm_key, data_size)
-            for start in range(0, data_size, args.ppo_minibatch_size):
-                mb_idx = perm[start : start + args.ppo_minibatch_size]
-                mb_features = rollout_features_array[mb_idx]
-                mb_actions = rollout_actions_array[mb_idx]
-                mb_old_log_probs = old_log_probs[mb_idx]
-                mb_old_values = old_values[mb_idx]
-                mb_advantages = advantages[mb_idx]
-                mb_returns = returns[mb_idx]
+            # Policy update using minibatches
+            old_log_probs = rollout_log_probs_array
+            old_values = rollout_values_array
+            last_metrics = {}
+            loss = math.inf
+            data_size = rollout_features_array.shape[0]
+            update_rng = jax.random.PRNGKey(args.seed + iteration + 100)
+            for _ in range(args.ppo_epochs):
+                update_rng, perm_key = jax.random.split(update_rng)
+                perm = jax.random.permutation(perm_key, data_size)
+                for start in range(0, data_size, args.ppo_minibatch_size):
+                    mb_idx = perm[start : start + args.ppo_minibatch_size]
+                    mb_features = rollout_features_array[mb_idx]
+                    mb_actions = rollout_actions_array[mb_idx]
+                    mb_old_log_probs = old_log_probs[mb_idx]
+                    mb_old_values = old_values[mb_idx]
+                    mb_advantages = advantages[mb_idx]
+                    mb_returns = returns[mb_idx]
 
-                def policy_loss_fn(mdl):
-                    """Compute PPO loss for minibatch."""
-                    outputs = mdl.evaluate_actions(mb_features, mb_actions)
-                    new_log_probs = outputs["log_prob"]
-                    new_values = outputs["value"]
-                    entropies = outputs["entropy"]
+                    def policy_loss_fn(mdl):
+                        """Compute PPO loss for minibatch."""
+                        outputs = mdl.evaluate_actions(mb_features, mb_actions)
+                        new_log_probs = outputs["log_prob"]
+                        new_values = outputs["value"]
+                        entropies = outputs["entropy"]
 
-                    ratios = jnp.exp(new_log_probs - mb_old_log_probs)
-                    clip_ratios = jnp.clip(ratios, 1.0 - args.value_clip, 1.0 + args.value_clip)
-                    policy_loss = -jnp.mean(
-                        jnp.minimum(ratios * mb_advantages, clip_ratios * mb_advantages)
-                    )
+                        ratios = jnp.exp(new_log_probs - mb_old_log_probs)
+                        clip_ratios = jnp.clip(ratios, 1.0 - args.value_clip, 1.0 + args.value_clip)
+                        policy_loss = -jnp.mean(
+                            jnp.minimum(ratios * mb_advantages, clip_ratios * mb_advantages)
+                        )
 
-                    value_pred_clipped = mb_old_values + jnp.clip(
-                        new_values - mb_old_values, -args.value_clip, args.value_clip
-                    )
-                    value_losses = jnp.square(new_values - mb_returns)
-                    value_losses_clipped = jnp.square(value_pred_clipped - mb_returns)
-                    value_loss = 0.5 * jnp.mean(jnp.minimum(value_losses, value_losses_clipped))
+                        value_pred_clipped = mb_old_values + jnp.clip(
+                            new_values - mb_old_values, -args.value_clip, args.value_clip
+                        )
+                        value_losses = jnp.square(new_values - mb_returns)
+                        value_losses_clipped = jnp.square(value_pred_clipped - mb_returns)
+                        value_loss = 0.5 * jnp.mean(jnp.minimum(value_losses, value_losses_clipped))
 
-                    entropy_loss = -0.01 * jnp.mean(entropies)
+                        entropy_loss = -0.01 * jnp.mean(entropies)
 
-                    approx_kl = jnp.mean(mb_old_log_probs - new_log_probs)
-                    total_loss = policy_loss + value_loss + entropy_loss
-                    return total_loss, {
-                        "policy_loss": policy_loss,
-                        "value_loss": value_loss,
-                        "entropy": jnp.mean(entropies),
-                        "approx_kl": approx_kl,
+                        approx_kl = jnp.mean(mb_old_log_probs - new_log_probs)
+                        total_loss = policy_loss + value_loss + entropy_loss
+                        return total_loss, {
+                            "policy_loss": policy_loss,
+                            "value_loss": value_loss,
+                            "entropy": jnp.mean(entropies),
+                            "approx_kl": approx_kl,
+                        }
+
+                    loss_fn = nnx.value_and_grad(policy_loss_fn, has_aux=True)
+                    (loss, metrics), grads = loss_fn(policy)
+                    optimizer.update(policy, grads)
+                    last_metrics = metrics
+
+            # Update PID controller
+            avg_cost = float(jnp.mean(rollout_costs_array))
+            cost_violation = avg_cost - args.budget_limit
+            pid = pid.update(cost_violation)
+
+            # Compute statistics
+            avg_reward = float(jnp.mean(rollout_rewards_array))
+
+            print("\nRollout summary:")
+            print(f"  Average cost: {avg_cost:.2f}x (target: {args.budget_limit:.1f}x)")
+            print(f"  Average reward: {avg_reward:.4f}")
+            print(f"  Lambda (penalty): {pid.lambda_value:.4f}")
+            print(f"  Policy loss: {loss:.4f}")
+            print(f"  Approx KL: {float(last_metrics.get('approx_kl', 0.0)):.6f}")
+            print(f"  Chunks collected: {chunks_collected}")
+
+            # WandB Log
+            if args.wandb_project:
+                wandb.log({
+                    f"seed_{seed}/avg_cost": avg_cost,
+                    f"seed_{seed}/avg_reward": avg_reward,
+                    f"seed_{seed}/lambda": float(pid.lambda_value),
+                    f"seed_{seed}/policy_loss": float(loss),
+                    f"seed_{seed}/approx_kl": float(last_metrics.get('approx_kl', 0.0)),
+                    "iteration": iteration + 1,
+                })
+
+            # Save iteration results
+            training_history.append({
+                "iteration": iteration + 1,
+                "avg_cost": avg_cost,
+                "avg_reward": avg_reward,
+                "lambda": float(pid.lambda_value),
+                "policy_loss": float(loss),
+                "chunks": chunks_collected,
+                "approx_kl": float(last_metrics.get("approx_kl", 0.0)),
+            })
+
+            # Periodic Checkpoint
+            print(f"DEBUG: Checking checkpoint for iter {iteration+1}")
+            if (iteration + 1) % args.save_every == 0 and (iteration + 1) < args.num_iterations:
+                checkpoint_dir = output_dir / f"seed_{seed}"
+                print(f"Saving checkpoint to {checkpoint_dir} at iter {iteration + 1}...")
+                policy_state = nnx.state(optimizer)
+                save_checkpoint(
+                    checkpoint_dir=checkpoint_dir,
+                    step=iteration + 1,
+                    state=policy_state,
+                    metadata={
+                        "seed": seed,
+                        "model_scale": args.model_scale,
+                        "budget_limit": args.budget_limit,
                     }
-
-                loss_fn = nnx.value_and_grad(policy_loss_fn, has_aux=True)
-                (loss, metrics), grads = loss_fn(policy)
-                optimizer.update(policy, grads)
-                last_metrics = metrics
-
-        # Update PID controller
-        avg_cost = float(jnp.mean(rollout_costs_array))
-        cost_violation = avg_cost - args.budget_limit
-        pid = pid.update(cost_violation)
-
-        # Compute statistics
-        avg_reward = float(jnp.mean(rollout_rewards_array))
-
-        print("\nRollout summary:")
-        print(f"  Average cost: {avg_cost:.2f}x (target: {args.budget_limit:.1f}x)")
-        print(f"  Average reward: {avg_reward:.4f}")
-        print(f"  Lambda (penalty): {pid.lambda_value:.4f}")
-        print(f"  Policy loss: {loss:.4f}")
-        print(f"  Approx KL: {float(last_metrics.get('approx_kl', 0.0)):.6f}")
-        print(f"  Chunks collected: {chunks_collected}")
-
-        # Save iteration results
-        training_history.append({
-            "iteration": iteration + 1,
-            "avg_cost": avg_cost,
-            "avg_reward": avg_reward,
-            "lambda": float(pid.lambda_value),
-            "policy_loss": float(loss),
-            "chunks": chunks_collected,
-            "approx_kl": float(last_metrics.get("approx_kl", 0.0)),
-        })
+                )
 
         # Save per-seed results
         if training_history:
@@ -592,21 +660,22 @@ def main():
             print(f"\nOK Results saved to: {results_file}")
             seed_histories.append(results)
             
-            # Save Checkpoint for this seed
-            checkpoint_dir = output_dir / f"seed_{seed}"
-            print(f"Saving checkpoint to {checkpoint_dir}...")
-            policy_state = nnx.state(policy)
-            save_checkpoint(
-                checkpoint_dir=checkpoint_dir,
-                step=args.num_iterations,
-                state=policy_state,
-                metadata={
-                    "seed": seed,
-                    "model_scale": args.model_scale,
-                    "budget_limit": args.budget_limit,
-                }
-            )
-            finalize_checkpointing()
+            # Save Checkpoint for this seed (Final)
+            if iteration + 1 == args.num_iterations:
+                checkpoint_dir = output_dir / f"seed_{seed}"
+                print(f"Saving final checkpoint to {checkpoint_dir}...")
+                policy_state = nnx.state(optimizer)
+                save_checkpoint(
+                    checkpoint_dir=checkpoint_dir,
+                    step=args.num_iterations,
+                    state=policy_state,
+                    metadata={
+                        "seed": seed,
+                        "model_scale": args.model_scale,
+                        "budget_limit": args.budget_limit,
+                    }
+                )
+                finalize_checkpointing()
         else:
             print("\nNo training completed for this seed!")
 

@@ -33,6 +33,8 @@ def parse_args():
     parser.add_argument("--rl_checkpoint", type=str, help="Path to RL policy checkpoint (optional)")
     parser.add_argument("--output_dir", type=str, default="outputs/comparison")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--language", type=str, default="Python", help="Programming language for OOD testing")
+    parser.add_argument("--split", type=str, default="test", help="Dataset split (train/validation/test)")
     return parser.parse_args()
 
 
@@ -46,8 +48,10 @@ def evaluate_model(
     gating_net: Optional[GatingNetwork | PolicyNetwork] = None,
     is_rl: bool = False,
     model: Optional[TTTTransformerLM] = None,  # Accept pre-loaded model
+    language: str = "Python",
+    split: str = "test",
 ):
-    print(f"\nEvaluating {method_name}...")
+    print(f"\nEvaluating {method_name} on {language} ({split})...")
     
     model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
     tokenizer = get_tokenizer(model_name)
@@ -72,7 +76,8 @@ def evaluate_model(
     
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
-        split="train",  # Use validation split in real scenario
+        split=split,
+        language=language,
         batch_size=batch_size,
         seq_length=2048,
         chunk_size=512,
@@ -268,7 +273,9 @@ def main():
         args.batch_size, 
         args.seed, 
         None,
-        is_rl=False
+        is_rl=False,
+        language=args.language,
+        split=args.split
     )
     all_results.append(df_skip)
     
@@ -283,7 +290,9 @@ def main():
         args.seed, 
         diff_net, 
         is_rl=False,
-        model=diff_ttt_model # Pass the loaded model
+        model=diff_ttt_model, # Pass the loaded model
+        language=args.language,
+        split=args.split
     )
     all_results.append(df_diff)
     
@@ -297,7 +306,9 @@ def main():
         args.batch_size, 
         args.seed, 
         rl_net, 
-        is_rl=True
+        is_rl=True,
+        language=args.language,
+        split=args.split
     )
     all_results.append(df_rl)
     
