@@ -45,6 +45,7 @@ class CodeDataset:
         seq_length: int = 8192,
         chunk_size: int = 4096,
         shard_across_hosts: bool = True,
+        exclude_benchmarks: bool = True,
     ):
         self.tokenizer = tokenizer
         self.split = split
@@ -52,6 +53,7 @@ class CodeDataset:
         self.seq_length = seq_length
         self.chunk_size = chunk_size
         self.shard_across_hosts = shard_across_hosts
+        self.exclude_benchmarks = exclude_benchmarks
         self.pad_token_id = self.tokenizer.token_to_id("<|pad|>")
         if self.pad_token_id is None:
             raise ValueError(
@@ -75,6 +77,11 @@ class CodeDataset:
                 max_pool_connections=50,
             ),
         )
+
+        # Initialize contamination filters if requested
+        self.forbidden_strings = []
+        if self.exclude_benchmarks:
+            self._init_contamination_filters()
 
         # Load dataset in streaming mode (The Stack v2 train-full-ids)
         self.dataset = load_dataset(
@@ -110,6 +117,29 @@ class CodeDataset:
             except (RuntimeError, ValueError):
                 # JAX distributed not initialized, single host mode
                 pass
+
+    def _init_contamination_filters(self):
+        """Load benchmark solutions to filter out from training data."""
+        try:
+            # Import here to avoid potential circular dependencies or setup issues
+            from ..evaluation.benchmarks import HumanEvalBenchmark
+
+            if jax.process_index() == 0:
+                print("Loading HumanEval for decontamination...")
+            
+            he = HumanEvalBenchmark()
+            count = 0
+            for problem in he.problems:
+                # Filter out canonical solutions if they are long enough to be unique
+                if problem.canonical_solution and len(problem.canonical_solution.strip()) > 40:
+                    self.forbidden_strings.append(problem.canonical_solution.strip())
+                    count += 1
+            
+            if jax.process_index() == 0:
+                print(f"Loaded {count} forbidden strings for decontamination.")
+            
+        except Exception as e:
+            logging.warning(f"Failed to load benchmarks for decontamination: {e}")
 
     def _download_content(self, blob_id: str, src_encoding: str) -> str:
         """
@@ -159,6 +189,14 @@ class CodeDataset:
         # Skip empty or failed downloads
         if not text or len(text.strip()) == 0:
             return None
+
+        # Contamination check
+        if self.exclude_benchmarks and self.forbidden_strings:
+            # Check if any forbidden string (benchmark solution) is in the text
+            # This is a simple substring check. For strict decontamination, more complex logic might be needed.
+            for forbidden in self.forbidden_strings:
+                if forbidden in text:
+                    return None
 
         # Tokenize using tokenizers library (returns encoding with attention mask)
         encoded = self.tokenizer.encode(text)
@@ -221,6 +259,7 @@ def create_data_iterator(
     cache_data: bool = True,
     num_workers: int = 8,
     cache_dir: str = ".cache/ponderttt",
+    exclude_benchmarks: bool = True,
 ) -> Iterator[dict[str, jnp.ndarray]]:
     """
     Create batched data iterator that yields JAX arrays.
@@ -236,6 +275,7 @@ def create_data_iterator(
         cache_data: If True, download all data before training (recommended for GPU)
         num_workers: Number of parallel workers for downloading (default: 8)
         cache_dir: Directory to cache downloaded data (default: .cache/ponderttt)
+        exclude_benchmarks: If True, filter out examples containing HumanEval solutions
 
     Yields:
         Dictionary with batched JAX arrays:
@@ -249,6 +289,7 @@ def create_data_iterator(
         language=language,
         seq_length=seq_length,
         chunk_size=chunk_size,
+        exclude_benchmarks=exclude_benchmarks,
     )
 
     def _batch_generator():
@@ -309,7 +350,8 @@ def create_data_iterator(
 
         cache_key = hashlib.md5(
             f"{split}_{batch_size}_{seq_length}_{chunk_size}_{max_examples}_"
-            f"{language}_vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}_{tokenizer_id_str}".encode()
+            f"{language}_vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}_{tokenizer_id_str}_"
+            f"exclude{exclude_benchmarks}".encode()
         ).hexdigest()
         cache_path = Path(cache_dir) / f"{cache_key}.pkl"
 
