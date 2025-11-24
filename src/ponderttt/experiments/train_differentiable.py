@@ -360,12 +360,16 @@ def main():
     history = []
     
     print("Starting training...")
-    # Skip data iterator to resume point if needed (naive skip)
-    # CodeDataset is streaming, so exact resume is hard without saving dataset state.
-    # We'll just start from current iterator.
+    # Skip data iterator to resume point if needed
+    if start_iteration > 0:
+        print(f"Skipping first {start_iteration} batches to resume training...")
     
     iter_count = start_iteration
     for i, sequence_batch in enumerate(data_iter):
+        # Skip batches that were already processed
+        if i < start_iteration:
+            continue
+
         if iter_count >= args.num_iterations:
             break
             

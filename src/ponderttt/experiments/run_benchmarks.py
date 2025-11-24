@@ -191,10 +191,9 @@ def main():
         try:
             # Try loading as Differentiable Training checkpoint
             # New format saves both model and optimizer: {"model": ..., "optimizer": ...}
-            import optax
-            dummy_optimizer = nnx.Optimizer(trainable_sys, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+            # We only load the model state
             target = {
-                "state": {"model": nnx.state(trainable_sys), "optimizer": nnx.state(dummy_optimizer)},
+                "state": {"model": nnx.state(trainable_sys)},
                 "step": 0,
                 "metadata": {}
             }
@@ -212,11 +211,9 @@ def main():
             print(f"Not a Differentiable Training checkpoint ({e_diff}), trying Baseline...")
             try:
                 # Try loading as Baseline checkpoint (Model structure)
-                # New format saves both model and optimizer: {"model": ..., "optimizer": ...}
-                import optax
-                dummy_optimizer = nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+                # We only load the model state
                 target = {
-                    "state": {"model": nnx.state(model), "optimizer": nnx.state(dummy_optimizer)},
+                    "state": {"model": nnx.state(model)},
                     "step": 0,
                     "metadata": {}
                 }
@@ -237,11 +234,9 @@ def main():
             # Assume default config or infer? hard to infer. using default for now.
             p_config = PolicyConfig(feature_dim=32, hidden_dim=128, num_actions=4)
             p_net = PolicyNetwork(p_config, nnx.Rngs(0))
-            # New format saves both policy and optimizer
-            import optax
-            dummy_optimizer = nnx.Optimizer(p_net, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+            # We only load the policy state
             target = {
-                "state": {"policy": nnx.state(p_net), "optimizer": nnx.state(dummy_optimizer)},
+                "state": {"policy": nnx.state(p_net)},
                 "step": 0,
                 "metadata": {}
             }
@@ -255,10 +250,9 @@ def main():
                  g_config = GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0)
                  g_net = GatingNetwork(g_config, nnx.Rngs(0))
                  # GatingNetwork is part of the differentiable model, so use model format
-                 import optax
-                 dummy_optimizer = nnx.Optimizer(g_net, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+                 # We only load the model state
                  target = {
-                     "state": {"model": nnx.state(g_net), "optimizer": nnx.state(dummy_optimizer)},
+                     "state": {"model": nnx.state(g_net)},
                      "step": 0,
                      "metadata": {}
                  }
