@@ -62,6 +62,12 @@ class SimpleGenerator:
         self.gating_net = gating_net
         self.pad_token_id = tokenizer.token_to_id("<|pad|>")
         self.eos_token_id = tokenizer.token_to_id("<|endoftext|>")
+        # GPT-2 variants cap usable context via learned position embeddings
+        base_config = getattr(model, "gpt2_config", None)
+        if base_config is None and hasattr(model, "base_model"):
+            base_config = getattr(model.base_model, "config", None)
+        self.max_seq_len = getattr(base_config, "n_positions", 1024)
+        self._warned_truncation = False
         
         # Feature extractor for gating
         self.feature_extractor = FeatureExtractor(
@@ -104,6 +110,18 @@ class SimpleGenerator:
             )
         self.extract_features_jit = extract_features_jit
 
+    def _truncate_context(self, token_ids: list[int]) -> list[int]:
+        """Clamp context to the model's positional window."""
+        if len(token_ids) <= self.max_seq_len:
+            return token_ids
+        if not self._warned_truncation:
+            print(
+                f"WARNING: Prompt length {len(token_ids)} exceeds model limit {self.max_seq_len}. "
+                "Keeping the most recent tokens."
+            )
+            self._warned_truncation = True
+        return token_ids[-self.max_seq_len:]
+
     def generate(
         self, 
         prompt: str, 
@@ -112,8 +130,9 @@ class SimpleGenerator:
     ) -> str:
         """Generate completion for a prompt."""
         # Tokenize
-        input_ids = self.tokenizer.encode(prompt).ids
-        input_ids = jnp.array([input_ids], dtype=jnp.int32)  # [1, seq_len]
+        prompt_token_ids = self._truncate_context(self.tokenizer.encode(prompt).ids)
+        input_ids = jnp.array([prompt_token_ids], dtype=jnp.int32)  # [1, seq_len]
+        generated_tokens: list[int] = []
         
         # Generation loop (inefficient, no KV cache)
         for _ in range(max_new_tokens):
@@ -185,15 +204,18 @@ class SimpleGenerator:
                 next_token = jnp.argmax(logits, axis=-1)
             
             next_token = next_token.reshape(1, 1)
+            token_val = int(next_token[0, 0])
+            if token_val != self.eos_token_id:
+                generated_tokens.append(token_val)
             input_ids = jnp.concatenate([input_ids, next_token], axis=1)
-            
-            if int(next_token[0, 0]) == self.eos_token_id:
+            if input_ids.shape[1] > self.max_seq_len:
+                input_ids = input_ids[:, -self.max_seq_len:]
+
+            if token_val == self.eos_token_id:
                 break
                 
         # Decode
-        full_text = self.tokenizer.decode(input_ids[0])
-        # Return only the new part
-        completion = full_text[len(prompt):]
+        completion = self.tokenizer.decode(generated_tokens)
         return completion
 
     def generate_batch(
@@ -204,8 +226,9 @@ class SimpleGenerator:
     ) -> list[str]:
         """Generate completions for a batch of prompts."""
         # Tokenize
-        input_ids_list = [self.tokenizer.encode(p).ids for p in prompts]
+        input_ids_list = [self._truncate_context(self.tokenizer.encode(p).ids) for p in prompts]
         batch_size = len(prompts)
+        generated_tokens = [[] for _ in range(batch_size)]
         
         # Track which sequences are finished
         finished = [False] * batch_size
@@ -232,6 +255,7 @@ class SimpleGenerator:
             
             alignment = mini_batch_size * remat_group_size
             target_len = ((max_len + alignment - 1) // alignment) * alignment
+            target_len = min(target_len, self.max_seq_len)
             
             # Construct tensors
             padded_input_ids = []
@@ -300,16 +324,20 @@ class SimpleGenerator:
             for i, token in enumerate(next_tokens):
                 if not finished[i]:
                     token_val = int(token)
+                    if token_val != self.eos_token_id:
+                        generated_tokens[i].append(token_val)
                     if token_val == self.eos_token_id:
                         finished[i] = True
                     else:
                         input_ids_list[i].append(token_val)
+                        if len(input_ids_list[i]) > self.max_seq_len:
+                            # Keep only the most recent tokens within context window
+                            input_ids_list[i] = input_ids_list[i][-self.max_seq_len:]
                         
         # Decode
         completions = []
-        for i, prompt in enumerate(prompts):
-            full_text = self.tokenizer.decode(input_ids_list[i])
-            completions.append(full_text[len(prompt):])
+        for i in range(batch_size):
+            completions.append(self.tokenizer.decode(generated_tokens[i]))
             
         return completions
 
