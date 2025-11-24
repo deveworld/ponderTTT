@@ -231,10 +231,9 @@ def main():
         
         # Create target for restoration to preserve NNX State structure
         # We must match the saved structure exactly, including metadata, to avoid Orbax errors.
-        # Note: Checkpoints now save both model and optimizer states
-        dummy_optimizer = nnx.Optimizer(trainable_system, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+        # Note: We only load the model state, ignoring the optimizer state
         target = {
-            "state": {"model": nnx.state(trainable_system), "optimizer": nnx.state(dummy_optimizer)},
+            "state": {"model": nnx.state(trainable_system)},
             "step": 0,
             "metadata": {
                 "model_scale": "",
@@ -254,10 +253,9 @@ def main():
     )
     if args.rl_checkpoint:
         print(f"Loading RL Policy checkpoint from {args.rl_checkpoint}...")
-        # Note: Checkpoints now save both policy and optimizer states
-        dummy_optimizer = nnx.Optimizer(rl_net, optax.adam(1e-3), wrt=nnx.All(nnx.Param))
+        # Note: We only load the policy state, ignoring the optimizer state
         target = {
-            "state": {"policy": nnx.state(rl_net), "optimizer": nnx.state(dummy_optimizer)},
+            "state": {"policy": nnx.state(rl_net)},
             "step": 0,
             "metadata": {
                 "seed": 0,
