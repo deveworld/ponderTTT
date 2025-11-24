@@ -1,5 +1,5 @@
 """
-Code generation benchmarks (HumanEval, MBPP, ClassEval).
+Code generation benchmarks (HumanEval, MBPP).
 """
 
 import os
@@ -172,82 +172,6 @@ class MBPPBenchmark:
         }
 
 
-class ClassEvalBenchmark:
-    """
-    ClassEval benchmark (100 class-level problems).
-
-    Reference: "ClassEval: A Manually-Crafted Benchmark for Evaluating
-                LLMs on Class-level Code Generation"
-               Du et al., 2023
-    """
-
-    def __init__(self):
-        """Initialize ClassEval benchmark."""
-        self.problems: list[CodeProblem] = []
-        self._load_problems()
-
-    def _load_problems(self):
-        """Load ClassEval problems."""
-        from datasets import load_dataset
-
-        dataset = load_dataset("FudanSELab/ClassEval", split="test")
-
-        for example in dataset:
-            if isinstance(example, dict):
-                # ClassEval provides skeleton (class definition with method stubs)
-                # and test cases for class-level code generation
-                problem = CodeProblem(
-                    task_id=example["task_id"],
-                    prompt=example["skeleton"],  # Class skeleton with method stubs
-                    canonical_solution=example["solution_code"],
-                    test_code=example["test"],  # Test cases
-                    entry_point=example["class_name"],  # Class name
-                )
-                self.problems.append(problem)
-
-    def __len__(self) -> int:
-        """Number of problems."""
-        return len(self.problems)
-
-    def __getitem__(self, idx: int) -> CodeProblem:
-        """Get problem by index."""
-        return self.problems[idx]
-
-    def evaluate(
-        self,
-        generate_fn: Callable[[str], Iterable[str]],
-        k: int = 100,
-    ) -> dict[str, float]:
-        scores = []
-        attempts: list[int] = []
-
-        for problem in tqdm(self.problems, desc="ClassEval"):
-            samples = list(generate_fn(problem.prompt))
-            if not samples:
-                attempts.append(0)
-                scores.append(0.0)
-                continue
-
-            total = min(k, len(samples))
-            n_correct = 0
-            for completion in samples[:total]:
-                if _check_solution(problem, completion):
-                    n_correct += 1
-            attempts.append(total)
-            scores.append(
-                compute_pass_at_k(total, n_correct, k) if total > 0 else 0.0
-            )
-
-        if not scores:
-            return {"pass@k": 0.0, "num_problems": 0, "avg_attempts": 0.0}
-
-        return {
-            "pass@k": float(sum(scores) / len(scores)),
-            "num_problems": len(scores),
-            "avg_attempts": float(sum(attempts) / len(attempts)),
-        }
-
-
 class BenchmarkSuite:
     """
     Unified interface for all benchmarks.
@@ -257,7 +181,6 @@ class BenchmarkSuite:
         self,
         include_humaneval: bool = True,
         include_mbpp: bool = True,
-        include_classeval: bool = False,
     ):
         """
         Initialize benchmark suite.
@@ -265,10 +188,9 @@ class BenchmarkSuite:
         Args:
             include_humaneval: Include HumanEval
             include_mbpp: Include MBPP
-            include_classeval: Include ClassEval
         """
         self.benchmarks: dict[
-            str, HumanEvalBenchmark | MBPPBenchmark | ClassEvalBenchmark
+            str, HumanEvalBenchmark | MBPPBenchmark
         ] = {}
 
         if include_humaneval:
@@ -276,9 +198,6 @@ class BenchmarkSuite:
 
         if include_mbpp:
             self.benchmarks["mbpp"] = MBPPBenchmark()
-
-        if include_classeval:
-            self.benchmarks["classeval"] = ClassEvalBenchmark()
 
     def evaluate_all(
         self,
