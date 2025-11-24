@@ -8,6 +8,7 @@ Usage:
 import argparse
 import json
 import os
+import traceback
 from functools import partial
 from pathlib import Path
 from typing import Callable, cast
@@ -27,10 +28,10 @@ from ..utils.checkpointing import load_checkpoint
 
 
 # JIT compiled forward pass
-def _generate_step_impl(model, input_ids, use_ttt, gating_scale):
-    return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
+# def _generate_step_impl(model, input_ids, use_ttt, gating_scale):
+#     return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
 
-generate_step = cast(Callable, nnx.jit(_generate_step_impl, static_argnames=("use_ttt",)))
+# generate_step = cast(Callable, nnx.jit(_generate_step_impl, static_argnames=("use_ttt",)))
 
 
 def parse_args():
@@ -136,7 +137,7 @@ class SimpleGenerator:
                     gating_scale = jnp.array([[scale]])
             
             # Forward pass
-            outputs = generate_step(self.model, padded_input, use_ttt, gating_scale)
+            outputs = self.model(padded_input, use_ttt=use_ttt, gating_scale=gating_scale)
             
             # Get logits for the last REAL token
             # padded_input shape [1, L_pad]
@@ -306,6 +307,7 @@ def main():
             print(f"  Result: {score}")
         except Exception as e:
             print(f"  Failed: {e}")
+            traceback.print_exc()
         finally:
             benchmark.problems = original_problems
 
