@@ -155,6 +155,10 @@ class SimpleGenerator:
                 # Get baseline output for features
                 out_base = self.model_forward(self.model, padded_input, use_ttt=False, gating_scale=None)
                 
+                # DEBUG: Check out_base
+                if jnp.isnan(out_base["logits"]).any():
+                     print(f"WARNING: NaNs in out_base logits at step {_}")
+                
                 # Extract features (JIT compiled)
                 features = self.extract_features_jit(
                     input_ids=padded_input,
@@ -375,6 +379,20 @@ def main():
         load_pretrained=True
     )
     
+    # DEBUG: Check base model weights
+    print("Checking base model weights for NaNs...")
+    has_nans = [False]
+    def check_nan(path, arr):
+        if isinstance(arr, jnp.ndarray) and jnp.isnan(arr).any():
+            print(f"ERROR: NaN found in base_model parameter: {path}")
+            has_nans[0] = True
+        return arr
+    
+    jax.tree_util.tree_map_with_path(check_nan, nnx.state(model.base_model))
+    
+    if not has_nans[0]:
+        print("Base model weights seem OK (no NaNs).")
+    
     gating_net = None
 
     # Load Checkpoint if provided
@@ -446,6 +464,29 @@ def main():
                 except Exception as e_base:
                      print(f"Failed to load checkpoint: {e_base}")
                      raise ValueError("Could not load checkpoint as either Differentiable or Baseline format")
+
+    # DEBUG: Check loaded weights
+    print("Checking loaded weights for NaNs...")
+    has_nans = [False]
+    
+    def check_nan_fast(path, arr):
+        if isinstance(arr, jnp.ndarray) and jnp.isnan(arr).any():
+            print(f"ERROR: NaN found in fast_layer parameter: {path}")
+            has_nans[0] = True
+        return arr
+        
+    jax.tree_util.tree_map_with_path(check_nan_fast, nnx.state(model.fast_layer))
+
+    if gating_net:
+        def check_nan_gating(path, arr):
+            if isinstance(arr, jnp.ndarray) and jnp.isnan(arr).any():
+                print(f"ERROR: NaN found in gating_net parameter: {path}")
+                has_nans[0] = True
+            return arr
+        jax.tree_util.tree_map_with_path(check_nan_gating, nnx.state(gating_net))
+        
+    if not has_nans[0]:
+        print("Loaded weights seem OK (no NaNs).")
 
     # Load Gating/Policy Checkpoint if provided
     if args.gating_checkpoint:
