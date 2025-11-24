@@ -344,10 +344,10 @@ def main():
                 # If budget is full (remaining=1.0), urgency=0.0 -> low base penalty
                 # If budget is empty (remaining=0.0), urgency=1.0 -> high base penalty
                 budget_urgency = 1.0 - budget_remaining
-                base_cost_factor = 0.1 + 2.0 * (budget_urgency ** 2)
+                base_cost_factor = 0.01 + 0.5 * (budget_urgency ** 2)
                 
-                efficiency_penalty = cost_term * (base_cost_factor + waste * 10.0)
-                efficiency_reward = improvement * cost_term * 10.0  # Increased reward scaling
+                efficiency_penalty = cost_term * (base_cost_factor + waste * 5.0)
+                efficiency_reward = improvement * cost_term * 20.0  # Increased reward scaling
                 
                 cost_penalty = (efficiency_penalty - efficiency_reward) * args.cost_weight
             else:
