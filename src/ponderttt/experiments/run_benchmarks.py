@@ -88,11 +88,14 @@ class SimpleGenerator:
             
             # Prepare TTT inputs (padding if needed)
             mini_batch_size = 16
+            remat_group_size = 1
             if hasattr(self.model, "fast_layer") and hasattr(self.model.fast_layer, "config"):
                 if isinstance(self.model.fast_layer.config, TTTConfig):
                     mini_batch_size = self.model.fast_layer.config.mini_batch_size
+                    remat_group_size = self.model.fast_layer.config.remat_mini_batch_group_size
             
-            pad_len = (mini_batch_size - (current_len % mini_batch_size)) % mini_batch_size
+            alignment = mini_batch_size * remat_group_size
+            pad_len = (alignment - (current_len % alignment)) % alignment
             
             if pad_len > 0:
                 pads = jnp.full((1, pad_len), self.pad_token_id, dtype=jnp.int32)
