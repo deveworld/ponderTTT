@@ -229,22 +229,18 @@ def main():
         # Reconstruct system and update state
         trainable_system = TrainableSystem(diff_ttt_model, diff_net)
         
-        # Create target for restoration to preserve NNX State structure
-        # We must match the saved structure exactly, including metadata, to avoid Orbax errors.
-        # Note: We only load the model state, ignoring the optimizer state
-        target = {
-            "state": {"model": nnx.state(trainable_system)},
-            "step": 0,
-            "metadata": {
-                "model_scale": "",
-                "max_steps": 0.0,
-                "budget_limit": 0.0,
-            }
-        }
-
-        ckpt = load_checkpoint(args.diff_checkpoint, target=target)
-        nnx.update(trainable_system, ckpt["state"]["model"])
-        print("Differentiable Gating and TTT weights loaded.")
+        # Load checkpoint without target to avoid strict structure matching
+        # This allows loading even if the checkpoint contains extra fields (like optimizer state)
+        # or is missing some fields (partial loading)
+        ckpt = load_checkpoint(args.diff_checkpoint, target=None)
+        
+        # Update model state from checkpoint
+        # We assume ckpt["state"]["model"] exists and matches trainable_system structure
+        if "state" in ckpt and "model" in ckpt["state"]:
+            nnx.update(trainable_system, ckpt["state"]["model"])
+            print("Differentiable Gating and TTT weights loaded.")
+        else:
+            print("Warning: Could not find 'state.model' in checkpoint. Weights might not be loaded.")
 
     # RL Network
     rl_net = PolicyNetwork(
@@ -253,19 +249,13 @@ def main():
     )
     if args.rl_checkpoint:
         print(f"Loading RL Policy checkpoint from {args.rl_checkpoint}...")
-        # Note: We only load the policy state, ignoring the optimizer state
-        target = {
-            "state": {"policy": nnx.state(rl_net)},
-            "step": 0,
-            "metadata": {
-                "seed": 0,
-                "model_scale": "",
-                "budget_limit": 0.0,
-            }
-        }
-        ckpt = load_checkpoint(args.rl_checkpoint, target=target)
-        nnx.update(rl_net, ckpt["state"]["policy"])
-        print("RL Policy weights loaded.")
+        # Load without target
+        ckpt = load_checkpoint(args.rl_checkpoint, target=None)
+        if "state" in ckpt and "policy" in ckpt["state"]:
+            nnx.update(rl_net, ckpt["state"]["policy"])
+            print("RL Policy weights loaded.")
+        else:
+            print("Warning: Could not find 'state.policy' in checkpoint.")
     
     all_results = []
     
