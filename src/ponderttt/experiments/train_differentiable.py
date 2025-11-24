@@ -343,17 +343,19 @@ def main():
                 # Dynamic penalty based on budget urgency
                 # If budget is full (remaining=1.0), urgency=0.0 -> low base penalty
                 # If budget is empty (remaining=0.0), urgency=1.0 -> high base penalty
+                # If budget is negative (remaining<0.0), urgency>1.0 -> very high penalty
                 budget_urgency = 1.0 - budget_remaining
-                base_cost_factor = 0.01 + 0.5 * (budget_urgency ** 2)
+                
+                # Simple polynomial scaling for cost factor
+                # When urgency=0 (full budget), factor = 0.05
+                # When urgency=1 (empty budget), factor = 0.05 + 2.0 = 2.05
+                # When urgency=1.5 (overdraft), factor = 0.05 + 2.0 * 3.375 = 6.8
+                base_cost_factor = 0.05 + 2.0 * (jnp.maximum(0.0, budget_urgency) ** 3)
                 
                 efficiency_penalty = cost_term * (base_cost_factor + waste * 5.0)
-                efficiency_reward = improvement * cost_term * 20.0  # Increased reward scaling
+                efficiency_reward = improvement * cost_term * 10.0
                 
                 cost_penalty = (efficiency_penalty - efficiency_reward) * args.cost_weight
-                
-                # Add explicit penalty for exceeding budget
-                if budget_remaining < 0.0:
-                    cost_penalty += 10.0 * (-budget_remaining) ** 2
             else:
                 cost_penalty = jnp.mean(gating_scale) * args.cost_weight
             
@@ -423,7 +425,8 @@ def main():
             
             # Calculate remaining budget fraction
             if total_budget > 1e-6:
-                budget_rem_fraction = max(0.0, (total_budget - current_spend) / total_budget)
+                # Allow negative values to signal budget violation
+                budget_rem_fraction = (total_budget - current_spend) / total_budget
             else:
                 budget_rem_fraction = 0.0
                 
