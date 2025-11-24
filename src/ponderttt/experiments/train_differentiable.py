@@ -352,10 +352,13 @@ def main():
                 # When urgency=1.5 (overdraft), factor = 0.05 + 5.0 * 3.375 = 16.9
                 base_cost_factor = 0.05 + 5.0 * (jnp.maximum(0.0, budget_urgency) ** 3)
                 
-                efficiency_penalty = cost_term * (base_cost_factor + waste * 5.0)
-                efficiency_reward = improvement * cost_term * 2.0
+                # Normalize cost by target budget so values >1 mean "over target"
+                normalized_cost = cost_term / jnp.maximum(args.budget_limit, 1e-6)
+                efficiency_penalty = normalized_cost * (base_cost_factor + waste * 4.0)
+                efficiency_reward = improvement * normalized_cost * 0.5
+                overdraft = jnp.maximum(0.0, -budget_remaining)
                 
-                cost_penalty = (efficiency_penalty - efficiency_reward) * args.cost_weight
+                cost_penalty = (efficiency_penalty - efficiency_reward + overdraft * (1.0 + 2.0 * normalized_cost)) * args.cost_weight
             else:
                 cost_penalty = jnp.mean(gating_scale) * args.cost_weight
             
