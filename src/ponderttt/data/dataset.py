@@ -86,7 +86,7 @@ class CodeDataset:
         # Load dataset in streaming mode (The Stack v2 train-full-ids)
         self.dataset = load_dataset(
             "bigcode/the-stack-v2-train-full-ids",
-            language,
+            "default",
             split=split,
             streaming=True,
         )
@@ -241,11 +241,13 @@ class CodeDataset:
                 - attention_mask: [seq_len] bool array
                 - chunks: [num_chunks, chunk_size] int array
         """
-        for example in self.dataset:
-            if isinstance(example, dict):
-                processed = self._process_example(example)
-                if processed is not None:
-                    yield processed
+        for repo in self.dataset:
+            if isinstance(repo, dict) and "files" in repo:
+                for file_info in repo["files"]:
+                    if file_info.get("language") == self.language:
+                        processed = self._process_example(file_info)
+                        if processed is not None:
+                            yield processed
 
 
 def create_data_iterator(
@@ -371,8 +373,13 @@ def create_data_iterator(
         total_examples = max_examples if max_examples else batch_size * 100
         raw_examples = []
 
-        for example in dataset.dataset:
-            raw_examples.append(example)
+        for repo in dataset.dataset:
+            if isinstance(repo, dict) and "files" in repo:
+                for file_info in repo["files"]:
+                    if file_info.get("language") == dataset.language:
+                        raw_examples.append(file_info)
+                        if len(raw_examples) >= total_examples:
+                            break
             if len(raw_examples) >= total_examples:
                 break
 
