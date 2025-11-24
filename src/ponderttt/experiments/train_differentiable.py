@@ -285,6 +285,7 @@ def main():
         features = feature_extractor.extract(
             input_ids=input_ids,
             logits=logits_base,
+            hidden_states=[hidden_states],
             attention_mask=attention_mask,
             budget_remaining=budget_remaining,
         )

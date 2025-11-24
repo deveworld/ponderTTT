@@ -155,18 +155,26 @@ class FeatureExtractor:
         """Extract activation statistics (6D)."""
         # Use last layer
         last_hidden = hidden_states[-1]  # [batch, seq_len, hidden_dim]
+        hidden_dim = last_hidden.shape[-1]
         mask = attention_mask[..., None]
-        denom = valid_tokens[..., None]
+        
+        # valid_tokens is [batch, 1], squeeze to [batch] for correct broadcasting
+        denom = valid_tokens.squeeze(-1)
 
         # Statistics
-        mean_act = jnp.sum(last_hidden * mask, axis=(1, 2)) / denom.squeeze(-1)
+        # Normalize by hidden_dim to get intensive properties
+        # sum: [batch], denom: [batch] -> result: [batch]
+        mean_act = jnp.sum(last_hidden * mask, axis=(1, 2)) / (denom * hidden_dim)
+        
         centered = last_hidden - mean_act[:, None, None]
         std_act = jnp.sqrt(
-            jnp.maximum(jnp.sum((centered**2) * mask, axis=(1, 2)) / denom.squeeze(-1), 1e-10)
+            jnp.maximum(jnp.sum((centered**2) * mask, axis=(1, 2)) / (denom * hidden_dim), 1e-10)
         )
+        
         sparsity = jnp.sum(
             (jnp.abs(last_hidden) < 0.01).astype(jnp.float32) * mask, axis=(1, 2)
-        ) / denom.squeeze(-1)
+        ) / (denom * hidden_dim)
+        
         max_act = jnp.max(jnp.where(mask > 0, last_hidden, -jnp.inf), axis=(1, 2))
         min_act = jnp.min(jnp.where(mask > 0, last_hidden, jnp.inf), axis=(1, 2))
         range_act = max_act - min_act
@@ -218,7 +226,7 @@ class FeatureExtractor:
 
         # Sparsity
         sparsity = jnp.sum((last_attn < 0.01).astype(jnp.float32) * pair_mask[:, None, :, :], axis=(1, 2, 3)) / (
-            pair_denom[:, None] * last_attn.shape[1]
+            pair_denom * last_attn.shape[1]
         )
 
         return jnp.stack(
