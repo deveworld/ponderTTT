@@ -350,6 +350,10 @@ def main():
                 efficiency_reward = improvement * cost_term * 20.0  # Increased reward scaling
                 
                 cost_penalty = (efficiency_penalty - efficiency_reward) * args.cost_weight
+                
+                # Add explicit penalty for exceeding budget
+                if budget_remaining < 0.0:
+                    cost_penalty += 10.0 * (-budget_remaining) ** 2
             else:
                 cost_penalty = jnp.mean(gating_scale) * args.cost_weight
             
