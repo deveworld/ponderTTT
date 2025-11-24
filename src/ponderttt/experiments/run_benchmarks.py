@@ -202,8 +202,11 @@ def main():
         
         try:
             # Try loading as Differentiable Training checkpoint
-            # Load without target to avoid strict structure matching
-            ckpt = load_checkpoint(args.checkpoint, target=None)
+            # Use target to ensure correct structure restoration
+            print("Attempting to load with strict structure matching...")
+            target = {"state": {"model": nnx.state(trainable_sys)}}
+            
+            ckpt = load_checkpoint(args.checkpoint, target=target)
             
             if "state" in ckpt and "model" in ckpt["state"]:
                 nnx.update(trainable_sys, ckpt["state"]["model"])
@@ -217,20 +220,34 @@ def main():
                  gating_net = trainable_sys.gating_net
 
         except Exception as e_diff:
-            print(f"Not a Differentiable Training checkpoint ({e_diff}), trying Baseline...")
+            print(f"Strict loading failed ({e_diff}), trying loose loading...")
             try:
-                # Try loading as Baseline checkpoint (Model structure)
-                # Load without target
+                # Fallback: Load without target
                 ckpt = load_checkpoint(args.checkpoint, target=None)
                 
                 if "state" in ckpt and "model" in ckpt["state"]:
-                    nnx.update(model, ckpt["state"]["model"])
-                    print("Loaded as Baseline checkpoint")
+                    # Try to update trainable_sys with loose dict
+                    nnx.update(trainable_sys, ckpt["state"]["model"])
+                    print("Loaded as Differentiable Training checkpoint (loose)")
+                    if args.gating_checkpoint is None:
+                        gating_net = trainable_sys.gating_net
                 else:
                     raise ValueError("Checkpoint does not contain 'state.model'")
-            except Exception as e_base:
-                 print(f"Failed to load checkpoint: {e_base}")
-                 raise ValueError("Could not load checkpoint as either Differentiable or Baseline format")
+            except Exception as e_loose:
+                print(f"Not a Differentiable Training checkpoint ({e_loose}), trying Baseline...")
+                try:
+                    # Try loading as Baseline checkpoint (Model structure)
+                    # Load without target
+                    ckpt = load_checkpoint(args.checkpoint, target=None)
+                    
+                    if "state" in ckpt and "model" in ckpt["state"]:
+                        nnx.update(model, ckpt["state"]["model"])
+                        print("Loaded as Baseline checkpoint")
+                    else:
+                        raise ValueError("Checkpoint does not contain 'state.model'")
+                except Exception as e_base:
+                     print(f"Failed to load checkpoint: {e_base}")
+                     raise ValueError("Could not load checkpoint as either Differentiable or Baseline format")
 
     # Load Gating/Policy Checkpoint if provided
     if args.gating_checkpoint:
