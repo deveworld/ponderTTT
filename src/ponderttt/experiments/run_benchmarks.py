@@ -110,6 +110,13 @@ class SimpleGenerator:
             )
         self.extract_features_jit = extract_features_jit
 
+    def _call_model(self, input_tensor: jax.Array, use_ttt: bool, gating_scale: jax.Array | None):
+        """Run model forward pass ensuring gating_scale is always an array."""
+        batch_size = input_tensor.shape[0]
+        if gating_scale is None:
+            gating_scale = jnp.zeros((batch_size, 1), dtype=jnp.float32)
+        return self.model_forward(self.model, input_tensor, use_ttt=use_ttt, gating_scale=gating_scale)
+
     def _truncate_context(self, token_ids: list[int]) -> list[int]:
         """Clamp context to the model's positional window."""
         if len(token_ids) <= self.max_seq_len:
@@ -168,7 +175,7 @@ class SimpleGenerator:
             # To avoid double computation, we compute baseline first if gating is enabled
             
             if self.gating_net is not None:
-                out_base = self.model_forward(self.model, padded_input, use_ttt=False, gating_scale=None)
+                out_base = self._call_model(padded_input, use_ttt=False, gating_scale=None)
 
                 features = self.extract_features_jit(
                     input_ids=padded_input,
@@ -187,11 +194,11 @@ class SimpleGenerator:
                 if scale > 0.01:
                     use_ttt = True
                     gating_scale = jnp.array([[scale]])
-                    outputs = self.model_forward(self.model, padded_input, use_ttt=True, gating_scale=gating_scale)
+                    outputs = self._call_model(padded_input, use_ttt=True, gating_scale=gating_scale)
                 else:
                     outputs = out_base
             else:
-                outputs = self.model_forward(self.model, padded_input, use_ttt=False, gating_scale=None)
+                outputs = self._call_model(padded_input, use_ttt=False, gating_scale=None)
             
             # Get logits for the last REAL token
             logits = outputs["logits"][:, current_len - 1, :]  # [1, vocab_size]
@@ -287,7 +294,7 @@ class SimpleGenerator:
             gating_scale = None
             
             if self.gating_net is not None:
-                out_base = self.model_forward(self.model, input_tensor, use_ttt=False, gating_scale=None)
+                out_base = self._call_model(input_tensor, use_ttt=False, gating_scale=None)
 
                 features = self.extract_features_jit(
                     input_ids=input_tensor,
@@ -306,11 +313,11 @@ class SimpleGenerator:
                 if jnp.any(scales > 0.01):
                     use_ttt = True
                     gating_scale = scales[:, None]
-                    outputs = self.model_forward(self.model, input_tensor, use_ttt=True, gating_scale=gating_scale)
+                    outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
                 else:
                     outputs = out_base
             else:
-                outputs = self.model_forward(self.model, input_tensor, use_ttt=False, gating_scale=None)
+                outputs = self._call_model(input_tensor, use_ttt=False, gating_scale=None)
             
             # Extract logits
             indices = jnp.array([l - 1 for l in current_lens]) # [B]
