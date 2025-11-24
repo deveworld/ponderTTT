@@ -348,12 +348,12 @@ def main():
                 
                 # Simple polynomial scaling for cost factor
                 # When urgency=0 (full budget), factor = 0.05
-                # When urgency=1 (empty budget), factor = 0.05 + 2.0 = 2.05
-                # When urgency=1.5 (overdraft), factor = 0.05 + 2.0 * 3.375 = 6.8
-                base_cost_factor = 0.05 + 2.0 * (jnp.maximum(0.0, budget_urgency) ** 3)
+                # When urgency=1 (empty budget), factor = 0.05 + 5.0 = 5.05
+                # When urgency=1.5 (overdraft), factor = 0.05 + 5.0 * 3.375 = 16.9
+                base_cost_factor = 0.05 + 5.0 * (jnp.maximum(0.0, budget_urgency) ** 3)
                 
                 efficiency_penalty = cost_term * (base_cost_factor + waste * 5.0)
-                efficiency_reward = improvement * cost_term * 10.0
+                efficiency_reward = improvement * cost_term * 2.0
                 
                 cost_penalty = (efficiency_penalty - efficiency_reward) * args.cost_weight
             else:
