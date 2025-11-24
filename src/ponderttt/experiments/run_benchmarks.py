@@ -307,6 +307,18 @@ class SimpleGenerator:
             indices = jnp.array([l - 1 for l in current_lens]) # [B]
             next_token_logits = outputs["logits"][jnp.arange(batch_size), indices, :] # [B, V]
             
+            # DEBUG: Check for NaNs
+            if jnp.isnan(next_token_logits).any():
+                print(f"WARNING: NaNs detected in logits at step {_}!")
+            
+            # DEBUG: Print top tokens for first step of generation
+            if _ == 0:
+                print(f"Debug: Token 0 is '{self.tokenizer.decode([0])}'")
+                probs = jax.nn.softmax(next_token_logits[0])
+                top_k = jnp.argsort(probs)[::-1][:5]
+                print(f"Top 5 tokens: {[self.tokenizer.decode([int(t)]) for t in top_k]}")
+                print(f"Top 5 probs: {probs[top_k]}")
+
             # Sampling
             if temperature > 0:
                 probs = jax.nn.softmax(next_token_logits / temperature, axis=-1)
