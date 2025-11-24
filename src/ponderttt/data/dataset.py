@@ -24,7 +24,7 @@ from tokenizers import Tokenizer
 
 class CodeDataset:
     """
-    Streaming dataset for code from The Stack v2 (dedup) with multi-host sharding.
+    Streaming dataset for code from The Stack v2 (train-full-ids) with multi-host sharding.
 
     Downloads actual code content from Software Heritage S3 bucket using unsigned requests.
 
@@ -76,9 +76,9 @@ class CodeDataset:
             ),
         )
 
-        # Load dataset in streaming mode (The Stack v2 dedup)
+        # Load dataset in streaming mode (The Stack v2 train-full-ids)
         self.dataset = load_dataset(
-            "bigcode/the-stack-v2-dedup",
+            "bigcode/the-stack-v2-train-full-ids",
             language,
             split=split,
             streaming=True,
