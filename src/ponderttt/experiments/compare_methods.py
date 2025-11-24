@@ -34,7 +34,7 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="outputs/comparison")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--language", type=str, default="Python", help="Programming language for OOD testing")
-    parser.add_argument("--split", type=str, default="test", help="Dataset split (train/validation/test)")
+    parser.add_argument("--split", type=str, default="train", help="Dataset split (train/validation/test). Note: The Stack v2 only has 'train'.")
     parser.add_argument("--num_workers", type=int, default=32, help="Number of parallel workers for data downloading")
     return parser.parse_args()
 
