@@ -382,13 +382,13 @@ def main():
     # DEBUG: Check base model weights
     print("Checking base model weights for NaNs...")
     has_nans = [False]
-    def check_nan(path, arr):
+    def check_nan(arr):
         if isinstance(arr, jnp.ndarray) and jnp.isnan(arr).any():
-            print(f"ERROR: NaN found in base_model parameter: {path}")
+            print(f"ERROR: NaN found in base_model parameter")
             has_nans[0] = True
         return arr
     
-    jax.tree_util.tree_map_with_path(check_nan, nnx.state(model.base_model))
+    jax.tree_util.tree_map(check_nan, nnx.state(model.base_model))
     
     if not has_nans[0]:
         print("Base model weights seem OK (no NaNs).")
@@ -469,21 +469,21 @@ def main():
     print("Checking loaded weights for NaNs...")
     has_nans = [False]
     
-    def check_nan_fast(path, arr):
+    def check_nan_fast(arr):
         if isinstance(arr, jnp.ndarray) and jnp.isnan(arr).any():
-            print(f"ERROR: NaN found in fast_layer parameter: {path}")
+            print(f"ERROR: NaN found in fast_layer parameter")
             has_nans[0] = True
         return arr
         
-    jax.tree_util.tree_map_with_path(check_nan_fast, nnx.state(model.fast_layer))
+    jax.tree_util.tree_map(check_nan_fast, nnx.state(model.fast_layer))
 
     if gating_net:
-        def check_nan_gating(path, arr):
+        def check_nan_gating(arr):
             if isinstance(arr, jnp.ndarray) and jnp.isnan(arr).any():
-                print(f"ERROR: NaN found in gating_net parameter: {path}")
+                print(f"ERROR: NaN found in gating_net parameter")
                 has_nans[0] = True
             return arr
-        jax.tree_util.tree_map_with_path(check_nan_gating, nnx.state(gating_net))
+        jax.tree_util.tree_map(check_nan_gating, nnx.state(gating_net))
         
     if not has_nans[0]:
         print("Loaded weights seem OK (no NaNs).")
