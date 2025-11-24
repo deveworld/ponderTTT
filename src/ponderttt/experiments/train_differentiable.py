@@ -351,14 +351,30 @@ def main():
                 # When urgency=1 (empty budget), factor = 0.05 + 5.0 = 5.05
                 # When urgency=1.5 (overdraft), factor = 0.05 + 5.0 * 3.375 = 16.9
                 base_cost_factor = 0.05 + 5.0 * (jnp.maximum(0.0, budget_urgency) ** 3)
-                
-                # Normalize cost by target budget so values >1 mean "over target"
+
+                # Normalize reward/penalty by local difficulty so easy chunks feel costlier
+                difficulty_scale = jnp.maximum(baseline_loss, 1e-3)
+                relative_improvement = improvement / difficulty_scale
+                relative_waste = waste / difficulty_scale
+                difficulty_weight = jnp.clip(baseline_loss / (baseline_loss + 1.0), 0.0, 1.0)
+                ease_weight = 1.0 - difficulty_weight
+
                 normalized_cost = cost_term / jnp.maximum(args.budget_limit, 1e-6)
-                efficiency_penalty = normalized_cost * (base_cost_factor + waste * 4.0)
-                efficiency_reward = improvement * normalized_cost * 0.5
+                efficiency_penalty = normalized_cost * (
+                    base_cost_factor
+                    + (relative_waste + ease_weight) * 3.0
+                    + normalized_cost * 0.5
+                )
+                efficiency_reward = normalized_cost * relative_improvement * (0.25 + difficulty_weight)
                 overdraft = jnp.maximum(0.0, -budget_remaining)
-                
-                cost_penalty = (efficiency_penalty - efficiency_reward + overdraft * (1.0 + 2.0 * normalized_cost)) * args.cost_weight
+                uneven_usage = jnp.maximum(0.0, normalized_cost - difficulty_weight)
+
+                cost_penalty = (
+                    efficiency_penalty
+                    - efficiency_reward
+                    + overdraft * (1.0 + 2.0 * normalized_cost)
+                    + uneven_usage * ease_weight
+                ) * args.cost_weight
             else:
                 cost_penalty = jnp.mean(gating_scale) * args.cost_weight
             

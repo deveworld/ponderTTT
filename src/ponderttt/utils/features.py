@@ -35,8 +35,9 @@ class FeatureExtractor:
         self.pad_token_id = pad_token_id
         self.seq_length_norm = float(seq_length_norm) if seq_length_norm is not None else 4096.0
 
-        # History tracking
+        # History tracking (difficulty mean/variance + cost)
         self.difficulty_ema = 0.0
+        self.difficulty_sq_ema = 0.0
         self.cost_ema = 0.0
 
     def extract(
@@ -326,11 +327,12 @@ class FeatureExtractor:
     ) -> jnp.ndarray:
         """Extract historical context (4D)."""
         difficulty = jnp.full((batch_size,), self.difficulty_ema)
+        diff_var = jnp.maximum(self.difficulty_sq_ema - self.difficulty_ema**2, 0.0)
+        difficulty_std = jnp.full((batch_size,), jnp.sqrt(diff_var + 1e-8))
         cost = jnp.full((batch_size,), self.cost_ema)
         budget_rem = jnp.full((batch_size,), budget_remaining)
-        budget_util = jnp.full((batch_size,), 1.0 - budget_remaining)
 
-        return jnp.stack([difficulty, cost, budget_rem, budget_util], axis=-1)
+        return jnp.stack([difficulty, difficulty_std, cost, budget_rem], axis=-1)
 
     def _extract_sequence(self, input_ids: jnp.ndarray) -> jnp.ndarray:
         """Extract sequence statistics (6D)."""
@@ -377,11 +379,15 @@ class FeatureExtractor:
         self.difficulty_ema = (
             self.ema_alpha * difficulty + (1 - self.ema_alpha) * self.difficulty_ema
         )
+        self.difficulty_sq_ema = (
+            self.ema_alpha * (difficulty ** 2) + (1 - self.ema_alpha) * self.difficulty_sq_ema
+        )
         self.cost_ema = self.ema_alpha * cost + (1 - self.ema_alpha) * self.cost_ema
 
     def reset_history(self):
         """Reset history."""
         self.difficulty_ema = 0.0
+        self.difficulty_sq_ema = 0.0
         self.cost_ema = 0.0
 
 
