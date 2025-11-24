@@ -190,16 +190,14 @@ def main():
         
         try:
             # Try loading as Differentiable Training checkpoint
-            # New format saves both model and optimizer: {"model": ..., "optimizer": ...}
-            # We only load the model state
-            target = {
-                "state": {"model": nnx.state(trainable_sys)},
-                "step": 0,
-                "metadata": {}
-            }
-            ckpt = load_checkpoint(args.checkpoint, target=target)
-            nnx.update(trainable_sys, ckpt["state"]["model"])
-            print("Loaded as Differentiable Training checkpoint")
+            # Load without target to avoid strict structure matching
+            ckpt = load_checkpoint(args.checkpoint, target=None)
+            
+            if "state" in ckpt and "model" in ckpt["state"]:
+                nnx.update(trainable_sys, ckpt["state"]["model"])
+                print("Loaded as Differentiable Training checkpoint")
+            else:
+                raise ValueError("Checkpoint does not contain 'state.model'")
 
             # If we successfully loaded, we might want to use the loaded gating net if not provided separately
             if args.gating_checkpoint is None:
@@ -211,15 +209,14 @@ def main():
             print(f"Not a Differentiable Training checkpoint ({e_diff}), trying Baseline...")
             try:
                 # Try loading as Baseline checkpoint (Model structure)
-                # We only load the model state
-                target = {
-                    "state": {"model": nnx.state(model)},
-                    "step": 0,
-                    "metadata": {}
-                }
-                ckpt = load_checkpoint(args.checkpoint, target=target)
-                nnx.update(model, ckpt["state"]["model"])
-                print("Loaded as Baseline checkpoint")
+                # Load without target
+                ckpt = load_checkpoint(args.checkpoint, target=None)
+                
+                if "state" in ckpt and "model" in ckpt["state"]:
+                    nnx.update(model, ckpt["state"]["model"])
+                    print("Loaded as Baseline checkpoint")
+                else:
+                    raise ValueError("Checkpoint does not contain 'state.model'")
             except Exception as e_base:
                  print(f"Failed to load checkpoint: {e_base}")
                  raise ValueError("Could not load checkpoint as either Differentiable or Baseline format")
@@ -234,32 +231,28 @@ def main():
             # Assume default config or infer? hard to infer. using default for now.
             p_config = PolicyConfig(feature_dim=32, hidden_dim=128, num_actions=4)
             p_net = PolicyNetwork(p_config, nnx.Rngs(0))
-            # We only load the policy state
-            target = {
-                "state": {"policy": nnx.state(p_net)},
-                "step": 0,
-                "metadata": {}
-            }
-            ckpt = load_checkpoint(args.gating_checkpoint, target=target)
-            nnx.update(p_net, ckpt["state"]["policy"])
-            gating_net = p_net
-            print("Loaded PolicyNetwork")
+            # Load without target
+            ckpt = load_checkpoint(args.gating_checkpoint, target=None)
+            if "state" in ckpt and "policy" in ckpt["state"]:
+                nnx.update(p_net, ckpt["state"]["policy"])
+                gating_net = p_net
+                print("Loaded PolicyNetwork")
+            else:
+                raise ValueError("Checkpoint does not contain 'state.policy'")
         except Exception as e_policy:
              # Try GatingNetwork (part of differentiable training checkpoint)
              try:
                  g_config = GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0)
                  g_net = GatingNetwork(g_config, nnx.Rngs(0))
                  # GatingNetwork is part of the differentiable model, so use model format
-                 # We only load the model state
-                 target = {
-                     "state": {"model": nnx.state(g_net)},
-                     "step": 0,
-                     "metadata": {}
-                 }
-                 ckpt = load_checkpoint(args.gating_checkpoint, target=target)
-                 nnx.update(g_net, ckpt["state"]["model"])
-                 gating_net = g_net
-                 print("Loaded GatingNetwork")
+                 # Load without target
+                 ckpt = load_checkpoint(args.gating_checkpoint, target=None)
+                 if "state" in ckpt and "model" in ckpt["state"]:
+                     nnx.update(g_net, ckpt["state"]["model"])
+                     gating_net = g_net
+                     print("Loaded GatingNetwork")
+                 else:
+                     raise ValueError("Checkpoint does not contain 'state.model'")
              except Exception as e:
                  print(f"Failed to load gating checkpoint as PolicyNetwork ({e_policy}) or GatingNetwork ({e})")
                  raise
