@@ -23,7 +23,7 @@ from ..data import get_tokenizer
 from ..evaluation.benchmarks import BenchmarkSuite
 from ..models import TTTTransformerLM, load_ttt_model
 from ..models.gating_nnx import GatingConfig, GatingNetwork
-from ..utils import FeatureExtractor
+from ..utils import FeatureExtractor, extract_features
 from ..utils.checkpointing import load_checkpoint
 
 
@@ -86,6 +86,24 @@ class SimpleGenerator:
         def gating_forward(net, x, train):
             return net(x, train=train)
         self.gating_forward = gating_forward
+        
+        # JIT compiled feature extraction
+        # We use the standalone function to avoid state issues and allow JIT
+        vocab_size = tokenizer.get_vocab_size()
+        pad_id = self.pad_token_id
+        
+        @jax.jit
+        def extract_features_jit(input_ids, logits, attention_mask):
+            return extract_features(
+                input_ids=input_ids,
+                logits=logits,
+                vocab_size=vocab_size,
+                pad_token_id=pad_id,
+                seq_length_norm=512.0,
+                attention_mask=attention_mask,
+                budget_remaining=1.0
+            )
+        self.extract_features_jit = extract_features_jit
 
     def generate(
         self, 
@@ -128,17 +146,18 @@ class SimpleGenerator:
             use_ttt = False
             gating_scale = None
             
+            # We need the baseline output anyway if we are gating OR if we end up skipping
+            # To avoid double computation, we compute baseline first if gating is enabled
+            
             if self.gating_net is not None:
                 # Get baseline output for features
-                # We use the JITted forward here too, with use_ttt=False
                 out_base = self.model_forward(self.model, padded_input, use_ttt=False, gating_scale=None)
                 
-                # Extract features
-                features = self.feature_extractor.extract(
+                # Extract features (JIT compiled)
+                features = self.extract_features_jit(
                     input_ids=padded_input,
                     logits=out_base["logits"],
-                    attention_mask=attention_mask,
-                    budget_remaining=1.0, 
+                    attention_mask=attention_mask
                 )
                 
                 # Predict scale
@@ -154,9 +173,18 @@ class SimpleGenerator:
                 if scale > 0.01:
                     use_ttt = True
                     gating_scale = jnp.array([[scale]])
-            
-            # Forward pass
-            outputs = self.model_forward(self.model, padded_input, use_ttt=use_ttt, gating_scale=gating_scale)
+                    # Re-run with TTT
+                    outputs = self.model_forward(self.model, padded_input, use_ttt=True, gating_scale=gating_scale)
+                else:
+                    # Reuse baseline output
+                    outputs = out_base
+            else:
+                # No gating, just run model (default use_ttt=False unless specified otherwise, but here we assume baseline if no gating)
+                # Wait, if no gating net, do we use TTT? 
+                # The original code defaulted use_ttt=False if gating_net is None.
+                # But if we want to force TTT, we should have a flag. 
+                # Assuming default behavior is SKIP if no gating net is provided (baseline).
+                outputs = self.model_forward(self.model, padded_input, use_ttt=False, gating_scale=None)
             
             # Get logits for the last REAL token
             logits = outputs["logits"][:, current_len - 1, :]  # [1, vocab_size]
