@@ -442,11 +442,11 @@ def main():
         # WandB Logging
         if args.wandb_project:
             wandb.log({
-                "train/loss": float(loss),
-                "train/ce_loss": float(avg_ce_loss),
-                "train/l_ttt": float(l_ttt),
-                "train/gate_mean": float(avg_gate_val),
-                "train/budget_utilization": budget_util,
+                f"seed_{args.seed}/loss": float(loss),
+                f"seed_{args.seed}/ce_loss": float(avg_ce_loss),
+                f"seed_{args.seed}/l_ttt": float(l_ttt),
+                f"seed_{args.seed}/gate_mean": float(avg_gate_val),
+                f"seed_{args.seed}/budget_utilization": budget_util,
                 "iteration": iter_count + 1,
             })
 
