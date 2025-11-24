@@ -71,6 +71,22 @@ class SimpleGenerator:
             seq_length_norm=512, # approximate norm
         )
 
+        # JIT compiled functions
+        @nnx.jit(static_argnames=("use_ttt",))
+        def model_forward(model, input_ids, use_ttt, gating_scale):
+            return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
+        self.model_forward = model_forward
+
+        @nnx.jit(static_argnames=("deterministic",))
+        def policy_forward(net, x, deterministic):
+            return net(x, deterministic=deterministic)
+        self.policy_forward = policy_forward
+
+        @nnx.jit(static_argnames=("train",))
+        def gating_forward(net, x, train):
+            return net(x, train=train)
+        self.gating_forward = gating_forward
+
     def generate(
         self, 
         prompt: str, 
@@ -114,9 +130,10 @@ class SimpleGenerator:
             
             if self.gating_net is not None:
                 # Get baseline output for features
-                out_base = self.model(padded_input, use_ttt=False)
+                # We use the JITted forward here too, with use_ttt=False
+                out_base = self.model_forward(self.model, padded_input, use_ttt=False, gating_scale=None)
+                
                 # Extract features
-                # Note: budget_remaining is hard to estimate during generation, using 1.0 (no pressure)
                 features = self.feature_extractor.extract(
                     input_ids=padded_input,
                     logits=out_base["logits"],
@@ -125,32 +142,29 @@ class SimpleGenerator:
                 )
                 
                 # Predict scale
-                # GatingNetwork vs PolicyNetwork check
                 if hasattr(self.gating_net, "evaluate_actions"): # PolicyNetwork
-                     policy_out = self.gating_net(features, deterministic=True)
+                     policy_out = self.policy_forward(self.gating_net, features, deterministic=True)
                      action = int(policy_out["action"][0])
                      # Map action to scale (0, 1, 2, 4)
                      step_map = [0, 1, 2, 4]
                      scale = float(step_map[action])
                 else: # GatingNetwork
-                     scale = float(self.gating_net(features, train=False)[0, 0])
+                     scale = float(self.gating_forward(self.gating_net, features, train=False)[0, 0])
                 
                 if scale > 0.01:
                     use_ttt = True
                     gating_scale = jnp.array([[scale]])
             
             # Forward pass
-            outputs = self.model(padded_input, use_ttt=use_ttt, gating_scale=gating_scale)
+            outputs = self.model_forward(self.model, padded_input, use_ttt=use_ttt, gating_scale=gating_scale)
             
             # Get logits for the last REAL token
-            # padded_input shape [1, L_pad]
-            # real token is at index current_len - 1
             logits = outputs["logits"][:, current_len - 1, :]  # [1, vocab_size]
             
             # Sampling
             if temperature > 0:
                 probs = jax.nn.softmax(logits / temperature, axis=-1)
-                next_token = jax.random.categorical(jax.random.PRNGKey(0), jnp.log(probs)) # seed fixed for simplicity here
+                next_token = jax.random.categorical(jax.random.PRNGKey(0), jnp.log(probs)) 
             else:
                 next_token = jnp.argmax(logits, axis=-1)
             
