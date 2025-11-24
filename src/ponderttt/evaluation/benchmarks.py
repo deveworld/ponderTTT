@@ -3,6 +3,7 @@ Code generation benchmarks (HumanEval, MBPP, ClassEval).
 """
 
 import os
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Iterable
@@ -319,8 +320,10 @@ def _check_solution(problem: CodeProblem, completion: str) -> bool:
     source = f"{problem.prompt}\n{completion}\n"
 
     try:
-        exec(compile(source, "<completion>", "exec"), namespace, namespace)  # noqa: S102
-        exec(compile(problem.test_code, "<tests>", "exec"), namespace, namespace)  # noqa: S102
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SyntaxWarning)
+            exec(compile(source, "<completion>", "exec"), namespace, namespace)  # noqa: S102
+            exec(compile(problem.test_code, "<tests>", "exec"), namespace, namespace)  # noqa: S102
         return True
     except Exception:
         return False
