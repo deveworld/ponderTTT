@@ -8,7 +8,9 @@ Usage:
 import argparse
 import json
 import os
+from functools import partial
 from pathlib import Path
+from typing import Callable, cast
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +24,13 @@ from ..models import TTTTransformerLM, load_ttt_model
 from ..models.gating_nnx import GatingConfig, GatingNetwork
 from ..utils import FeatureExtractor
 from ..utils.checkpointing import load_checkpoint
+
+
+# JIT compiled forward pass
+def _generate_step_impl(model, input_ids, use_ttt, gating_scale):
+    return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
+
+generate_step = cast(Callable, nnx.jit(_generate_step_impl, static_argnames=("use_ttt",)))
 
 
 def parse_args():
@@ -127,7 +136,7 @@ class SimpleGenerator:
                     gating_scale = jnp.array([[scale]])
             
             # Forward pass
-            outputs = self.model(padded_input, use_ttt=use_ttt, gating_scale=gating_scale)
+            outputs = generate_step(self.model, padded_input, use_ttt, gating_scale)
             
             # Get logits for the last REAL token
             # padded_input shape [1, L_pad]
@@ -169,6 +178,8 @@ def main():
         load_pretrained=True
     )
     
+    gating_net = None
+
     # Load Checkpoint if provided
     if args.checkpoint:
         print(f"Loading checkpoint from {args.checkpoint}...")
@@ -202,8 +213,7 @@ def main():
             # If we successfully loaded, we might want to use the loaded gating net if not provided separately
             if args.gating_checkpoint is None:
                  print("Using gating network from model checkpoint")
-                 # trainable_sys.gating_net is already updated
-                 pass
+                 gating_net = trainable_sys.gating_net
 
         except Exception as e_diff:
             print(f"Not a Differentiable Training checkpoint ({e_diff}), trying Baseline...")
@@ -222,7 +232,6 @@ def main():
                  raise ValueError("Could not load checkpoint as either Differentiable or Baseline format")
 
     # Load Gating/Policy Checkpoint if provided
-    gating_net = None
     if args.gating_checkpoint:
         print(f"Loading gating checkpoint from {args.gating_checkpoint}...")
         # Try PolicyNetwork first

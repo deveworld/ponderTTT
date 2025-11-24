@@ -299,7 +299,7 @@ def main():
         )
     
     print(f"OK Optimizer: Adam (base_lr={args.learning_rate}, effective_lr={effective_lr}, scaled by 1/{max(action_steps, 1)})")
-    print(f"   Base model frozen via stop_gradient")
+    print("   Base model frozen via stop_gradient")
 
     # Training loop
     print("\nStarting training...")

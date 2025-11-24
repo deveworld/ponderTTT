@@ -12,7 +12,6 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-import optax
 from flax import nnx
 from tqdm import tqdm
 from typing import Optional, cast
