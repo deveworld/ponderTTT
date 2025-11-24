@@ -182,7 +182,7 @@ class FeatureExtractor:
         max_act = jnp.where(jnp.isfinite(max_act), max_act, 0.0)
         min_act = jnp.where(jnp.isfinite(min_act), min_act, 0.0)
 
-        return jnp.stack(
+        features = jnp.stack(
             [
                 mean_act,
                 std_act,
@@ -193,6 +193,9 @@ class FeatureExtractor:
             ],
             axis=-1,
         )
+        
+        # Clip features to prevent instability
+        return jnp.clip(jnp.nan_to_num(features, nan=0.0, posinf=10.0, neginf=-10.0), -100.0, 100.0)
 
     def _extract_attention(
         self,
