@@ -7,6 +7,7 @@ Usage:
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import jax
@@ -435,15 +436,17 @@ def main():
             
         avg_gate_val /= max(1, num_chunks) # prevent div by zero if all skipped, though unlikely
         avg_ce_loss /= max(1, num_chunks)
+        perplexity = math.exp(avg_ce_loss)
         budget_util = current_spend / max(1e-6, total_budget)
         
-        print(f"Iter {iter_count+1}: Loss={loss:.4f}, CE={avg_ce_loss:.4f}, L_TTT={float(l_ttt):.4f}, Gate={avg_gate_val:.4f}, RemBudget={1.0 - budget_util:.2f}")
+        print(f"Iter {iter_count+1}: Loss={loss:.4f}, CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, L_TTT={float(l_ttt):.4f}, Gate={avg_gate_val:.4f}, RemBudget={1.0 - budget_util:.2f}")
         
         # WandB Logging
         if args.wandb_project:
             wandb.log({
                 f"seed_{args.seed}/loss": float(loss),
                 f"seed_{args.seed}/ce_loss": float(avg_ce_loss),
+                f"seed_{args.seed}/perplexity": perplexity,
                 f"seed_{args.seed}/l_ttt": float(l_ttt),
                 f"seed_{args.seed}/gate_mean": float(avg_gate_val),
                 f"seed_{args.seed}/budget_utilization": budget_util,
@@ -454,6 +457,7 @@ def main():
             "iteration": iter_count,
             "loss": float(loss),
             "ce_loss": float(avg_ce_loss),
+            "perplexity": perplexity,
             "l_ttt": float(l_ttt),
             "gate_mean": float(avg_gate_val),
             "budget_utilization": budget_util
