@@ -54,8 +54,14 @@ def parse_args():
     parser.add_argument(
         "--cost_weight",
         type=float,
-        default=0.1,
+        default=0.01,
         help="Weight for computational cost penalty (L1 on gating output)",
+    )
+    parser.add_argument(
+        "--reward_shaping",
+        action="store_true",
+        default=True,
+        help="Use reward shaping: penalize cost only when no performance gain",
     )
     parser.add_argument(
         "--max_steps",
@@ -241,10 +247,11 @@ def main():
         base_model: GPT2Model, # Passed separately, treated as constant/static if not optimized
         batch: dict, 
         budget_remaining: jax.Array,
+        baseline_loss: jax.Array,  # Previous chunk's loss for reward shaping
         beta_ttt: float = 0.1,
     ):
         """
-        Differentiable training step with TTT loss.
+        Differentiable training step with TTT loss and reward shaping.
         """
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
@@ -319,8 +326,23 @@ def main():
                     l_ttt = 0.0
             else:
                 l_ttt = 0.0
+            
+            # Reward Shaping: Penalize cost only when no improvement
+            # If ce_loss < baseline_loss: reward (negative penalty)
+            # If ce_loss >= baseline_loss: penalty proportional to cost and lack of improvement
+            if args.reward_shaping:
+                improvement = jnp.maximum(0.0, baseline_loss - ce_loss)  # Positive if better
+                waste = jnp.maximum(0.0, ce_loss - baseline_loss)  # Positive if worse
                 
-            cost_penalty = jnp.mean(gating_scale) * args.cost_weight
+                # Cost efficiency: penalize high cost with low/negative improvement
+                # Reward: encourage using compute when it helps
+                cost_term = jnp.mean(gating_scale)
+                efficiency_penalty = cost_term * (1.0 + waste * 10.0)  # Amplify penalty if worse
+                efficiency_reward = improvement * cost_term * 0.5  # Reward improvement proportional to cost
+                
+                cost_penalty = (efficiency_penalty - efficiency_reward) * args.cost_weight
+            else:
+                cost_penalty = jnp.mean(gating_scale) * args.cost_weight
             
             total_loss = ce_loss + (beta_ttt * l_ttt) + cost_penalty
             
@@ -364,6 +386,7 @@ def main():
         # Initialize stats for logging
         loss, l_ttt, cost = 0.0, 0.0, 0.0
         avg_ce_loss, avg_gate_val = 0.0, 0.0
+        prev_ce_loss = jnp.array(3.0)  # Initialize with reasonable baseline
         
         for c_idx in range(num_chunks):
             chunk_batch = {
@@ -392,13 +415,17 @@ def main():
                 optimizer, 
                 ttt_model.base_model,
                 chunk_batch, 
-                jnp.array(budget_rem_fraction)
+                jnp.array(budget_rem_fraction),
+                prev_ce_loss,
             )
             
             # Stability check
             if not jnp.isfinite(loss) or float(ce) > 20.0:
                 print(f"Warning: Skipping unstable batch (loss={loss:.4f}, ce={ce:.4f})")
                 continue
+            
+            # Update baseline for next chunk
+            prev_ce_loss = ce
             
             current_spend += float(gate)
             avg_gate_val += float(gate)
