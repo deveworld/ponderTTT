@@ -164,6 +164,17 @@ class SimpleGenerator:
         return completion
 
 
+def unwrap_state(state):
+    """Unwrap NNX state dictionary if it contains 'value' keys."""
+    if isinstance(state, dict):
+        # Check if this dict represents a Variable (has 'value' key)
+        # Note: NNX variables serialized by Orbax might appear as {'value': array}
+        if "value" in state and len(state) == 1:
+            return state["value"]
+        return {k: unwrap_state(v) for k, v in state.items()}
+    return state
+
+
 def main():
     args = parse_args()
     
@@ -227,7 +238,9 @@ def main():
                 
                 if "state" in ckpt and "model" in ckpt["state"]:
                     # Try to update trainable_sys with loose dict
-                    nnx.update(trainable_sys, ckpt["state"]["model"])
+                    # Unwrap 'value' keys if present (fix for KeyError: Ellipsis)
+                    model_state = unwrap_state(ckpt["state"]["model"])
+                    nnx.update(trainable_sys, model_state)
                     print("Loaded as Differentiable Training checkpoint (loose)")
                     if args.gating_checkpoint is None:
                         gating_net = trainable_sys.gating_net
