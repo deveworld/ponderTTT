@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument(
         "--benchmark", 
         type=str, 
-        choices=["humaneval", "mbpp", "classeval", "all"], 
+        choices=["humaneval", "mbpp", "all"], 
         default="humaneval"
     )
     parser.add_argument("--model_scale", type=str, default="125m")
@@ -265,8 +265,8 @@ def main():
     )
     
     print("\n[DEBUG] Initial Model Stats (Pretrained):")
-    print_stats("base_model.wte", model.base_model.wte.embedding.value)
-    print_stats("fast_layer.wo", model.fast_layer.wo.kernel.value)
+    print_stats("base_model.wte", model.base_model.wte.embedding[...])
+    print_stats("fast_layer.wo", model.fast_layer.wo.kernel[...]) # type: ignore
     
     gating_net = None
 
@@ -323,16 +323,15 @@ def main():
                      raise ValueError("Could not load checkpoint")
 
     print("\n[DEBUG] Post-Load Model Stats:")
-    print_stats("base_model.wte", model.base_model.wte.embedding.value)
-    print_stats("fast_layer.wo", model.fast_layer.wo.kernel.value)
-    print_stats("fast_norm.scale", model.fast_norm.scale.value)
+    print_stats("base_model.wte", model.base_model.wte.embedding[...])
+    print_stats("fast_layer.wo", model.fast_layer.wo.kernel[...]) # type: ignore
+    print_stats("fast_norm.scale", model.fast_norm.scale.value) # type: ignore
 
     generator = SimpleGenerator(model, tokenizer, gating_net, force_scale=args.force_scale)
     
     suite = BenchmarkSuite(
         include_humaneval=(args.benchmark in ["humaneval", "all"]),
         include_mbpp=(args.benchmark in ["mbpp", "all"]),
-        include_classeval=(args.benchmark in ["classeval", "all"]),
     )
     
     results = {}

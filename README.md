@@ -78,13 +78,13 @@ python -m ponderttt.experiments.compare_methods \
 ```
 
 ### 4. Evaluation (Benchmarks)
-Use `ponderttt.evaluation.benchmarks` for HumanEval/MBPP/ClassEval. Code execution is unsafe and gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1`. Only set this in a sandboxed environment.
+Use `ponderttt.evaluation.benchmarks` for HumanEval/MBPP. Code execution is unsafe and gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1`. Only set this in a sandboxed environment.
 
 ### 5. Checkpointing
 Models are saved using [Orbax](https://github.com/google/orbax). Checkpoints capture the full NNX state, including the Gating Network, TTT parameters, and optimizer state.
 
 ## Project Status
-- **Complete**: Pure NNX GPT-2, TTT Layer with Continuous Gating, End-to-End Differentiable Training Loop, Budget-Awareness, Comparison Script, Checkpointing (Orbax), Benchmarks (HumanEval, MBPP, ClassEval).
+- **Complete**: Pure NNX GPT-2, TTT Layer with Continuous Gating, End-to-End Differentiable Training Loop, Budget-Awareness, Comparison Script, Checkpointing (Orbax), Benchmarks (HumanEval, MBPP).
 - **In Progress**: Large-scale fine-tuning experiments and OOD (Out-of-Distribution) testing.
 
 See `PLAN.md` for the detailed research roadmap.

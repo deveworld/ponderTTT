@@ -36,7 +36,7 @@ def parse_args():
     parser.add_argument(
         "--benchmark", 
         type=str, 
-        choices=["humaneval", "mbpp", "classeval", "all"], 
+        choices=["humaneval", "mbpp", "all"], 
         default="humaneval"
     )
     parser.add_argument("--model_scale", type=str, default="125m")
@@ -514,7 +514,6 @@ def main():
     suite = BenchmarkSuite(
         include_humaneval=(args.benchmark in ["humaneval", "all"]),
         include_mbpp=(args.benchmark in ["mbpp", "all"]),
-        include_classeval=(args.benchmark in ["classeval", "all"]),
     )
     
     results = {}
