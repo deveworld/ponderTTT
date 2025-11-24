@@ -381,16 +381,24 @@ def main():
     
     # DEBUG: Check base model weights
     print("Checking base model weights for NaNs...")
-    has_nans = [False]
-    def check_nan(arr):
-        if isinstance(arr, jnp.ndarray) and jnp.isnan(arr).any():
-            print(f"ERROR: NaN found in base_model parameter")
-            has_nans[0] = True
-        return arr
     
-    jax.tree_util.tree_map(check_nan, nnx.state(model.base_model))
-    
-    if not has_nans[0]:
+    def recursive_check_nan(node, name="root"):
+        found = False
+        if isinstance(node, jnp.ndarray):
+            if jnp.isnan(node).any():
+                print(f"ERROR: NaN found in parameter: {name}")
+                return True
+        elif hasattr(node, 'items'):
+            for k, v in node.items():
+                if recursive_check_nan(v, f"{name}.{k}"):
+                    found = True
+        elif isinstance(node, (list, tuple)):
+            for i, v in enumerate(node):
+                if recursive_check_nan(v, f"{name}[{i}]"):
+                    found = True
+        return found
+
+    if not recursive_check_nan(nnx.state(model.base_model), "base_model"):
         print("Base model weights seem OK (no NaNs).")
     
     gating_net = None
@@ -467,25 +475,14 @@ def main():
 
     # DEBUG: Check loaded weights
     print("Checking loaded weights for NaNs...")
-    has_nans = [False]
     
-    def check_nan_fast(arr):
-        if isinstance(arr, jnp.ndarray) and jnp.isnan(arr).any():
-            print(f"ERROR: NaN found in fast_layer parameter")
-            has_nans[0] = True
-        return arr
-        
-    jax.tree_util.tree_map(check_nan_fast, nnx.state(model.fast_layer))
+    has_nans = recursive_check_nan(nnx.state(model.fast_layer), "fast_layer")
 
     if gating_net:
-        def check_nan_gating(arr):
-            if isinstance(arr, jnp.ndarray) and jnp.isnan(arr).any():
-                print(f"ERROR: NaN found in gating_net parameter")
-                has_nans[0] = True
-            return arr
-        jax.tree_util.tree_map(check_nan_gating, nnx.state(gating_net))
+        if recursive_check_nan(nnx.state(gating_net), "gating_net"):
+            has_nans = True
         
-    if not has_nans[0]:
+    if not has_nans:
         print("Loaded weights seem OK (no NaNs).")
 
     # Load Gating/Policy Checkpoint if provided
