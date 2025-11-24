@@ -226,7 +226,7 @@ class SimpleGenerator:
     ) -> list[str]:
         """Generate completions for a batch of prompts."""
         # Tokenize
-        input_ids_list = [self._truncate_context(self.tokenizer.encode(p).ids) for p in prompts]
+        input_ids_list = [self._truncate_context(list(self.tokenizer.encode(p).ids)) for p in prompts]
         batch_size = len(prompts)
         generated_tokens = [[] for _ in range(batch_size)]
         
@@ -242,6 +242,9 @@ class SimpleGenerator:
                 break
                 
             # Prepare batch
+            for idx in range(batch_size):
+                input_ids_list[idx] = self._truncate_context(input_ids_list[idx])
+
             current_lens = [len(ids) for ids in input_ids_list]
             max_len = max(current_lens)
             
