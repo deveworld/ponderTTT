@@ -16,6 +16,7 @@ from typing import Callable, cast
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from tqdm import tqdm
 
 from ponderttt.models.ttt_layer_nnx import TTTConfig
 
@@ -348,6 +349,11 @@ def main():
     if args.allow_unsafe:
         os.environ["PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS"] = "1"
         print("WARNING: Unsafe code execution enabled!")
+    elif os.environ.get("PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS") != "1":
+        print("\nERROR: Benchmarks require executing generated code.")
+        print("Please use --allow_unsafe to enable code execution.")
+        print("Example: python -m ponderttt.experiments.run_benchmarks --allow_unsafe ...\n")
+        return
     
     # Load Model
     print(f"Loading model {args.model_scale}...")
@@ -493,13 +499,20 @@ def main():
         attempts_per_problem = []
         
         # Batch processing loop
-        for i in range(0, len(problems), args.batch_size):
+        for i in tqdm(range(0, len(problems), args.batch_size), desc=f"Running {name}"):
             batch_problems = problems[i : i + args.batch_size]
             prompts = [p.prompt for p in batch_problems]
             
             try:
                 completions = generator.generate_batch(prompts, args.max_new_tokens, args.temperature)
                 
+                # Debug: Print first completion of first batch
+                if i == 0 and len(completions) > 0:
+                    print(f"\n--- Sample Completion (Problem {batch_problems[0].task_id}) ---")
+                    print(f"Prompt:\n{batch_problems[0].prompt}")
+                    print(f"Completion:\n{completions[0]}")
+                    print("---------------------------------------------------")
+
                 for problem, completion in zip(batch_problems, completions):
                     # Check correctness (k=1)
                     is_correct = _check_solution(problem, completion)
@@ -515,8 +528,8 @@ def main():
                     attempts_per_problem.append(0)
             
             # Progress update
-            current_avg = sum(scores) / len(scores) if scores else 0.0
-            print(f"  Batch {i//args.batch_size + 1}/{(len(problems)+args.batch_size-1)//args.batch_size} done. Current Pass@1: {current_avg:.2%}")
+            # current_avg = sum(scores) / len(scores) if scores else 0.0
+            # print(f"  Batch {i//args.batch_size + 1}/{(len(problems)+args.batch_size-1)//args.batch_size} done. Current Pass@1: {current_avg:.2%}")
 
         # Final results
         final_score = sum(scores) / len(scores) if scores else 0.0
