@@ -6,6 +6,7 @@ Usage:
 """
 
 import argparse
+import copy
 import json
 import os
 import traceback
@@ -391,6 +392,7 @@ def main():
         fast_weight_type="ttt",
         load_pretrained=True
     )
+    base_model_backup = copy.deepcopy(nnx.state(model.base_model))
     
     # DEBUG: Check base model weights
     print("Checking base model weights for NaNs...")
@@ -498,6 +500,12 @@ def main():
     if not has_nans:
         print("Loaded weights seem OK (no NaNs).")
 
+    # Ensure base model weights remain healthy after checkpoint load
+    if recursive_check_nan(nnx.state(model.base_model), "base_model_after_checkpoint"):
+        print("WARNING: Base model weights from checkpoint contain NaNs; reverting to pretrained weights.")
+        nnx.update(model.base_model, base_model_backup)
+        model.eval()
+
     # Load Gating/Policy Checkpoint if provided
     if args.gating_checkpoint:
         print(f"Loading gating checkpoint from {args.gating_checkpoint}...")
@@ -541,6 +549,8 @@ def main():
 
     # Initialize Generator
     generator = SimpleGenerator(model, tokenizer, gating_net)
+    if args.force_baseline:
+        generator.ttt_disabled = True
     
     # Select Benchmarks
     suite = BenchmarkSuite(
