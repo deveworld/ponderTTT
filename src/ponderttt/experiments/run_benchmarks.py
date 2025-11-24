@@ -9,20 +9,16 @@ import argparse
 import json
 import os
 import traceback
-from functools import partial
 from pathlib import Path
-from typing import Callable, cast
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 from tqdm import tqdm
 
-from ponderttt.models.ttt_layer_nnx import TTTConfig
-
 from ..data import get_tokenizer
 from ..evaluation.benchmarks import BenchmarkSuite, _check_solution
-from ..models import TTTTransformerLM, load_ttt_model
+from ..models import TTTTransformerLM, load_ttt_model, TTTConfig
 from ..models.gating_nnx import GatingConfig, GatingNetwork
 from ..utils import FeatureExtractor, extract_features
 from ..utils.checkpointing import load_checkpoint
@@ -53,6 +49,8 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for generation")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--allow_unsafe", action="store_true", help="Allow unsafe code execution")
+    parser.add_argument("--force_baseline", action="store_true", help="Disable TTT/gating even if checkpoints include it")
+    parser.add_argument("--debug_nans", action="store_true", help="Enable JAX nan debugging")
     return parser.parse_args()
 
 
@@ -63,6 +61,7 @@ class SimpleGenerator:
         self.model = model
         self.tokenizer = tokenizer
         self.gating_net = gating_net
+        self.ttt_disabled = False
         self.pad_token_id = tokenizer.token_to_id("<|pad|>")
         self.eos_token_id = tokenizer.token_to_id("<|endoftext|>")
         
@@ -151,7 +150,7 @@ class SimpleGenerator:
             # We need the baseline output anyway if we are gating OR if we end up skipping
             # To avoid double computation, we compute baseline first if gating is enabled
             
-            if self.gating_net is not None:
+            if self.gating_net is not None and not self.ttt_disabled:
                 # Get baseline output for features
                 out_base = self.model_forward(self.model, padded_input, use_ttt=False, gating_scale=None)
                 
@@ -181,6 +180,11 @@ class SimpleGenerator:
                     gating_scale = jnp.array([[scale]])
                     # Re-run with TTT
                     outputs = self.model_forward(self.model, padded_input, use_ttt=True, gating_scale=gating_scale)
+                    if jnp.isnan(outputs["logits"]).any():
+                        print("WARNING: TTT logits became NaN; falling back to baseline and disabling TTT.")
+                        self.ttt_disabled = True
+                        use_ttt = False
+                        outputs = out_base
                 else:
                     # Reuse baseline output
                     outputs = out_base
@@ -277,7 +281,7 @@ class SimpleGenerator:
             use_ttt = False
             gating_scale = None
             
-            if self.gating_net is not None:
+            if self.gating_net is not None and not self.ttt_disabled:
                 # Get baseline output for features
                 out_base = self.model_forward(self.model, input_tensor, use_ttt=False, gating_scale=None)
                 
@@ -302,6 +306,11 @@ class SimpleGenerator:
                     use_ttt = True
                     gating_scale = scales[:, None] # [B, 1]
                     outputs = self.model_forward(self.model, input_tensor, use_ttt=True, gating_scale=gating_scale)
+                    if jnp.isnan(outputs["logits"]).any():
+                        print("WARNING: TTT logits became NaN for batch; disabling TTT and reverting to baseline.")
+                        self.ttt_disabled = True
+                        use_ttt = False
+                        outputs = out_base
                 else:
                     outputs = out_base
             else:
@@ -361,6 +370,10 @@ def unwrap_state(state):
 
 def main():
     args = parse_args()
+    
+    if args.debug_nans:
+        jax.config.update("jax_debug_nans", True)
+        print("JAX debug_nans enabled: NaN-producing ops will raise errors.")
     
     if args.allow_unsafe:
         os.environ["PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS"] = "1"
@@ -519,6 +532,10 @@ def main():
              except Exception as e:
                  print(f"Failed to load gating checkpoint as PolicyNetwork ({e_policy}) or GatingNetwork ({e})")
                  raise
+    
+    if args.force_baseline and gating_net is not None:
+        print("--force_baseline specified: disabling gating/TTT usage.")
+        gating_net = None
     
     tokenizer = get_tokenizer({"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[args.model_scale])
 
