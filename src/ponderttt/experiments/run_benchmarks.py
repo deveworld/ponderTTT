@@ -6,7 +6,6 @@ Usage:
 """
 
 import argparse
-import copy
 import json
 import os
 import traceback
@@ -41,7 +40,8 @@ def parse_args():
         default="humaneval"
     )
     parser.add_argument("--model_scale", type=str, default="125m")
-    parser.add_argument("--checkpoint", type=str, help="Path to trained checkpoint (optional)")
+    parser.add_argument("--checkpoint", type=str, help="Path to trained TTT checkpoint (optional)")
+    parser.add_argument("--baseline", type=str, help="Path to baseline model checkpoint (optional)")
     parser.add_argument("--gating_checkpoint", type=str, help="Path to gating network checkpoint (optional)")
     parser.add_argument("--output_dir", type=str, default="outputs/benchmarks")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of problems (for testing)")
@@ -50,8 +50,6 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for generation")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--allow_unsafe", action="store_true", help="Allow unsafe code execution")
-    parser.add_argument("--force_baseline", action="store_true", help="Disable TTT/gating even if checkpoints include it")
-    parser.add_argument("--debug_nans", action="store_true", help="Enable JAX nan debugging")
     return parser.parse_args()
 
 
@@ -62,7 +60,6 @@ class SimpleGenerator:
         self.model = model
         self.tokenizer = tokenizer
         self.gating_net = gating_net
-        self.ttt_disabled = False
         self.pad_token_id = tokenizer.token_to_id("<|pad|>")
         self.eos_token_id = tokenizer.token_to_id("<|endoftext|>")
         
@@ -151,50 +148,30 @@ class SimpleGenerator:
             # We need the baseline output anyway if we are gating OR if we end up skipping
             # To avoid double computation, we compute baseline first if gating is enabled
             
-            if self.gating_net is not None and not self.ttt_disabled:
-                # Get baseline output for features
+            if self.gating_net is not None:
                 out_base = self.model_forward(self.model, padded_input, use_ttt=False, gating_scale=None)
-                
-                # DEBUG: Check out_base
-                if jnp.isnan(out_base["logits"]).any():
-                     print(f"WARNING: NaNs in out_base logits at step {_}")
-                
-                # Extract features (JIT compiled)
+
                 features = self.extract_features_jit(
                     input_ids=padded_input,
                     logits=out_base["logits"],
                     attention_mask=attention_mask
                 )
-                
-                # Predict scale
-                if hasattr(self.gating_net, "evaluate_actions"): # PolicyNetwork
-                     policy_out = self.policy_forward(self.gating_net, features, deterministic=True)
-                     action = int(policy_out["action"][0])
-                     # Map action to scale (0, 1, 2, 4)
-                     step_map = [0, 1, 2, 4]
-                     scale = float(step_map[action])
-                else: # GatingNetwork
-                     scale = float(self.gating_forward(self.gating_net, features, train=False)[0, 0])
-                
+
+                if hasattr(self.gating_net, "evaluate_actions"):
+                    policy_out = self.policy_forward(self.gating_net, features, deterministic=True)
+                    action = int(policy_out["action"][0])
+                    step_map = [0, 1, 2, 4]
+                    scale = float(step_map[action])
+                else:
+                    scale = float(self.gating_forward(self.gating_net, features, train=False)[0, 0])
+
                 if scale > 0.01:
                     use_ttt = True
                     gating_scale = jnp.array([[scale]])
-                    # Re-run with TTT
                     outputs = self.model_forward(self.model, padded_input, use_ttt=True, gating_scale=gating_scale)
-                    if jnp.isnan(outputs["logits"]).any():
-                        print("WARNING: TTT logits became NaN; falling back to baseline and disabling TTT.")
-                        self.ttt_disabled = True
-                        use_ttt = False
-                        outputs = out_base
                 else:
-                    # Reuse baseline output
                     outputs = out_base
             else:
-                # No gating, just run model (default use_ttt=False unless specified otherwise, but here we assume baseline if no gating)
-                # Wait, if no gating net, do we use TTT? 
-                # The original code defaulted use_ttt=False if gating_net is None.
-                # But if we want to force TTT, we should have a flag. 
-                # Assuming default behavior is SKIP if no gating net is provided (baseline).
                 outputs = self.model_forward(self.model, padded_input, use_ttt=False, gating_scale=None)
             
             # Get logits for the last REAL token
@@ -282,36 +259,27 @@ class SimpleGenerator:
             use_ttt = False
             gating_scale = None
             
-            if self.gating_net is not None and not self.ttt_disabled:
-                # Get baseline output for features
+            if self.gating_net is not None:
                 out_base = self.model_forward(self.model, input_tensor, use_ttt=False, gating_scale=None)
-                
-                # Extract features
+
                 features = self.extract_features_jit(
                     input_ids=input_tensor,
                     logits=out_base["logits"],
                     attention_mask=mask_tensor
                 )
-                
-                # Predict scale
-                if hasattr(self.gating_net, "evaluate_actions"): # PolicyNetwork
-                     policy_out = self.policy_forward(self.gating_net, features, deterministic=True)
-                     actions = policy_out["action"] # [B]
-                     step_map = jnp.array([0.0, 1.0, 2.0, 4.0])
-                     scales = step_map[actions.astype(int)] # [B]
-                else: # GatingNetwork
-                     scales = self.gating_forward(self.gating_net, features, train=False)[:, 0] # [B]
-                
-                # If any scale > 0.01, use TTT
+
+                if hasattr(self.gating_net, "evaluate_actions"):
+                    policy_out = self.policy_forward(self.gating_net, features, deterministic=True)
+                    actions = policy_out["action"]
+                    step_map = jnp.array([0.0, 1.0, 2.0, 4.0])
+                    scales = step_map[actions.astype(int)]
+                else:
+                    scales = self.gating_forward(self.gating_net, features, train=False)[:, 0]
+
                 if jnp.any(scales > 0.01):
                     use_ttt = True
-                    gating_scale = scales[:, None] # [B, 1]
+                    gating_scale = scales[:, None]
                     outputs = self.model_forward(self.model, input_tensor, use_ttt=True, gating_scale=gating_scale)
-                    if jnp.isnan(outputs["logits"]).any():
-                        print("WARNING: TTT logits became NaN for batch; disabling TTT and reverting to baseline.")
-                        self.ttt_disabled = True
-                        use_ttt = False
-                        outputs = out_base
                 else:
                     outputs = out_base
             else:
@@ -321,18 +289,6 @@ class SimpleGenerator:
             indices = jnp.array([l - 1 for l in current_lens]) # [B]
             next_token_logits = outputs["logits"][jnp.arange(batch_size), indices, :] # [B, V]
             
-            # DEBUG: Check for NaNs
-            if jnp.isnan(next_token_logits).any():
-                print(f"WARNING: NaNs detected in logits at step {_}!")
-            
-            # DEBUG: Print top tokens for first step of generation
-            if _ == 0:
-                print(f"Debug: Token 0 is '{self.tokenizer.decode([0])}'")
-                probs = jax.nn.softmax(next_token_logits[0])
-                top_k = jnp.argsort(probs)[::-1][:5]
-                print(f"Top 5 tokens: {[self.tokenizer.decode([int(t)]) for t in top_k]}")
-                print(f"Top 5 probs: {probs[top_k]}")
-
             # Sampling
             if temperature > 0:
                 probs = jax.nn.softmax(next_token_logits / temperature, axis=-1)
@@ -371,11 +327,10 @@ def unwrap_state(state):
 
 def main():
     args = parse_args()
-    
-    if args.debug_nans:
-        jax.config.update("jax_debug_nans", True)
-        print("JAX debug_nans enabled: NaN-producing ops will raise errors.")
-    
+
+    if args.checkpoint and args.baseline:
+        raise ValueError("Please provide only one of --checkpoint or --baseline")
+
     if args.allow_unsafe:
         os.environ["PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS"] = "1"
         print("WARNING: Unsafe code execution enabled!")
@@ -398,29 +353,6 @@ def main():
         vocab_size=vocab_size,
         pad_token_id=pad_token_id
     )
-    base_model_backup = copy.deepcopy(nnx.state(model.base_model))
-    
-    # DEBUG: Check base model weights
-    print("Checking base model weights for NaNs...")
-    
-    def recursive_check_nan(node, name="root"):
-        found = False
-        if isinstance(node, jnp.ndarray):
-            if jnp.isnan(node).any():
-                print(f"ERROR: NaN found in parameter: {name}")
-                return True
-        elif hasattr(node, 'items'):
-            for k, v in node.items():
-                if recursive_check_nan(v, f"{name}.{k}"):
-                    found = True
-        elif isinstance(node, (list, tuple)):
-            for i, v in enumerate(node):
-                if recursive_check_nan(v, f"{name}[{i}]"):
-                    found = True
-        return found
-
-    if not recursive_check_nan(nnx.state(model.base_model), "base_model"):
-        print("Base model weights seem OK (no NaNs).")
     
     gating_net = None
 
@@ -493,24 +425,14 @@ def main():
                 except Exception as e_base:
                      print(f"Failed to load checkpoint: {e_base}")
                      raise ValueError("Could not load checkpoint as either Differentiable or Baseline format")
-
-    # DEBUG: Check loaded weights
-    print("Checking loaded weights for NaNs...")
-    
-    has_nans = recursive_check_nan(nnx.state(model.fast_layer), "fast_layer")
-
-    if gating_net:
-        if recursive_check_nan(nnx.state(gating_net), "gating_net"):
-            has_nans = True
-        
-    if not has_nans:
-        print("Loaded weights seem OK (no NaNs).")
-
-    # Ensure base model weights remain healthy after checkpoint load
-    if recursive_check_nan(nnx.state(model.base_model), "base_model_after_checkpoint"):
-        print("WARNING: Base model weights from checkpoint contain NaNs; reverting to pretrained weights.")
-        nnx.update(model.base_model, base_model_backup)
-        model.eval()
+    elif args.baseline:
+        print(f"Loading baseline checkpoint from {args.baseline}...")
+        ckpt = load_checkpoint(args.baseline, target=None)
+        if "state" in ckpt and "model" in ckpt["state"]:
+            nnx.update(model, ckpt["state"]["model"])
+            print("Loaded baseline checkpoint")
+        else:
+            raise ValueError("Baseline checkpoint does not contain 'state.model'")
 
     # Load Gating/Policy Checkpoint if provided
     if args.gating_checkpoint:
@@ -547,14 +469,8 @@ def main():
                  print(f"Failed to load gating checkpoint as PolicyNetwork ({e_policy}) or GatingNetwork ({e})")
                  raise
     
-    if args.force_baseline and gating_net is not None:
-        print("--force_baseline specified: disabling gating/TTT usage.")
-        gating_net = None
-    
     # Initialize Generator
     generator = SimpleGenerator(model, tokenizer, gating_net)
-    if args.force_baseline:
-        generator.ttt_disabled = True
     
     # Select Benchmarks
     suite = BenchmarkSuite(
@@ -587,13 +503,6 @@ def main():
             try:
                 completions = generator.generate_batch(prompts, args.max_new_tokens, args.temperature)
                 
-                # Debug: Print first completion of first batch
-                if i == 0 and len(completions) > 0:
-                    print(f"\n--- Sample Completion (Problem {batch_problems[0].task_id}) ---")
-                    print(f"Prompt:\n{batch_problems[0].prompt}")
-                    print(f"Completion:\n{completions[0]}")
-                    print("---------------------------------------------------")
-
                 for problem, completion in zip(batch_problems, completions):
                     # Check correctness (k=1)
                     is_correct = _check_solution(problem, completion)
