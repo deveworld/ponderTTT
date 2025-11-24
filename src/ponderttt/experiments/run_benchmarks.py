@@ -385,12 +385,18 @@ def main():
         print("Example: python -m ponderttt.experiments.run_benchmarks --allow_unsafe ...\n")
         return
     
+    tokenizer = get_tokenizer({"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[args.model_scale])
+    pad_token_id = tokenizer.token_to_id("<|pad|>")
+    vocab_size = tokenizer.get_vocab_size()
+
     # Load Model
     print(f"Loading model {args.model_scale}...")
     model, _ = load_ttt_model(
         model_name={"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[args.model_scale],
         fast_weight_type="ttt",
-        load_pretrained=True
+        load_pretrained=True,
+        vocab_size=vocab_size,
+        pad_token_id=pad_token_id
     )
     base_model_backup = copy.deepcopy(nnx.state(model.base_model))
     
@@ -545,8 +551,6 @@ def main():
         print("--force_baseline specified: disabling gating/TTT usage.")
         gating_net = None
     
-    tokenizer = get_tokenizer({"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[args.model_scale])
-
     # Initialize Generator
     generator = SimpleGenerator(model, tokenizer, gating_net)
     if args.force_baseline:
