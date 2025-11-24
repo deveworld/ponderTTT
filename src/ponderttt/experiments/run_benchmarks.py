@@ -20,7 +20,7 @@ from flax import nnx
 from ponderttt.models.ttt_layer_nnx import TTTConfig
 
 from ..data import get_tokenizer
-from ..evaluation.benchmarks import BenchmarkSuite
+from ..evaluation.benchmarks import BenchmarkSuite, _check_solution
 from ..models import TTTTransformerLM, load_ttt_model
 from ..models.gating_nnx import GatingConfig, GatingNetwork
 from ..utils import FeatureExtractor, extract_features
@@ -49,6 +49,7 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=None, help="Limit number of problems (for testing)")
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for generation")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--allow_unsafe", action="store_true", help="Allow unsafe code execution")
     return parser.parse_args()
@@ -208,6 +209,127 @@ class SimpleGenerator:
         completion = full_text[len(prompt):]
         return completion
 
+    def generate_batch(
+        self, 
+        prompts: list[str], 
+        max_new_tokens: int = 128, 
+        temperature: float = 0.0
+    ) -> list[str]:
+        """Generate completions for a batch of prompts."""
+        # Tokenize
+        input_ids_list = [self.tokenizer.encode(p).ids for p in prompts]
+        batch_size = len(prompts)
+        
+        # Track which sequences are finished
+        finished = [False] * batch_size
+        
+        # JIT compilation requires static shapes, but we have dynamic loop.
+        # We can't easily JIT the whole loop with dynamic batching/padding.
+        # But the inner model call is JITted.
+        
+        for _ in range(max_new_tokens):
+            if all(finished):
+                break
+                
+            # Prepare batch
+            current_lens = [len(ids) for ids in input_ids_list]
+            max_len = max(current_lens)
+            
+            # Alignment
+            mini_batch_size = 16
+            remat_group_size = 1
+            if hasattr(self.model, "fast_layer") and hasattr(self.model.fast_layer, "config"):
+                if isinstance(self.model.fast_layer.config, TTTConfig):
+                    mini_batch_size = self.model.fast_layer.config.mini_batch_size
+                    remat_group_size = self.model.fast_layer.config.remat_mini_batch_group_size
+            
+            alignment = mini_batch_size * remat_group_size
+            target_len = ((max_len + alignment - 1) // alignment) * alignment
+            
+            # Construct tensors
+            padded_input_ids = []
+            attention_masks = []
+            
+            for i, ids in enumerate(input_ids_list):
+                pad_len = target_len - len(ids)
+                # Right padding for input_ids to keep prefix contiguous?
+                # No, if we right pad, we must ensure the model attends correctly.
+                # GPT-2 uses absolute position embeddings.
+                # If we right pad: [A, B, C, P, P]
+                # Pos ids: 0, 1, 2, 3, 4
+                # Real tokens are at 0, 1, 2.
+                # Next token should be at 3.
+                # This works fine with standard causal attention.
+                padded_ids = ids + [self.pad_token_id] * pad_len
+                mask = [1] * len(ids) + [0] * pad_len
+                padded_input_ids.append(padded_ids)
+                attention_masks.append(mask)
+                
+            input_tensor = jnp.array(padded_input_ids, dtype=jnp.int32)
+            mask_tensor = jnp.array(attention_masks, dtype=jnp.int32)
+            
+            # Gating / TTT
+            use_ttt = False
+            gating_scale = None
+            
+            if self.gating_net is not None:
+                # Get baseline output for features
+                out_base = self.model_forward(self.model, input_tensor, use_ttt=False, gating_scale=None)
+                
+                # Extract features
+                features = self.extract_features_jit(
+                    input_ids=input_tensor,
+                    logits=out_base["logits"],
+                    attention_mask=mask_tensor
+                )
+                
+                # Predict scale
+                if hasattr(self.gating_net, "evaluate_actions"): # PolicyNetwork
+                     policy_out = self.policy_forward(self.gating_net, features, deterministic=True)
+                     actions = policy_out["action"] # [B]
+                     step_map = jnp.array([0.0, 1.0, 2.0, 4.0])
+                     scales = step_map[actions.astype(int)] # [B]
+                else: # GatingNetwork
+                     scales = self.gating_forward(self.gating_net, features, train=False)[:, 0] # [B]
+                
+                # If any scale > 0.01, use TTT
+                if jnp.any(scales > 0.01):
+                    use_ttt = True
+                    gating_scale = scales[:, None] # [B, 1]
+                    outputs = self.model_forward(self.model, input_tensor, use_ttt=True, gating_scale=gating_scale)
+                else:
+                    outputs = out_base
+            else:
+                outputs = self.model_forward(self.model, input_tensor, use_ttt=False, gating_scale=None)
+            
+            # Extract logits
+            indices = jnp.array([l - 1 for l in current_lens]) # [B]
+            next_token_logits = outputs["logits"][jnp.arange(batch_size), indices, :] # [B, V]
+            
+            # Sampling
+            if temperature > 0:
+                probs = jax.nn.softmax(next_token_logits / temperature, axis=-1)
+                next_tokens = jax.random.categorical(jax.random.PRNGKey(0), jnp.log(probs)) 
+            else:
+                next_tokens = jnp.argmax(next_token_logits, axis=-1)
+            
+            # Update sequences
+            for i, token in enumerate(next_tokens):
+                if not finished[i]:
+                    token_val = int(token)
+                    if token_val == self.eos_token_id:
+                        finished[i] = True
+                    else:
+                        input_ids_list[i].append(token_val)
+                        
+        # Decode
+        completions = []
+        for i, prompt in enumerate(prompts):
+            full_text = self.tokenizer.decode(input_ids_list[i])
+            completions.append(full_text[len(prompt):])
+            
+        return completions
+
 
 def unwrap_state(state):
     """Unwrap NNX state dictionary if it contains 'value' keys."""
@@ -365,26 +487,41 @@ def main():
             problems = problems[:args.limit]
             print(f"  Limiting to {args.limit} problems")
             
-        # Define generation function adapter
-        def generate_fn(prompt: str) -> list[str]:
-            # Single sample for now
-            return [generator.generate(prompt, args.max_new_tokens, args.temperature)]
+        print(f"  Processing in batches of {args.batch_size}...")
         
-        # Evaluate
-        # Note: evaluate() expects the benchmark object to have problems
-        # We temporarily patch the benchmark object to respect limit
-        original_problems = benchmark.problems
-        benchmark.problems = problems
+        scores = []
+        attempts_per_problem = []
         
-        try:
-            score = benchmark.evaluate(generate_fn, k=1)
-            results[name] = score
-            print(f"  Result: {score}")
-        except Exception as e:
-            print(f"  Failed: {e}")
-            traceback.print_exc()
-        finally:
-            benchmark.problems = original_problems
+        # Batch processing loop
+        for i in range(0, len(problems), args.batch_size):
+            batch_problems = problems[i : i + args.batch_size]
+            prompts = [p.prompt for p in batch_problems]
+            
+            try:
+                completions = generator.generate_batch(prompts, args.max_new_tokens, args.temperature)
+                
+                for problem, completion in zip(batch_problems, completions):
+                    # Check correctness (k=1)
+                    is_correct = _check_solution(problem, completion)
+                    scores.append(1.0 if is_correct else 0.0)
+                    attempts_per_problem.append(1)
+                    
+            except Exception as e:
+                print(f"  Batch failed: {e}")
+                traceback.print_exc()
+                # Fill with failures
+                for _ in batch_problems:
+                    scores.append(0.0)
+                    attempts_per_problem.append(0)
+            
+            # Progress update
+            current_avg = sum(scores) / len(scores) if scores else 0.0
+            print(f"  Batch {i//args.batch_size + 1}/{(len(problems)+args.batch_size-1)//args.batch_size} done. Current Pass@1: {current_avg:.2%}")
+
+        # Final results
+        final_score = sum(scores) / len(scores) if scores else 0.0
+        results[name] = {"pass@1": final_score}
+        print(f"  Result: {final_score}")
 
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)
