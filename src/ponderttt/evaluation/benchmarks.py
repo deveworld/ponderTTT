@@ -7,6 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Iterable
 
+from tqdm import tqdm
+
 from .metrics import compute_pass_at_k
 
 
@@ -67,7 +69,7 @@ class HumanEvalBenchmark:
         scores = []
         attempts_per_problem: list[int] = []
 
-        for problem in self.problems:
+        for problem in tqdm(self.problems, desc="HumanEval"):
             samples = list(generate_fn(problem.prompt))
             if not samples:
                 attempts_per_problem.append(0)
@@ -141,7 +143,7 @@ class MBPPBenchmark:
         scores = []
         attempts_per_problem: list[int] = []
 
-        for problem in self.problems:
+        for problem in tqdm(self.problems, desc="MBPP"):
             samples = list(generate_fn(problem.prompt))
             if not samples:
                 attempts_per_problem.append(0)
@@ -218,7 +220,7 @@ class ClassEvalBenchmark:
         scores = []
         attempts: list[int] = []
 
-        for problem in self.problems:
+        for problem in tqdm(self.problems, desc="ClassEval"):
             samples = list(generate_fn(problem.prompt))
             if not samples:
                 attempts.append(0)
