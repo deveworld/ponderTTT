@@ -102,6 +102,19 @@ class SimpleGenerator:
             )
         self.extract_features_jit = extract_features_jit
 
+    def _get_target_length(self, current_len: int, alignment: int) -> int:
+        """Calculate target length using power-of-2 buckets to minimize recompilation."""
+        # Buckets: 64, 128, 256, 512, 1024, ...
+        target = 64
+        while target < current_len:
+            target *= 2
+        
+        # Ensure alignment
+        if target % alignment != 0:
+            target = ((target + alignment - 1) // alignment) * alignment
+            
+        return min(target, self.max_seq_len)
+
     def _call_model(self, input_tensor: jax.Array, use_ttt: bool, gating_scale: jax.Array | None):
         """Run model forward pass ensuring gating_scale is always an array."""
         batch_size = input_tensor.shape[0]
@@ -146,7 +159,10 @@ class SimpleGenerator:
                     remat_group_size = self.model.fast_layer.config.remat_mini_batch_group_size
             
             alignment = mini_batch_size * remat_group_size
-            pad_len = (alignment - (current_len % alignment)) % alignment
+            
+            # Use bucketed padding to reduce recompilation
+            target_len = self._get_target_length(current_len, alignment)
+            pad_len = target_len - current_len
             
             if pad_len > 0:
                 pads = jnp.full((1, pad_len), self.pad_token_id, dtype=jnp.int32)
@@ -254,8 +270,9 @@ class SimpleGenerator:
                     remat_group_size = self.model.fast_layer.config.remat_mini_batch_group_size
             
             alignment = mini_batch_size * remat_group_size
-            target_len = ((max_len + alignment - 1) // alignment) * alignment
-            target_len = min(target_len, self.max_seq_len)
+            
+            # Use bucketed padding to reduce recompilation
+            target_len = self._get_target_length(max_len, alignment)
             
             # Construct tensors
             padded_input_ids = []
