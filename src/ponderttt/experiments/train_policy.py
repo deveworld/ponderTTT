@@ -389,12 +389,14 @@ def main():
         print("OK Feature extractor initialized (32D features)")
 
         # PID controller for budget constraint
+        # Start with lambda=0 to let policy explore before penalizing costs
         pid = PIDController(
-            kp=0.1,
-            ki=0.01,
-            kd=0.05,
+            kp=0.05,  # Reduced from 0.1 for more stable learning
+            ki=0.005,  # Reduced from 0.01 for slower integral accumulation
+            kd=0.02,  # Reduced from 0.05
+            lambda_value=0.0,  # Start with no cost penalty
         )
-        print(f"OK PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}")
+        print(f"OK PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}, lambda_init={pid.lambda_value}")
 
         chunk_iterator = None
 
@@ -480,22 +482,29 @@ def main():
                     total_loss_baseline = 0.0
                     total_cost = 0.0
                     
-                    # Reset model once if new sequence (more efficient than per-item)
+                    # Clear batch states cache if new sequence
                     if is_new_sequence:
-                        ttt_model, ttt_optimizer = reset_ttt_model()
-                        batch_states = [None] * args.batch_size  # Clear all states
+                        batch_states = [None] * args.batch_size
+                    
+                    # IMPORTANT: For RL policy training, we process batch items independently
+                    # Each item gets its own state trajectory. We save/restore states per item.
+                    # This is necessary because different items may take different actions.
                     
                     # Process each item in the batch serially to support diverse actions/states
                     for i in range(current_batch_size):
-                        # 1. Restore State (if not new sequence)
-                        if not is_new_sequence:
+                        # 1. Restore State or Reset
+                        if is_new_sequence:
+                            # New sequence: Start with fresh model for EACH item
+                            ttt_model, ttt_optimizer = reset_ttt_model()
+                        else:
+                            # Continuation: Restore state from previous chunk
                             if i < len(batch_states) and batch_states[i] is not None:
                                 fast_layer_state, fast_norm_state = batch_states[i]
                                 nnx.update(ttt_model.fast_layer, fast_layer_state)
                                 if fast_norm_state is not None and hasattr(ttt_model, 'fast_norm'):
                                     nnx.update(ttt_model.fast_norm, fast_norm_state)
                             else:
-                                # Fallback if state missing
+                                # Fallback if state missing (should not happen ideally)
                                 ttt_model, ttt_optimizer = reset_ttt_model()
 
                         # 2. Extract single item inputs (keep dims for model compatibility: 1, L)
@@ -566,9 +575,12 @@ def main():
                         reward = loss_baseline - loss_after_ce
                         
                         # 7. Store State - only store fast layer state for memory efficiency
+                        # IMPORTANT: Must deep copy states to avoid reference sharing between batch items
+                        fast_layer_state = nnx.state(ttt_model.fast_layer)
+                        fast_norm_state = nnx.state(ttt_model.fast_norm) if hasattr(ttt_model, 'fast_norm') else None
                         batch_states[i] = (
-                            nnx.state(ttt_model.fast_layer),
-                            nnx.state(ttt_model.fast_norm) if hasattr(ttt_model, 'fast_norm') else None,
+                            jax.tree_util.tree_map(lambda x: x.copy() if hasattr(x, 'copy') else x, fast_layer_state),
+                            jax.tree_util.tree_map(lambda x: x.copy() if hasattr(x, 'copy') else x, fast_norm_state) if fast_norm_state is not None else None,
                         )
                         
                         # 8. Collect results
@@ -671,23 +683,29 @@ def main():
                     new_values = outputs["value"]
                     entropies = outputs["entropy"]
 
+                    # Policy loss with clipping
                     ratios = jnp.exp(new_log_probs - mb_old_log_probs)
                     clip_ratios = jnp.clip(ratios, 1.0 - args.value_clip, 1.0 + args.value_clip)
                     policy_loss = -jnp.mean(
                         jnp.minimum(ratios * mb_advantages, clip_ratios * mb_advantages)
                     )
 
+                    # Value loss with clipping (use maximum for conservative estimate)
                     value_pred_clipped = mb_old_values + jnp.clip(
                         new_values - mb_old_values, -args.value_clip, args.value_clip
                     )
                     value_losses = jnp.square(new_values - mb_returns)
                     value_losses_clipped = jnp.square(value_pred_clipped - mb_returns)
-                    value_loss = 0.5 * jnp.mean(jnp.minimum(value_losses, value_losses_clipped))
+                    value_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
 
-                    entropy_loss = -0.01 * jnp.mean(entropies)
+                    # Entropy bonus (encourage exploration)
+                    entropy_bonus = -0.01 * jnp.mean(entropies)
 
+                    # Approximate KL divergence for monitoring (correct formula)
+                    # KL(old || new) ≈ E[(old_log_prob - new_log_prob)]
                     approx_kl = jnp.mean(mb_old_log_probs - new_log_probs)
-                    total_loss = policy_loss + value_loss + entropy_loss
+                    
+                    total_loss = policy_loss + value_loss + entropy_bonus
                     return total_loss, {
                         "policy_loss": policy_loss,
                         "value_loss": value_loss,
@@ -699,7 +717,13 @@ def main():
                 optimizer.update(policy_model, grads)
                 return loss, metrics
 
-            for _ in range(args.ppo_epochs):
+            # Early stopping based on KL divergence (standard PPO practice)
+            target_kl = 0.015  # Stop if KL exceeds this threshold
+            early_stop = False
+            
+            for epoch in range(args.ppo_epochs):
+                if early_stop:
+                    break
                 update_rng, perm_key = jax.random.split(update_rng)
                 perm = jax.random.permutation(perm_key, data_size)
                 for start in range(0, data_size, args.ppo_minibatch_size):
@@ -721,6 +745,12 @@ def main():
                         mb_advantages,
                         mb_returns,
                     )
+                    
+                    # Check KL divergence for early stopping
+                    if float(last_metrics.get('approx_kl', 0.0)) > target_kl:
+                        print(f"  Early stopping at epoch {epoch+1}: KL={float(last_metrics['approx_kl']):.4f} > {target_kl}")
+                        early_stop = True
+                        break
 
             # Update PID controller
             avg_cost = float(jnp.mean(rollout_costs_array))

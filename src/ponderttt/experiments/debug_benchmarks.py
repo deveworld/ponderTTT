@@ -184,11 +184,9 @@ class SimpleGenerator:
                 else:
                     scales = _gating_forward_jit(self.gating_net, features, train=False)[:, 0]
 
-                if jnp.any(scales > 0.01):
-                    gating_scale = scales[:, None]
-                    outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
-                else:
-                    outputs = out_base
+                # Fix: Always use TTT to match training "Soft Skip" behavior
+                gating_scale = scales[:, None]
+                outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
             else:
                 outputs = self._call_model(input_tensor, use_ttt=False, gating_scale=None)
             
