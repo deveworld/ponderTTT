@@ -443,11 +443,12 @@ def main():
             # SKIP=1, UPDATE_1=3, UPDATE_2=5, UPDATE_4=9
             costs_map = jnp.array([1.0, 3.0, 5.0, 9.0])
             step_map = [0, 1, 2, 4]
-            cost_accumulator = 0.0
+            total_cost_sum = 0.0  # Sum of all costs for averaging
+            total_cost_count = 0  # Number of decisions made
             chunks_collected = 0
             exhausted = False
 
-            # Initialize batch_states cache
+            # Initialize batch_states cache - only store fast layer state, not full model
             batch_states = [None] * args.batch_size
 
             with tqdm(total=args.rollout_length, desc="Collecting rollout") as pbar:
@@ -477,16 +478,22 @@ def main():
                     total_loss_baseline = 0.0
                     total_cost = 0.0
                     
+                    # Reset model once if new sequence (more efficient than per-item)
+                    if is_new_sequence:
+                        ttt_model, ttt_optimizer = reset_ttt_model()
+                        batch_states = [None] * args.batch_size  # Clear all states
+                    
                     # Process each item in the batch serially to support diverse actions/states
                     for i in range(current_batch_size):
-                        # 1. Restore or Reset State
-                        if is_new_sequence:
-                            ttt_model, ttt_optimizer = reset_ttt_model()
-                        else:
+                        # 1. Restore State (if not new sequence)
+                        if not is_new_sequence:
                             if i < len(batch_states) and batch_states[i] is not None:
-                                nnx.update((ttt_model, ttt_optimizer), batch_states[i])
+                                fast_layer_state, fast_norm_state = batch_states[i]
+                                nnx.update(ttt_model.fast_layer, fast_layer_state)
+                                if fast_norm_state is not None and hasattr(ttt_model, 'fast_norm'):
+                                    nnx.update(ttt_model.fast_norm, fast_norm_state)
                             else:
-                                # Fallback if state missing (shouldn't happen if logic is correct)
+                                # Fallback if state missing
                                 ttt_model, ttt_optimizer = reset_ttt_model()
 
                         # 2. Extract single item inputs (keep dims for model compatibility: 1, L)
@@ -508,10 +515,15 @@ def main():
                         ))
                         
                         # 4. Features & Policy
-                        budget_remaining = max(
-                            0.0,
-                            (args.budget_limit - cost_accumulator) / max(args.budget_limit, 1e-8),
-                        )
+                        # Calculate budget_remaining based on average cost so far vs target
+                        if total_cost_count > 0:
+                            avg_cost_so_far = total_cost_sum / total_cost_count
+                            # How much of budget have we used? (1.0 = at limit, >1.0 = over)
+                            budget_usage = avg_cost_so_far / args.budget_limit
+                            # Remaining budget: 1.0 - usage, but allow negative to signal overspend
+                            budget_remaining = 1.0 - budget_usage
+                        else:
+                            budget_remaining = 1.0  # Full budget at start
                         
                         features = feature_extractor.extract(
                             input_ids=input_ids_i,
@@ -536,7 +548,7 @@ def main():
                         if action_steps == 0:
                             loss_after_ce = loss_baseline
                         else:
-                            metrics = None
+                            metrics = {}
                             for _ in range(action_steps):
                                 metrics = run_chunk_step(
                                     ttt_model,
@@ -546,13 +558,16 @@ def main():
                                     apply_update=True,
                                     ssl_weight=args.ssl_weight,
                                 )
-                            loss_after_ce = metrics["loss_ce"]
+                            loss_after_ce = float(metrics.get("loss_ce", loss_baseline))
                             
                         # 6. Compute Reward
                         reward = loss_baseline - loss_after_ce
                         
-                        # 7. Store State
-                        batch_states[i] = nnx.state((ttt_model, ttt_optimizer))
+                        # 7. Store State - only store fast layer state for memory efficiency
+                        batch_states[i] = (
+                            nnx.state(ttt_model.fast_layer),
+                            nnx.state(ttt_model.fast_norm) if hasattr(ttt_model, 'fast_norm') else None,
+                        )
                         
                         # 8. Collect results
                         b_features.append(features)
@@ -565,8 +580,9 @@ def main():
                         total_loss_baseline += loss_baseline
                         total_cost += cost
 
-                    # Aggregate results
-                    cost_accumulator += total_cost / current_batch_size
+                    # Aggregate results - track total cost for averaging
+                    total_cost_sum += total_cost
+                    total_cost_count += current_batch_size
                     feature_extractor.update_history(total_loss_baseline / current_batch_size, total_cost / current_batch_size)
                     
                     rollout_features.append(jnp.concatenate(b_features, axis=0))
