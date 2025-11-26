@@ -389,12 +389,12 @@ def main():
         print("OK Feature extractor initialized (32D features)")
 
         # PID controller for budget constraint
-        # Start with lambda=0 to let policy explore before penalizing costs
+        # Start with lambda=0.5 to encourage low-cost actions from the beginning
         pid = PIDController(
-            kp=0.05,  # Reduced from 0.1 for more stable learning
-            ki=0.005,  # Reduced from 0.01 for slower integral accumulation
-            kd=0.02,  # Reduced from 0.05
-            lambda_value=0.0,  # Start with no cost penalty
+            kp=0.1,   # Proportional gain for responsive cost control
+            ki=0.02,  # Integral gain for steady-state error correction
+            kd=0.02,  # Derivative gain for damping
+            lambda_value=0.5,  # Start with moderate cost penalty
         )
         print(f"OK PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}, lambda_init={pid.lambda_value}")
 
@@ -718,7 +718,7 @@ def main():
                 return loss, metrics
 
             # Early stopping based on KL divergence (standard PPO practice)
-            target_kl = 0.015  # Stop if KL exceeds this threshold
+            target_kl = 0.05  # Stop if KL exceeds this threshold (relaxed for stable learning)
             early_stop = False
             
             for epoch in range(args.ppo_epochs):
