@@ -46,6 +46,7 @@ class CodeDataset:
         chunk_size: int = 4096,
         shard_across_hosts: bool = True,
         exclude_benchmarks: bool = True,
+        max_connections: int = 50,
     ):
         self.tokenizer = tokenizer
         self.split = split
@@ -74,7 +75,7 @@ class CodeDataset:
                 signature_version=UNSIGNED,
                 connect_timeout=5,
                 read_timeout=10,
-                max_pool_connections=50,
+                max_pool_connections=max_connections,
             ),
         )
 
@@ -292,6 +293,7 @@ def create_data_iterator(
         seq_length=seq_length,
         chunk_size=chunk_size,
         exclude_benchmarks=exclude_benchmarks,
+        max_connections=max(num_workers, 50),
     )
 
     def _batch_generator():
