@@ -441,6 +441,9 @@ def main():
             chunks_collected = 0
             exhausted = False
 
+            # Initialize batch_states cache
+            batch_states = [None] * args.batch_size
+
             with tqdm(total=args.rollout_length, desc="Collecting rollout") as pbar:
                 while chunks_collected < args.rollout_length:
                     try:
@@ -449,95 +452,131 @@ def main():
                         exhausted = True
                         break
 
-                    if is_new_sequence:
-                        ttt_model, ttt_optimizer = reset_ttt_model()
+                    # Handle batch size logic
+                    current_batch_size = chunk_batch["input_ids"].shape[0]
 
-                    # Check for valid tokens
+                    # Check for valid tokens (batch-wide)
                     num_valid_tokens = jnp.sum(chunk_batch["attention_mask"][:, 1:])
                     if num_valid_tokens < 16:
                         continue
 
-                    outputs = ttt_model(chunk_batch["input_ids"], use_ttt=False)
-                    logits = outputs["logits"]
-                    labels = chunk_batch["input_ids"]
-                    mask = chunk_batch["attention_mask"]
-                    loss_baseline = cross_entropy_loss(
-                        logits[:, :-1],
-                        labels[:, 1:],
-                        mask[:, 1:],
-                    )
+                    # Buffers for this batch
+                    b_features = []
+                    b_actions = []
+                    b_log_probs = []
+                    b_values = []
+                    b_rewards = []
+                    b_costs = []
+                    
+                    total_loss_baseline = 0.0
+                    total_cost = 0.0
+                    
+                    # Process each item in the batch serially to support diverse actions/states
+                    for i in range(current_batch_size):
+                        # 1. Restore or Reset State
+                        if is_new_sequence:
+                            ttt_model, ttt_optimizer = reset_ttt_model()
+                        else:
+                            if i < len(batch_states) and batch_states[i] is not None:
+                                nnx.update((ttt_model, ttt_optimizer), batch_states[i])
+                            else:
+                                # Fallback if state missing (shouldn't happen if logic is correct)
+                                ttt_model, ttt_optimizer = reset_ttt_model()
 
-                    budget_remaining = max(
-                        0.0,
-                        (args.budget_limit - cost_accumulator) / max(args.budget_limit, 1e-8),
-                    )
+                        # 2. Extract single item inputs (keep dims for model compatibility: 1, L)
+                        input_ids_i = chunk_batch["input_ids"][i:i+1]
+                        mask_i = chunk_batch["attention_mask"][i:i+1]
+                        batch_i = {
+                            "input_ids": input_ids_i,
+                            "attention_mask": mask_i,
+                        }
+                        
+                        # 3. Baseline Forward
+                        outputs = ttt_model(input_ids_i, use_ttt=False)
+                        logits = outputs["logits"]
+                        
+                        loss_baseline = float(cross_entropy_loss(
+                            logits[:, :-1],
+                            input_ids_i[:, 1:],
+                            mask_i[:, 1:],
+                        ))
+                        
+                        # 4. Features & Policy
+                        budget_remaining = max(
+                            0.0,
+                            (args.budget_limit - cost_accumulator) / max(args.budget_limit, 1e-8),
+                        )
+                        
+                        features = feature_extractor.extract(
+                            input_ids=input_ids_i,
+                            logits=logits,
+                            attention_mask=mask_i,
+                            budget_remaining=budget_remaining,
+                        )
+                        
+                        policy_rng, action_key = jax.random.split(policy_rng)
+                        policy_output = policy(
+                            features,
+                            deterministic=False,
+                            rng=action_key,
+                        )
+                        
+                        action = policy_output["action"][0] # Scalar
+                        action_idx = int(action)
+                        action_steps = step_map[action_idx]
+                        cost = float(costs_map[action_idx])
+                        
+                        # 5. TTT Updates (if any)
+                        if action_steps == 0:
+                            loss_after_ce = loss_baseline
+                        else:
+                            metrics = None
+                            for _ in range(action_steps):
+                                metrics = run_chunk_step(
+                                    ttt_model,
+                                    ttt_optimizer,
+                                    batch_i,
+                                    use_ttt=True,
+                                    apply_update=True,
+                                    ssl_weight=args.ssl_weight,
+                                )
+                            loss_after_ce = metrics["loss_ce"]
+                            
+                        # 6. Compute Reward
+                        reward = loss_baseline - loss_after_ce
+                        
+                        # 7. Store State
+                        batch_states[i] = nnx.state((ttt_model, ttt_optimizer))
+                        
+                        # 8. Collect results
+                        b_features.append(features)
+                        b_actions.append(policy_output["action"])
+                        b_log_probs.append(policy_output["log_prob"])
+                        b_values.append(policy_output["value"])
+                        b_rewards.append(reward)
+                        b_costs.append(cost)
+                        
+                        total_loss_baseline += loss_baseline
+                        total_cost += cost
 
-                    features = feature_extractor.extract(
-                        input_ids=chunk_batch["input_ids"],
-                        logits=logits,
-                        attention_mask=chunk_batch["attention_mask"],
-                        budget_remaining=budget_remaining,
-                    )
-                    batch_size = chunk_batch["input_ids"].shape[0]
-
-            policy_rng, action_key = jax.random.split(policy_rng)
-            policy_output = policy(
-                features,
-                deterministic=False,
-                return_logits=True,
-                rng=action_key,
-            )
-
-            actions = policy_output["action"]
-            action_idx = int(actions[0])
-            if not jnp.all(actions == action_idx):
-                # Enforce a single action for the whole batch (use first action)
-                actions = jnp.full_like(actions, action_idx)
-                log_probs = jax.nn.log_softmax(policy_output["logits"], axis=-1)
-                policy_output["action"] = actions
-                policy_output["log_prob"] = jnp.take_along_axis(
-                    log_probs, actions[:, None], axis=-1
-                ).squeeze(-1)
-            action_steps = step_map[action_idx]
-            cost = float(costs_map[action_idx])
-
-                    if action_steps == 0:
-                        loss_after_ce = float(loss_baseline)
-                    else:
-                        metrics = None
-                        for _ in range(action_steps):
-                            metrics = run_chunk_step(
-                                ttt_model,
-                                ttt_optimizer,
-                                chunk_batch,
-                                use_ttt=True,
-                                apply_update=True,
-                                ssl_weight=args.ssl_weight,
-                            )
-                        assert metrics is not None
-                        loss_after_ce = metrics["loss_ce"]
-
-                    quality_improvement = float(loss_baseline) - loss_after_ce
-                    reward = quality_improvement
-                    cost_accumulator += cost
-
-                    feature_extractor.update_history(float(loss_baseline), cost)
-
-                    rollout_features.append(features)
-                    rollout_actions.append(actions)
-                    rollout_log_probs.append(policy_output["log_prob"])
-                    rollout_values.append(policy_output["value"])
-                    rollout_rewards.append(jnp.full((batch_size,), reward))
-                    rollout_costs.append(jnp.full((batch_size,), cost))
-                    rollout_dones.append(jnp.full((batch_size,), is_last_chunk))
+                    # Aggregate results
+                    cost_accumulator += total_cost / current_batch_size
+                    feature_extractor.update_history(total_loss_baseline / current_batch_size, total_cost / current_batch_size)
+                    
+                    rollout_features.append(jnp.concatenate(b_features, axis=0))
+                    rollout_actions.append(jnp.concatenate(b_actions, axis=0))
+                    rollout_log_probs.append(jnp.concatenate(b_log_probs, axis=0))
+                    rollout_values.append(jnp.concatenate(b_values, axis=0))
+                    rollout_rewards.append(jnp.array(b_rewards))
+                    rollout_costs.append(jnp.array(b_costs))
+                    rollout_dones.append(jnp.full((current_batch_size,), is_last_chunk))
 
                     chunks_collected += 1
                     pbar.update(1)
                     pbar.set_postfix(
                         {
-                            "action": action_idx,
-                            "cost": f"{cost:.1f}x",
-                            "reward": f"{reward:.3f}",
+                            "avg_cost": f"{total_cost / current_batch_size:.1f}x",
+                            "avg_rew": f"{sum(b_rewards) / current_batch_size:.3f}",
                         }
                     )
 
