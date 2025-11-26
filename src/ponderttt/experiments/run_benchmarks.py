@@ -471,7 +471,9 @@ def main():
         print(f"Loading baseline checkpoint from {args.baseline}...")
         ckpt = load_checkpoint(args.baseline, target=None)
         if "state" in ckpt and "model" in ckpt["state"]:
-            nnx.update(model, ckpt["state"]["model"])
+            # Unwrap 'value' keys if present (fix for KeyError: Ellipsis)
+            model_state = unwrap_state(ckpt["state"]["model"])
+            nnx.update(model, model_state)
             print("Loaded baseline checkpoint")
         else:
             raise ValueError("Baseline checkpoint does not contain 'state.model'")
