@@ -438,6 +438,7 @@ def main():
             rollout_rewards = []
             rollout_costs = []
             rollout_dones = []
+            rollout_loss_ce = []  # Track CE losses for logging
 
             # Cost model: 1 (base forward) + 2 * num_steps
             # SKIP=1, UPDATE_1=3, UPDATE_2=5, UPDATE_4=9
@@ -474,6 +475,7 @@ def main():
                     b_values = []
                     b_rewards = []
                     b_costs = []
+                    b_loss_ce = []  # Track CE loss after TTT updates
                     
                     total_loss_baseline = 0.0
                     total_cost = 0.0
@@ -576,6 +578,7 @@ def main():
                         b_values.append(policy_output["value"])
                         b_rewards.append(reward)
                         b_costs.append(cost)
+                        b_loss_ce.append(loss_after_ce)
                         
                         total_loss_baseline += loss_baseline
                         total_cost += cost
@@ -592,6 +595,7 @@ def main():
                     rollout_rewards.append(jnp.array(b_rewards))
                     rollout_costs.append(jnp.array(b_costs))
                     rollout_dones.append(jnp.full((current_batch_size,), is_last_chunk))
+                    rollout_loss_ce.append(jnp.array(b_loss_ce))
 
                     chunks_collected += 1
                     pbar.update(1)
@@ -725,10 +729,15 @@ def main():
 
             # Compute statistics
             avg_reward = float(jnp.mean(rollout_rewards_array))
+            rollout_loss_ce_array = jnp.reshape(jnp.stack(rollout_loss_ce), (-1,))
+            avg_loss_ce = float(jnp.mean(rollout_loss_ce_array))
+            avg_perplexity = float(jnp.exp(jnp.clip(avg_loss_ce, 0, 10)))  # Clip to avoid overflow
 
             print("\nRollout summary:")
             print(f"  Average cost: {avg_cost:.2f}x (target: {args.budget_limit:.1f}x)")
             print(f"  Average reward: {avg_reward:.4f}")
+            print(f"  Average loss_ce: {avg_loss_ce:.4f}")
+            print(f"  Average perplexity: {avg_perplexity:.2f}")
             print(f"  Lambda (penalty): {pid.lambda_value:.4f}")
             print(f"  Policy loss: {loss:.4f}")
             print(f"  Approx KL: {float(last_metrics.get('approx_kl', 0.0)):.6f}")
@@ -739,6 +748,8 @@ def main():
                 wandb.log({
                     f"seed_{seed}/avg_cost": avg_cost,
                     f"seed_{seed}/avg_reward": avg_reward,
+                    f"seed_{seed}/loss_ce": avg_loss_ce,
+                    f"seed_{seed}/perplexity": avg_perplexity,
                     f"seed_{seed}/lambda": float(pid.lambda_value),
                     f"seed_{seed}/policy_loss": float(loss),
                     f"seed_{seed}/approx_kl": float(last_metrics.get('approx_kl', 0.0)),
