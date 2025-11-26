@@ -195,6 +195,13 @@ def main():
     # Get model configuration
     model_name = get_model_name(args.model_scale)
 
+    if args.wandb_project:
+        wandb.init(
+            project=args.wandb_project,
+            config=vars(args),
+            name=f"rl_{args.model_scale}_{args.budget_limit}",
+        )
+
     # Load tokenizer
     print("Loading tokenizer...")
     tokenizer = get_tokenizer(model_name)
