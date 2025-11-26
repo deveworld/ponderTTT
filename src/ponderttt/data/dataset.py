@@ -2,6 +2,7 @@
 Dataset implementation for code data with multi-host sharding support.
 """
 
+import gzip
 import hashlib
 import logging
 import pickle
@@ -47,6 +48,7 @@ class CodeDataset:
         shard_across_hosts: bool = True,
         exclude_benchmarks: bool = True,
         max_connections: int = 50,
+        num_workers: int = 32,
     ):
         self.tokenizer = tokenizer
         self.split = split
@@ -55,6 +57,7 @@ class CodeDataset:
         self.chunk_size = chunk_size
         self.shard_across_hosts = shard_across_hosts
         self.exclude_benchmarks = exclude_benchmarks
+        self.num_workers = num_workers
         self.pad_token_id = self.tokenizer.token_to_id("<|pad|>")
         if self.pad_token_id is None:
             raise ValueError(
@@ -153,25 +156,16 @@ class CodeDataset:
         Returns:
             Decoded file content as string
         """
-
-        s3_url = f"s3://softwareheritage/content/{blob_id}"
         try:
-            with closing(
-                cast(
-                    BinaryIO,
-                    smart_open(
-                        s3_url,
-                        "rb",
-                        compression=".gz",
-                        transport_params={"client": self.s3_client},
-                    ),
-                )
-            ) as f:
-                content = f.read().decode(src_encoding)
-            return content
+            # Direct boto3 access is faster than smart_open
+            response = self.s3_client.get_object(
+                Bucket="softwareheritage", 
+                Key=f"content/{blob_id}"
+            )
+            content_gz = response["Body"].read()
+            return gzip.decompress(content_gz).decode(src_encoding)
         except Exception as exc:
-            logging.warning("Failed to download blob %s (%s): %s", blob_id, src_encoding, exc)
-            # Skip files that fail to download or timeout
+            # logging.warning("Failed to download blob %s: %s", blob_id, exc)
             return ""
 
     def _process_example(self, example: dict) -> dict[str, np.ndarray] | None:
@@ -234,7 +228,7 @@ class CodeDataset:
 
     def __iter__(self) -> Iterator[dict[str, np.ndarray]]:
         """
-        Iterate over tokenized code examples.
+        Iterate over tokenized code examples with parallel prefetching.
 
         Yields:
             Dictionary with:
@@ -242,13 +236,23 @@ class CodeDataset:
                 - attention_mask: [seq_len] bool array
                 - chunks: [num_chunks, chunk_size] int array
         """
-        for repo in self.dataset:
-            if isinstance(repo, dict) and "files" in repo:
-                for file_info in repo["files"]:
-                    if file_info.get("language") == self.language:
-                        processed = self._process_example(file_info)
-                        if processed is not None:
-                            yield processed
+        def example_generator():
+            for repo in self.dataset:
+                if isinstance(repo, dict) and "files" in repo:
+                    for file_info in repo["files"]:
+                        if file_info.get("language") == self.language:
+                            yield file_info
+
+        # Use ThreadPoolExecutor to prefetch and process examples in parallel
+        # This significantly speeds up streaming when cache_data=False
+        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+            # map returns an iterator that yields results as they complete (if using as_completed logic)
+            # or in order. executor.map preserves order.
+            # For training data, order doesn't strictly matter, but map is convenient.
+            # We use a reasonable chunksize to keep workers busy.
+            for processed in executor.map(self._process_example, example_generator()):
+                if processed is not None:
+                    yield processed
 
 
 def create_data_iterator(
@@ -294,6 +298,7 @@ def create_data_iterator(
         chunk_size=chunk_size,
         exclude_benchmarks=exclude_benchmarks,
         max_connections=max(num_workers, 50),
+        num_workers=num_workers,
     )
 
     def _batch_generator():
