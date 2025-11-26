@@ -152,6 +152,12 @@ def parse_args():
         default=32,
         help="Number of parallel workers for data downloading",
     )
+    parser.add_argument(
+        "--max_examples",
+        type=int,
+        default=None,
+        help="Optional override for data cache size (defaults to required minimum)",
+    )
 
     return parser.parse_args()
 
@@ -213,10 +219,16 @@ def main():
     chunk_size = 512
     chunks_per_sequence = max(1, seq_length // chunk_size)
 
-    # Estimate examples needed (align max_examples formula with baseline)
-    total_chunks = args.num_iterations * args.rollout_length
-    examples_needed = math.ceil(total_chunks / chunks_per_sequence)
-    max_examples = examples_needed * batch_size
+    # Estimate examples needed; each batch provides chunks_per_sequence chunk steps
+    total_chunk_steps = args.num_iterations * args.rollout_length
+    batches_needed = math.ceil(total_chunk_steps / chunks_per_sequence)
+    min_examples = batches_needed * batch_size
+    max_examples = min_examples if args.max_examples is None else args.max_examples
+    if max_examples < min_examples:
+        print(
+            f"Warning: max_examples ({max_examples}) < required minimum ({min_examples}); "
+            "data iterator may exhaust before training completes."
+        )
 
     def build_data_iter():
         return create_data_iterator(
