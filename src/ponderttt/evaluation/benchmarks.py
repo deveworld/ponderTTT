@@ -256,8 +256,17 @@ def _check_solution(problem: CodeProblem, completion: str, timeout: int = 3) -> 
         with time_limit(timeout):
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=SyntaxWarning)
+                # Execute the generated code (defines the function)
                 exec(compile(source, "<completion>", "exec"), namespace, namespace)  # noqa: S102
+                # Execute the test code (defines the check function)
                 exec(compile(problem.test_code, "<tests>", "exec"), namespace, namespace)  # noqa: S102
+                # HumanEval test code defines a check(candidate) function that must be called
+                # with the entry point function to actually run the assertions
+                if "check" in namespace and problem.entry_point in namespace:
+                    namespace["check"](namespace[problem.entry_point])  # noqa: S102
+                elif problem.entry_point not in namespace:
+                    # Function was not defined - fail the test
+                    return False
         return True
     except Exception:
         return False
