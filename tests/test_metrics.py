@@ -72,15 +72,16 @@ class TestFLOPs:
         """Test FLOPs with mixed actions."""
         actions = ['SKIP', 'UPDATE_1', 'UPDATE_2']
         flops = compute_flops(actions, base_flops=1.0)
-        # SKIP=1.0, UPDATE_1=3.0, UPDATE_2=6.0, total=10.0
-        assert flops == 10.0
+        # Cost model: 1 + 2*steps
+        # SKIP=1.0, UPDATE_1=3.0, UPDATE_2=5.0, total=9.0
+        assert flops == 9.0
 
     def test_update_4_action(self):
         """Test FLOPs with UPDATE_4 action."""
         actions = ['UPDATE_4']
         flops = compute_flops(actions, base_flops=1.0)
-        # UPDATE_4 has cost 12.0
-        assert flops == 12.0
+        # Cost model: 1 + 2*4 = 9.0
+        assert flops == 9.0
 
     def test_base_flops_scaling(self):
         """Test that base_flops scales the result."""

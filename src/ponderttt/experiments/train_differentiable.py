@@ -118,6 +118,12 @@ def parse_args():
         default=32,
         help="Number of parallel workers for data downloading",
     )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=512,
+        help="Chunk size for TTT processing",
+    )
     
     return parser.parse_args()
 
@@ -230,18 +236,19 @@ def main():
     )
     
     # Data Iterator
+    chunk_size = args.chunk_size
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         split="train",
         batch_size=args.batch_size,
         seq_length=1024,
-        chunk_size=512,
+        chunk_size=chunk_size,
         max_examples=args.batch_size * args.num_iterations * 2,
         num_workers=args.num_workers,
     )
     
     # Training Step
-    @nnx.jit
+    @nnx.jit(static_argnames=("tie_word_embeddings", "beta_ttt"))
     def train_step(
         trainable_sys: TrainableSystem,
         optimizer: nnx.Optimizer,
@@ -250,6 +257,7 @@ def main():
         budget_remaining: jax.Array,
         baseline_loss: jax.Array,  # Previous chunk's loss for reward shaping
         beta_ttt: float = 0.1,
+        tie_word_embeddings: bool = True,
     ):
         """
         Differentiable training step with TTT loss and reward shaping.
@@ -268,7 +276,7 @@ def main():
         ))
         
         # Compute logits for features (also frozen base)
-        if ttt_model.tie_word_embeddings:
+        if tie_word_embeddings:
             embedding_kernel = base_model.wte.embedding[...]  # type: ignore
             logits_base = hidden_states @ embedding_kernel.T
         else:
@@ -311,7 +319,7 @@ def main():
             adapted_hidden = hidden_states + fast_output
             
             # Final Logits
-            if ttt_model.tie_word_embeddings:
+            if tie_word_embeddings:
                 embedding_kernel = base_model.wte.embedding[...]  # type: ignore
                 logits = adapted_hidden @ embedding_kernel.T
             elif sys.lm_head:
@@ -423,7 +431,9 @@ def main():
         
         # Initialize stats for logging
         loss, l_ttt, cost = 0.0, 0.0, 0.0
-        avg_ce_loss, avg_gate_val = 0.0, 0.0
+        avg_ce_loss = 0.0
+        avg_total_loss = 0.0
+        avg_gate_val = 0.0
         prev_ce_loss = jnp.array(3.0)  # Initialize with reasonable baseline
         
         for c_idx in range(num_chunks):
@@ -431,8 +441,8 @@ def main():
                 "input_ids": chunks[:, c_idx],
                 "attention_mask": masks[:, c_idx],
                 "position_ids": jnp.arange(
-                    c_idx * 512, # hardcoded chunk_size, consider using args/config
-                    (c_idx + 1) * 512,
+                    c_idx * chunk_size,
+                    (c_idx + 1) * chunk_size,
                     dtype=jnp.int32
                 )[None, :].repeat(chunks.shape[0], axis=0)
             }
@@ -456,6 +466,7 @@ def main():
                 chunk_batch, 
                 jnp.array(budget_rem_fraction),
                 prev_ce_loss,
+                tie_word_embeddings=ttt_model.tie_word_embeddings,
             )
             
             # Stability check
@@ -469,21 +480,28 @@ def main():
             current_spend += float(gate)
             avg_gate_val += float(gate)
             avg_ce_loss += float(ce)
+            avg_total_loss += float(loss)
             
             feature_extractor.update_history(float(ce), float(gate))
             
-        avg_gate_val /= max(1, num_chunks) # prevent div by zero if all skipped, though unlikely
-        avg_ce_loss /= max(1, num_chunks)
+        denom = max(1, num_chunks)
+        avg_gate_val /= denom  # prevent div by zero if all skipped, though unlikely
+        avg_ce_loss /= denom
+        avg_total_loss /= denom
         perplexity = math.exp(avg_ce_loss)
         budget_util = current_spend / max(1e-6, total_budget)
         
-        print(f"Iter {iter_count+1}: Loss={loss:.4f}, CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, L_TTT={float(l_ttt):.4f}, Gate={avg_gate_val:.4f}, RemBudget={1.0 - budget_util:.2f}")
+        print(
+            f"Iter {iter_count+1}: LossTotal={avg_total_loss:.4f}, "
+            f"LossCE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
+            f"L_TTT={float(l_ttt):.4f}, Gate={avg_gate_val:.4f}, RemBudget={1.0 - budget_util:.2f}"
+        )
         
         # WandB Logging
         if args.wandb_project:
             wandb.log({
-                f"seed_{args.seed}/loss": float(loss),
-                f"seed_{args.seed}/ce_loss": float(avg_ce_loss),
+                f"seed_{args.seed}/loss_total": float(avg_total_loss),
+                f"seed_{args.seed}/loss_ce": float(avg_ce_loss),
                 f"seed_{args.seed}/perplexity": perplexity,
                 f"seed_{args.seed}/l_ttt": float(l_ttt),
                 f"seed_{args.seed}/gate_mean": float(avg_gate_val),
@@ -493,8 +511,8 @@ def main():
 
         history.append({
             "iteration": iter_count,
-            "loss": float(loss),
-            "ce_loss": float(avg_ce_loss),
+            "loss_total": float(avg_total_loss),
+            "loss_ce": float(avg_ce_loss),
             "perplexity": perplexity,
             "l_ttt": float(l_ttt),
             "gate_mean": float(avg_gate_val),

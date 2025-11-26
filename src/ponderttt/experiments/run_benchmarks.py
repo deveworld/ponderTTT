@@ -24,11 +24,19 @@ from ..utils import FeatureExtractor, extract_features
 from ..utils.checkpointing import load_checkpoint
 
 
-# JIT compiled forward pass
-# def _generate_step_impl(model, input_ids, use_ttt, gating_scale):
-#     return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
+@nnx.jit(static_argnames=("use_ttt",))
+def _model_forward_jit(model, input_ids, use_ttt, gating_scale):
+    return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
 
-# generate_step = cast(Callable, nnx.jit(_generate_step_impl, static_argnames=("use_ttt",)))
+
+@nnx.jit(static_argnames=("deterministic",))
+def _policy_forward_jit(net, x, deterministic):
+    return net(x, deterministic=deterministic)
+
+
+@nnx.jit(static_argnames=("train",))
+def _gating_forward_jit(net, x, train):
+    return net(x, train=train)
 
 
 def parse_args():
@@ -76,22 +84,6 @@ class SimpleGenerator:
             seq_length_norm=512, # approximate norm
         )
 
-        # JIT compiled functions
-        @nnx.jit(static_argnames=("use_ttt",))
-        def model_forward(model, input_ids, use_ttt, gating_scale):
-            return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
-        self.model_forward = model_forward
-
-        @nnx.jit(static_argnames=("deterministic",))
-        def policy_forward(net, x, deterministic):
-            return net(x, deterministic=deterministic)
-        self.policy_forward = policy_forward
-
-        @nnx.jit(static_argnames=("train",))
-        def gating_forward(net, x, train):
-            return net(x, train=train)
-        self.gating_forward = gating_forward
-        
         # JIT compiled feature extraction
         # We use the standalone function to avoid state issues and allow JIT
         vocab_size = tokenizer.get_vocab_size()
@@ -115,7 +107,7 @@ class SimpleGenerator:
         batch_size = input_tensor.shape[0]
         if gating_scale is None:
             gating_scale = jnp.zeros((batch_size, 1), dtype=jnp.float32)
-        return self.model_forward(self.model, input_tensor, use_ttt=use_ttt, gating_scale=gating_scale)
+        return _model_forward_jit(self.model, input_tensor, use_ttt=use_ttt, gating_scale=gating_scale)
 
     def _truncate_context(self, token_ids: list[int]) -> list[int]:
         """Clamp context to the model's positional window."""
@@ -168,7 +160,6 @@ class SimpleGenerator:
                 attention_mask = jnp.ones((1, current_len), dtype=jnp.int32)
             
             # Determine gating / TTT usage
-            use_ttt = False
             gating_scale = None
             
             # We need the baseline output anyway if we are gating OR if we end up skipping
@@ -184,15 +175,14 @@ class SimpleGenerator:
                 )
 
                 if hasattr(self.gating_net, "evaluate_actions"):
-                    policy_out = self.policy_forward(self.gating_net, features, deterministic=True)
+                    policy_out = _policy_forward_jit(self.gating_net, features, deterministic=True)
                     action = int(policy_out["action"][0])
                     step_map = [0, 1, 2, 4]
                     scale = float(step_map[action])
                 else:
-                    scale = float(self.gating_forward(self.gating_net, features, train=False)[0, 0])
+                    scale = float(_gating_forward_jit(self.gating_net, features, train=False)[0, 0])
 
                 if scale > 0.01:
-                    use_ttt = True
                     gating_scale = jnp.array([[scale]])
                     outputs = self._call_model(padded_input, use_ttt=True, gating_scale=gating_scale)
                 else:
@@ -290,7 +280,6 @@ class SimpleGenerator:
             mask_tensor = jnp.array(attention_masks, dtype=jnp.int32)
             
             # Gating / TTT
-            use_ttt = False
             gating_scale = None
             
             if self.gating_net is not None:
@@ -303,15 +292,14 @@ class SimpleGenerator:
                 )
 
                 if hasattr(self.gating_net, "evaluate_actions"):
-                    policy_out = self.policy_forward(self.gating_net, features, deterministic=True)
+                    policy_out = _policy_forward_jit(self.gating_net, features, deterministic=True)
                     actions = policy_out["action"]
                     step_map = jnp.array([0.0, 1.0, 2.0, 4.0])
                     scales = step_map[actions.astype(int)]
                 else:
-                    scales = self.gating_forward(self.gating_net, features, train=False)[:, 0]
+                    scales = _gating_forward_jit(self.gating_net, features, train=False)[:, 0]
 
                 if jnp.any(scales > 0.01):
-                    use_ttt = True
                     gating_scale = scales[:, None]
                     outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
                 else:
@@ -320,7 +308,7 @@ class SimpleGenerator:
                 outputs = self._call_model(input_tensor, use_ttt=False, gating_scale=None)
             
             # Extract logits
-            indices = jnp.array([l - 1 for l in current_lens]) # [B]
+            indices = jnp.array([length - 1 for length in current_lens]) # [B]
             next_token_logits = outputs["logits"][jnp.arange(batch_size), indices, :] # [B, V]
             
             # Sampling
@@ -560,8 +548,13 @@ def main():
 
         # Final results
         final_score = sum(scores) / len(scores) if scores else 0.0
-        results[name] = {"pass@1": final_score}
-        print(f"  Result: {final_score}")
+        avg_attempts = sum(attempts_per_problem) / len(attempts_per_problem) if attempts_per_problem else 0.0
+        results[name] = {
+            "pass@1": final_score,
+            "num_problems": len(scores),
+            "avg_attempts": avg_attempts,
+        }
+        print(f"  Result: Pass@1 = {final_score:.4f} ({len(scores)} problems)")
 
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)

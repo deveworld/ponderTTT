@@ -11,16 +11,18 @@ class FeatureExtractor:
     Extract 32-dimensional features for policy decisions.
 
     Features include:
-    - Model confidence (4): entropy, perplexity
-    - Activation stats (6): mean, std, sparsity
-    - Attention patterns (4): entropy, range
-    - Code metrics (8): token stats
-    - Historical context (4): EMA, budget
-    - Sequence stats (6): length, frequency
+    - Model confidence (4): entropy, uncertainty (based on max probability)
+    - Activation stats (6): mean, std, sparsity, max, min, range
+    - Attention patterns (4): entropy, range, sparsity
+    - Code metrics (8): diversity, repetition, token ID stats, prediction confidence
+    - Historical context (4): difficulty EMA, difficulty std, cost EMA, budget remaining
+    - Sequence stats (6): length, token ID stats, position stats, compression
 
     Attributes:
         vocab_size: Vocabulary size
         ema_alpha: EMA weight for history tracking
+        pad_token_id: Token ID used for padding (excluded from statistics)
+        seq_length_norm: Normalization factor for sequence length
     """
 
     def __init__(
@@ -117,34 +119,50 @@ class FeatureExtractor:
         attention_mask: jnp.ndarray,
         valid_tokens: jnp.ndarray,
     ) -> jnp.ndarray:
-        """Extract model confidence features (4D)."""
+        """Extract model confidence features (4D).
+
+        Features:
+        - mean_entropy: Average entropy across sequence (higher = less confident)
+        - max_entropy: Maximum entropy in sequence (identifies hardest position)
+        - mean_uncertainty: Mean of -log(max_prob), proxy for prediction difficulty
+        - max_uncertainty: Max of -log(max_prob), identifies least confident prediction
+
+        Note: These are NOT standard perplexity metrics. They measure model confidence
+        based on the maximum probability at each position, not the probability of
+        the target token.
+        """
         # Compute probabilities
         probs = jax.nn.softmax(logits, axis=-1)
 
-        # Entropy
+        # Entropy: H = -sum(p * log(p))
         entropy = -jnp.sum(probs * jnp.log(probs + 1e-10), axis=-1)
         entropy = entropy * attention_mask
         mean_entropy = jnp.sum(entropy, axis=-1) / valid_tokens.squeeze(-1)
         max_entropy = jnp.max(jnp.where(attention_mask > 0, entropy, -jnp.inf), axis=-1)
         max_entropy = jnp.where(jnp.isfinite(max_entropy), max_entropy, 0.0)
 
-        # Perplexity (use max prob as proxy)
+        # Uncertainty based on max probability (NOT perplexity)
+        # Higher max_prob = more confident = lower uncertainty
         max_probs = jnp.max(probs, axis=-1)
-        log_max_probs = jnp.log(max_probs + 1e-10) * attention_mask
-        mean_perplexity = jnp.exp(-jnp.sum(log_max_probs, axis=-1) / valid_tokens.squeeze(-1))
-        max_perplexity = jnp.exp(
-            -jnp.max(jnp.where(attention_mask > 0, log_max_probs, -jnp.inf), axis=-1)
+        neg_log_max_probs = -jnp.log(max_probs + 1e-10) * attention_mask
+        mean_uncertainty = jnp.sum(neg_log_max_probs, axis=-1) / valid_tokens.squeeze(-1)
+        max_uncertainty = jnp.max(
+            jnp.where(attention_mask > 0, neg_log_max_probs, -jnp.inf), axis=-1
         )
-        max_perplexity = jnp.where(jnp.isfinite(max_perplexity), max_perplexity, 1.0)
+        max_uncertainty = jnp.where(jnp.isfinite(max_uncertainty), max_uncertainty, 0.0)
 
-        return jnp.stack(
-            [
-                mean_entropy,
-                max_entropy,
-                jnp.log(mean_perplexity + 1e-10),
-                jnp.log(max_perplexity + 1e-10),
-            ],
-            axis=-1,
+        # Clip large values for stability
+        return jnp.clip(
+            jnp.stack(
+                [
+                    mean_entropy,
+                    max_entropy,
+                    mean_uncertainty,
+                    max_uncertainty,
+                ],
+                axis=-1,
+            ),
+            -10.0, 10.0
         )
 
     def _extract_activations(
@@ -268,10 +286,13 @@ class FeatureExtractor:
         )
 
         # Repetition (adjacent duplicates)
-        repeated = jnp.mean(
-            (input_ids[:, 1:] == input_ids[:, :-1]).astype(jnp.float32) * mask[:, 1:],
-            axis=-1,
-        )
+        # Handle edge case where seq_len == 1 (no adjacent pairs)
+        if seq_len > 1:
+            adjacent_repeats = (input_ids[:, 1:] == input_ids[:, :-1]).astype(jnp.float32) * mask[:, 1:]
+            # Sum instead of mean to avoid NaN on empty slices, then normalize
+            repeated = jnp.sum(adjacent_repeats, axis=-1) / jnp.maximum(valid_tokens.squeeze(-1) - 1, 1.0)
+        else:
+            repeated = jnp.zeros((batch_size,), dtype=jnp.float32)
 
         # Token ID statistics
         avg_token_id = (
@@ -335,7 +356,21 @@ class FeatureExtractor:
         return jnp.stack([difficulty, difficulty_std, cost, budget_rem], axis=-1)
 
     def _extract_sequence(self, input_ids: jnp.ndarray) -> jnp.ndarray:
-        """Extract sequence statistics (6D)."""
+        """Extract sequence statistics (6D).
+
+        Features:
+        - seq_length: Normalized sequence length (valid_tokens / seq_length_norm)
+        - log_avg_token_id: Log of (normalized mean token ID + 1), where normalization
+            is by vocab_size. Indicates average position in vocabulary.
+        - log_max_token_id: Log of (normalized max token ID + 1). Indicates highest
+            vocabulary index used.
+        - position_mean: Mean relative position of valid tokens (0 to 1)
+        - position_std: Standard deviation of valid token positions
+        - compression: Fraction of non-pad tokens (valid_tokens / seq_len)
+
+        Note: Token ID statistics help characterize the vocabulary usage distribution.
+        Higher average token IDs might indicate more rare/specialized tokens.
+        """
         batch_size, seq_len = input_ids.shape
 
         # Optional mask based on pad token
@@ -348,9 +383,9 @@ class FeatureExtractor:
         valid_tokens = jnp.maximum(jnp.sum(mask, axis=-1), 1.0)
         seq_length = valid_tokens / self.seq_length_norm
 
-        # Token frequency (masked)
-        avg_freq = jnp.sum(input_ids.astype(jnp.float32) * mask, axis=-1) / (valid_tokens * self.vocab_size)
-        max_freq = jnp.max(jnp.where(mask > 0, input_ids, 0), axis=-1) / self.vocab_size
+        # Token ID statistics (normalized by vocab_size)
+        avg_token_id = jnp.sum(input_ids.astype(jnp.float32) * mask, axis=-1) / (valid_tokens * self.vocab_size)
+        max_token_id = jnp.max(jnp.where(mask > 0, input_ids, 0), axis=-1) / self.vocab_size
 
         # Position statistics (relative index of non-pad tokens)
         positions = jnp.arange(seq_len, dtype=jnp.float32)[None, :] / jnp.maximum(seq_len - 1, 1)
@@ -365,8 +400,8 @@ class FeatureExtractor:
         return jnp.stack(
             [
                 seq_length,
-                jnp.log(avg_freq + 1.0),
-                jnp.log(max_freq + 1.0),
+                jnp.log(avg_token_id + 1.0),
+                jnp.log(max_token_id + 1.0),
                 position_mean,
                 position_std,
                 compression,
