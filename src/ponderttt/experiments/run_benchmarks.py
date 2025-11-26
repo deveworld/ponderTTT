@@ -182,11 +182,11 @@ class SimpleGenerator:
                 else:
                     scale = float(_gating_forward_jit(self.gating_net, features, train=False)[0, 0])
 
-                if scale > 0.01:
-                    gating_scale = jnp.array([[scale]])
-                    outputs = self._call_model(padded_input, use_ttt=True, gating_scale=gating_scale)
-                else:
-                    outputs = out_base
+                # Fix: Always use TTT to match training "Soft Skip" behavior (discrepancy fix)
+                # Training uses scale=0.0 (no update) but runs the layer (static output).
+                # Evaluation previously skipped the layer entirely (output=0), creating skew.
+                gating_scale = jnp.array([[scale]])
+                outputs = self._call_model(padded_input, use_ttt=True, gating_scale=gating_scale)
             else:
                 outputs = self._call_model(padded_input, use_ttt=False, gating_scale=None)
             
@@ -299,11 +299,9 @@ class SimpleGenerator:
                 else:
                     scales = _gating_forward_jit(self.gating_net, features, train=False)[:, 0]
 
-                if jnp.any(scales > 0.01):
-                    gating_scale = scales[:, None]
-                    outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
-                else:
-                    outputs = out_base
+                # Fix: Always use TTT to match training "Soft Skip" behavior
+                gating_scale = scales[:, None]
+                outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
             else:
                 outputs = self._call_model(input_tensor, use_ttt=False, gating_scale=None)
             
@@ -440,8 +438,9 @@ def main():
                 print(f"Not a Differentiable Training checkpoint ({e_loose}), trying Baseline...")
                 try:
                     # Try loading as Baseline checkpoint (Model structure)
-                    # Load without target
-                    ckpt = load_checkpoint(args.checkpoint, target=None)
+                    # Use correct target for sharding
+                    target = {"state": {"model": nnx.state(model)}}
+                    ckpt = load_checkpoint(args.checkpoint, target=target)
                     
                     if "state" in ckpt and "model" in ckpt["state"]:
                         nnx.update(model, ckpt["state"]["model"])

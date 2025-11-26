@@ -34,7 +34,7 @@ class PIDController:
     kp: float = 0.1
     ki: float = 0.01
     kd: float = 0.01
-    lambda_value: float = 1.0
+    lambda_value: float = 0.0  # Start at 0 to let policy explore before penalizing
     integral: float = 0.0
     previous_error: float = 0.0
     lambda_max: float = 10.0
@@ -156,7 +156,7 @@ class PIDLagrangianPPO:
         )
         policy_loss = -jnp.mean(jnp.minimum(surr1, surr2))
 
-        # Value loss with optional clipping (matches train_policy.py style)
+        # Value loss with optional clipping (use maximum for conservative estimate)
         value_pred_clipped = values + jnp.clip(values - returns, -self.clip_epsilon, self.clip_epsilon)
         value_losses = jnp.square(values - returns)
         value_losses_clipped = jnp.square(value_pred_clipped - returns)

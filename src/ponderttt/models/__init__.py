@@ -16,6 +16,7 @@ from .gpt2_nnx import GPT2Config, GPT2LMHeadModel, GPT2Model, load_gpt2_model
 from .lora_layer_nnx import LoRAConfig, LoRALayer, count_lora_parameters
 from .policy_nnx import PolicyConfig, PolicyNetwork, action_to_cost, action_to_name
 from .ttt_layer_nnx import TTTConfig, TTTLayer
+from .gating_nnx import GatingConfig, GatingNetwork
 
 # Legacy Linen implementations (deprecated, kept for compatibility)
 # These will be removed in future versions
@@ -41,4 +42,6 @@ __all__ = [
     "GPT2LMHeadModel",
     "GPT2Config",
     "load_gpt2_model",
+    "GatingNetwork",
+    "GatingConfig",
 ]
