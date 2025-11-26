@@ -3,14 +3,28 @@ Code generation benchmarks (HumanEval, MBPP).
 """
 
 import os
+import signal
 import warnings
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterable
 
 from tqdm import tqdm
 
 from .metrics import compute_pass_at_k
+
+
+@contextmanager
+def time_limit(seconds):
+    def signal_handler(signum, frame):
+        raise TimeoutError("Timed out!")
+    signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
 
 
 @dataclass
@@ -227,7 +241,7 @@ class BenchmarkSuite:
         return self.benchmarks.get(name)
 
 
-def _check_solution(problem: CodeProblem, completion: str) -> bool:
+def _check_solution(problem: CodeProblem, completion: str, timeout: int = 3) -> bool:
     """Execute completion+tests to determine correctness."""
     if os.environ.get("PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS") != "1":
         raise RuntimeError(
@@ -239,10 +253,11 @@ def _check_solution(problem: CodeProblem, completion: str) -> bool:
     source = f"{problem.prompt}\n{completion}\n"
 
     try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=SyntaxWarning)
-            exec(compile(source, "<completion>", "exec"), namespace, namespace)  # noqa: S102
-            exec(compile(problem.test_code, "<tests>", "exec"), namespace, namespace)  # noqa: S102
+        with time_limit(timeout):
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=SyntaxWarning)
+                exec(compile(source, "<completion>", "exec"), namespace, namespace)  # noqa: S102
+                exec(compile(problem.test_code, "<tests>", "exec"), namespace, namespace)  # noqa: S102
         return True
     except Exception:
         return False

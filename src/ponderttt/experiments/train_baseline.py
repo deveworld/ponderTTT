@@ -138,8 +138,15 @@ def action_to_steps(action: str) -> int:
 
 
 def action_to_cost(action: str) -> float:
-    """Convert action name to computational cost multiplier."""
-    mapping = {"SKIP": 1.0, "UPDATE_1": 3.0, "UPDATE_2": 6.0, "UPDATE_4": 12.0}
+    """Convert action name to computational cost multiplier.
+
+    Cost model: 1 (base forward) + 2 * num_steps (backward + update per step)
+    - SKIP: 1 + 2*0 = 1.0
+    - UPDATE_1: 1 + 2*1 = 3.0
+    - UPDATE_2: 1 + 2*2 = 5.0
+    - UPDATE_4: 1 + 2*4 = 9.0
+    """
+    mapping = {"SKIP": 1.0, "UPDATE_1": 3.0, "UPDATE_2": 5.0, "UPDATE_4": 9.0}
     return mapping[action]
 
 
@@ -305,13 +312,6 @@ def main():
     print("\nStarting training...")
     print(f"Processing {args.max_chunks} chunks...")
 
-    # Capture initial state for fast weights
-    _, fast_state_template = nnx.split(model.fast_layer)
-
-    def reset_fast_weights():
-        # Update existing layer with initial state instead of replacing module
-        nnx.update(model.fast_layer, fast_state_template)
-
     seed_results = []
 
     for seed in seeds:
@@ -327,10 +327,6 @@ def main():
 
         # Create optimizer once per seed
         optimizer = create_optimizer()
-        # Capture initial optimizer state
-        _, initial_opt_state = nnx.split(optimizer)
-        
-        reset_fast_weights()
         
         start_chunk = 0
         
@@ -359,13 +355,28 @@ def main():
             num_workers=args.num_workers,
         )
 
-        total_loss = 0.0
+        # Data skipping logic for resume
+        chunks_per_seq = seq_length // chunk_size
+        batches_to_skip = start_chunk // chunks_per_seq
+        remainder_chunks = start_chunk % chunks_per_seq
+        
+        if batches_to_skip > 0:
+            print(f"Skipping {batches_to_skip} batches to resume from chunk {start_chunk}...")
+            for _ in range(batches_to_skip):
+                try:
+                    next(data_iter)
+                except StopIteration:
+                    print("Warning: Data iterator exhausted during skipping!")
+                    break
+        
+        first_batch = True
+
+        total_loss_ce = 0.0
+        total_loss_total = 0.0
         total_cost = 0.0
         chunks_processed = start_chunk
 
         print(f"\n=== Running seed {seed} ===")
-        if start_chunk > 0:
-            print(f"Skipping {start_chunk} chunks (approximation)...")
 
         with tqdm(total=args.max_chunks, initial=start_chunk, desc=f"Training seed {seed}") as pbar:
             while chunks_processed < args.max_chunks:
@@ -377,6 +388,10 @@ def main():
 
                 num_chunks_available = batch["chunks"].shape[1]
                 for chunk_idx in range(num_chunks_available):
+                    # Skip already processed chunks in the first batch after resume
+                    if first_batch and chunk_idx < remainder_chunks:
+                        continue
+
                     if chunks_processed >= args.max_chunks:
                         break
 
@@ -389,11 +404,6 @@ def main():
                             dtype=jnp.int32
                         )[None, :].repeat(batch["chunks"].shape[0], axis=0)
                     }
-
-                    if chunk_idx == 0:
-                        reset_fast_weights()
-                        # Reset optimizer state instead of creating new optimizer
-                        nnx.update(optimizer, initial_opt_state)
 
                     # Check for valid tokens
                     num_valid_tokens = jnp.sum(chunk_batch["attention_mask"][:, 1:])
@@ -424,17 +434,19 @@ def main():
                     assert metrics is not None
                     
                     # Check for stability
-                    if not jnp.isfinite(metrics["loss"]) or metrics["loss"] > 20.0:
-                        print(f"Warning: Skipping unstable chunk (loss={metrics['loss']:.4f})")
+                    if not jnp.isfinite(metrics["loss_ce"]) or metrics["loss_ce"] > 20.0:
+                        print(f"Warning: Skipping unstable chunk (loss={metrics['loss_ce']:.4f})")
                         continue
                         
-                    total_loss += metrics["loss"]
+                    total_loss_ce += metrics["loss_ce"]
+                    total_loss_total += metrics["loss_total"]
                     total_cost += cost_multiplier
                     chunks_processed += 1
 
                     pbar.set_postfix(
                         {
-                            "loss": f"{metrics['loss']:.4f}",
+                            "loss_ce": f"{metrics['loss_ce']:.4f}",
+                            "loss_total": f"{metrics['loss_total']:.4f}",
                             "ppl": f"{metrics['perplexity']:.2f}",
                         }
                     )
@@ -443,16 +455,21 @@ def main():
                     # WandB Log
                     if args.wandb_project:
                         wandb.log({
-                            f"seed_{seed}/loss": metrics['loss'],
+                            f"seed_{seed}/loss_total": metrics['loss_total'],
+                            f"seed_{seed}/loss_ce": metrics['loss_ce'],
+                            f"seed_{seed}/loss_aux": metrics['loss_aux'],
                             f"seed_{seed}/perplexity": metrics['perplexity'],
                             "chunks": chunks_processed,
                         })
 
                     if chunks_processed % 10 == 0:
-                        avg_loss = total_loss / (chunks_processed - start_chunk + 1e-6)
-                        avg_ppl = math.exp(avg_loss)
+                        denom = chunks_processed - start_chunk + 1e-6
+                        avg_ce_loss = total_loss_ce / denom
+                        avg_total_loss = total_loss_total / denom
+                        avg_ppl = math.exp(avg_ce_loss)
                         print(f"\nChunk {chunks_processed}/{args.max_chunks}:")
-                        print(f"  Average loss (since start): {avg_loss:.4f}")
+                        print(f"  Average CE loss (since start): {avg_ce_loss:.4f}")
+                        print(f"  Average total loss (since start): {avg_total_loss:.4f}")
                         print(f"  Average perplexity: {avg_ppl:.2f}")
                         
                     # Periodic Checkpoint
@@ -465,16 +482,22 @@ def main():
                             state={"model": nnx.state(model), "optimizer": nnx.state(optimizer)},
                             metadata={"chunks": chunks_processed},
                         )
+                
+                first_batch = False
 
         if chunks_processed > 0:
-            final_avg_loss = total_loss / (chunks_processed - start_chunk + 1e-6)
-            final_avg_ppl = math.exp(final_avg_loss)
+            denom = chunks_processed - start_chunk + 1e-6
+            final_avg_ce_loss = total_loss_ce / denom
+            final_avg_total_loss = total_loss_total / denom
+            final_avg_ppl = math.exp(final_avg_ce_loss)
 
             seed_results.append(
                 {
                     'seed': seed,
                     'chunks_processed': chunks_processed,
-                    'final_loss': final_avg_loss,
+                    'final_loss': final_avg_ce_loss,
+                    'final_loss_ce': final_avg_ce_loss,
+                    'final_loss_total': final_avg_total_loss,
                     'final_perplexity': final_avg_ppl,
                     'total_cost': total_cost,
                     'avg_cost_per_chunk': total_cost / chunks_processed,
@@ -489,7 +512,9 @@ def main():
                 'num_ttt_steps': num_ttt_steps,
                 'cost_multiplier': cost_multiplier,
                 'chunks_processed': chunks_processed,
-                'final_loss': final_avg_loss,
+                'final_loss': final_avg_ce_loss,
+                'final_loss_ce': final_avg_ce_loss,
+                'final_loss_total': final_avg_total_loss,
                 'final_perplexity': final_avg_ppl,
                 'learning_rate': args.learning_rate,
                 'seed': seed,

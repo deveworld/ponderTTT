@@ -385,6 +385,7 @@ def main():
                             "attention_mask": batch["chunk_attention_mask"][:, idx, :],
                         },
                         idx == 0,
+                        idx == num_chunks - 1, # is_last_chunk
                     )
 
         def get_chunk_batch():
@@ -410,8 +411,11 @@ def main():
             rollout_values = []
             rollout_rewards = []
             rollout_costs = []
+            rollout_dones = []
 
-            costs_map = jnp.array([1.0, 3.0, 6.0, 12.0])
+            # Cost model: 1 (base forward) + 2 * num_steps
+            # SKIP=1, UPDATE_1=3, UPDATE_2=5, UPDATE_4=9
+            costs_map = jnp.array([1.0, 3.0, 5.0, 9.0])
             step_map = [0, 1, 2, 4]
             cost_accumulator = 0.0
             chunks_collected = 0
@@ -420,7 +424,7 @@ def main():
             with tqdm(total=args.rollout_length, desc="Collecting rollout") as pbar:
                 while chunks_collected < args.rollout_length:
                     try:
-                        chunk_batch, is_new_sequence = get_chunk_batch()
+                        chunk_batch, is_new_sequence, is_last_chunk = get_chunk_batch()
                     except StopIteration:
                         exhausted = True
                         break
@@ -473,7 +477,7 @@ def main():
                     cost = float(costs_map[action_idx])
 
                     if action_steps == 0:
-                        loss_after = float(loss_baseline)
+                        loss_after_ce = float(loss_baseline)
                     else:
                         metrics = None
                         for _ in range(action_steps):
@@ -486,9 +490,9 @@ def main():
                                 ssl_weight=args.ssl_weight,
                             )
                         assert metrics is not None
-                        loss_after = metrics["loss"]
+                        loss_after_ce = metrics["loss_ce"]
 
-                    quality_improvement = float(loss_baseline) - loss_after
+                    quality_improvement = float(loss_baseline) - loss_after_ce
                     reward = quality_improvement
                     cost_accumulator += cost
 
@@ -500,6 +504,7 @@ def main():
                     rollout_values.append(policy_output["value"])
                     rollout_rewards.append(jnp.full((batch_size,), reward))
                     rollout_costs.append(jnp.full((batch_size,), cost))
+                    rollout_dones.append(jnp.full((batch_size,), is_last_chunk))
 
                     chunks_collected += 1
                     pbar.update(1)
@@ -529,9 +534,10 @@ def main():
             rollout_values_array = jnp.reshape(jnp.stack(rollout_values), (-1,))
             rollout_rewards_array = jnp.reshape(jnp.stack(rollout_rewards), (-1,))
             rollout_costs_array = jnp.reshape(jnp.stack(rollout_costs), (-1,))
+            rollout_dones_array = jnp.reshape(jnp.stack(rollout_dones), (-1,)).astype(jnp.float32)
 
-            # Create dones array (all False for continuous rollout)
-            dones_array = jnp.zeros_like(rollout_rewards_array)
+            # Create dones array (now using collected dones)
+            dones_array = rollout_dones_array
 
             # Cost-aware rewards
             adjusted_rewards = rollout_rewards_array - pid.lambda_value * rollout_costs_array

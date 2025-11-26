@@ -296,18 +296,25 @@ class GPT2LMHeadModel(nnx.Module):
         if not tie_word_embeddings:
             self.lm_head = nnx.Linear(config.n_embd, config.vocab_size, use_bias=False, rngs=rngs)
 
-    def __call__(self, input_ids: jax.Array, *, train: bool = False) -> jax.Array:
+    def __call__(
+        self,
+        input_ids: jax.Array,
+        position_ids: jax.Array | None = None,
+        *,
+        train: bool = False
+    ) -> jax.Array:
         """Forward pass with language modeling head.
 
         Args:
             input_ids: Token IDs [batch, seq_len]
+            position_ids: Position IDs [batch, seq_len]
             train: Whether to enable dropout
 
         Returns:
             Logits [batch, seq_len, vocab_size]
         """
         # Get hidden states from transformer
-        hidden_states = self.transformer(input_ids, train=train)
+        hidden_states = self.transformer(input_ids, position_ids=position_ids, train=train)
 
         # Compute logits
         if self.tie_word_embeddings:
@@ -326,7 +333,12 @@ def load_gpt2_model(
     tie_word_embeddings: bool = True,
     seed: int = 0
 ) -> tuple[GPT2LMHeadModel, GPT2Config]:
-    """Create GPT-2 model with random initialization.
+    """Create GPT-2 model with random initialization (no pretrained weights).
+
+    Note: This function initializes the model with random weights, not pretrained weights.
+    For pretrained weights, use `load_ttt_model` from base_model_nnx.py with
+    `load_pretrained=True`, or manually call `load_huggingface_weights` from
+    checkpoint_converter.py.
 
     Args:
         model_name: Model variant (gpt2, gpt2-medium, gpt2-large, gpt2-xl)

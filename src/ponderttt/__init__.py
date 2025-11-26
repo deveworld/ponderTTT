@@ -4,7 +4,7 @@ PonderTTT: Learning When to Ponder During Test-Time Training
 JAX/Flax implementation for TPU optimization.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from . import data, models, training, utils
 

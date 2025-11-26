@@ -94,7 +94,9 @@ def evaluate_model(
     }
     
     step_map = [0, 1, 2, 4]
-    costs_map = [1.0, 3.0, 6.0, 12.0]
+    # Cost model: 1 (base forward) + 2 * num_steps
+    # SKIP=1, UPDATE_1=3, UPDATE_2=5, UPDATE_4=9
+    costs_map = [1.0, 3.0, 5.0, 9.0]
     
     # Evaluation Loop
     for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):

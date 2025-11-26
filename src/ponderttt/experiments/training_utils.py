@@ -37,7 +37,8 @@ def _forward(model: ChunkModel, batch: dict, use_ttt: bool, ssl_weight: float):
     labels = batch["input_ids"][:, 1:]
     mask = batch["attention_mask"][:, 1:]
 
-    loss = cross_entropy_loss(logits_for_loss, labels, mask)
+    ce_loss = cross_entropy_loss(logits_for_loss, labels, mask)
+    aux_loss = jnp.array(0.0)
     if use_ttt and ssl_weight > 0 and ttt_stats:
         ssl_terms = [
             ttt_stats.get("ttt_loss_init"),
@@ -48,24 +49,26 @@ def _forward(model: ChunkModel, batch: dict, use_ttt: bool, ssl_weight: float):
         ssl_values = [x.mean() for x in ssl_terms if x is not None]
         if ssl_values:
             ssl_loss = sum(ssl_values) / len(ssl_values)
-            loss = loss + ssl_weight * ssl_loss
+            aux_loss = ssl_weight * ssl_loss
 
-    return loss, ttt_stats
+    return (ce_loss, jnp.asarray(aux_loss)), ttt_stats
 
 
-def metrics_from_loss(loss: jnp.ndarray, ttt_stats: dict | None) -> dict[str, float]:
-    if not jnp.isfinite(loss):
-        # In JIT code, raising error might be tricky, usually we return nan loss and handle outside
-        # But since metrics_from_loss is called outside JIT usually (after device_get), it's fine.
-        # Wait, run_chunk_step calls this. If run_chunk_step is NOT jitted but calls jitted functions,
-        # the output loss is a JAX array. We should probably let the caller handle non-finite checks
-        # or ensure this function handles JIT tracer delays if inside JIT.
-        # For now, assuming run_chunk_step is the python wrapper.
+def metrics_from_losses(
+    ce_loss: jnp.ndarray,
+    aux_loss: jnp.ndarray,
+    ttt_stats: dict | None,
+) -> dict[str, float]:
+    if not jnp.isfinite(ce_loss + aux_loss):
+        # See note above regarding non-finite handling.
         pass
-    
-    perplexity = jnp.exp(loss)
+
+    total_loss = ce_loss + aux_loss
+    perplexity = jnp.exp(ce_loss)
     metrics: dict[str, float] = {
-        "loss": float(loss),
+        "loss_total": float(total_loss),
+        "loss_ce": float(ce_loss),
+        "loss_aux": float(aux_loss),
         "perplexity": float(perplexity),
     }
 
@@ -83,14 +86,16 @@ def train_step_jit(
     batch: dict,
     use_ttt: bool,
     ssl_weight: float,
-) -> tuple[jax.Array, dict]:
+) -> tuple[jax.Array, jax.Array, jax.Array, dict]:
     """JIT-compiled training step."""
     def loss_fn(model):
-        return _forward(model, batch, use_ttt, ssl_weight)
+        (ce_loss, aux_loss), ttt_stats = _forward(model, batch, use_ttt, ssl_weight)
+        loss = ce_loss + aux_loss
+        return loss, (ce_loss, aux_loss, ttt_stats)
 
-    (loss, ttt_stats), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    (loss, (ce_loss, aux_loss, ttt_stats)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     optimizer.update(model, grads)
-    return loss, ttt_stats
+    return loss, ce_loss, aux_loss, ttt_stats
 
 
 @nnx.jit(static_argnames=("use_ttt", "ssl_weight"))
@@ -99,9 +104,11 @@ def eval_step_jit(
     batch: dict,
     use_ttt: bool,
     ssl_weight: float,
-) -> tuple[jax.Array, dict]:
+) -> tuple[jax.Array, jax.Array, jax.Array, dict]:
     """JIT-compiled evaluation step."""
-    return _forward(model, batch, use_ttt, ssl_weight)
+    (ce_loss, aux_loss), ttt_stats = _forward(model, batch, use_ttt, ssl_weight)
+    total_loss = ce_loss + aux_loss
+    return total_loss, ce_loss, aux_loss, ttt_stats
 
 
 def run_chunk_step(
@@ -117,10 +124,14 @@ def run_chunk_step(
     Wraps JIT-compiled steps.
     """
     if apply_update and optimizer is not None:
-        loss, ttt_stats = train_step_jit(model, optimizer, batch, use_ttt, ssl_weight)
+        loss, ce_loss, aux_loss, ttt_stats = train_step_jit(
+            model, optimizer, batch, use_ttt, ssl_weight
+        )
     else:
-        loss, ttt_stats = eval_step_jit(model, batch, use_ttt, ssl_weight)
+        loss, ce_loss, aux_loss, ttt_stats = eval_step_jit(
+            model, batch, use_ttt, ssl_weight
+        )
     
     # Block until ready to ensure timing is correct if needed, but usually handled by iterator
     # Converting to python float in metrics_from_loss triggers sync.
-    return metrics_from_loss(loss, ttt_stats)
+    return metrics_from_losses(ce_loss, aux_loss, ttt_stats)

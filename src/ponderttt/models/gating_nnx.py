@@ -35,12 +35,19 @@ class GatingNetwork(nnx.Module):
         self.config = config
 
         # Shared feature extraction
+        self.input_norm = nnx.LayerNorm(config.feature_dim, rngs=rngs)
         self.fc1 = nnx.Linear(config.feature_dim, config.hidden_dim, rngs=rngs)
         self.dropout = nnx.Dropout(config.dropout_rate, rngs=rngs)
         self.fc2 = nnx.Linear(config.hidden_dim, config.hidden_dim, rngs=rngs)
         
         # Output projection (scalar)
-        self.head = nnx.Linear(config.hidden_dim, 1, rngs=rngs)
+        # Initialize bias to negative value to encourage starting with low updates (soft skip)
+        self.head = nnx.Linear(
+            config.hidden_dim, 
+            1, 
+            bias_init=nnx.initializers.constant(-2.0),
+            rngs=rngs
+        )
 
     def __call__(
         self,
@@ -60,6 +67,9 @@ class GatingNetwork(nnx.Module):
         # Flatten inputs
         B = features.shape[0]
         x = features.astype(jnp.float32).reshape(B, -1)
+
+        # Normalize features
+        x = self.input_norm(x)
 
         x = self.fc1(x)
         x = jax.nn.relu(x)

@@ -22,6 +22,21 @@ from ..utils import FeatureExtractor, extract_features
 from ..utils.checkpointing import load_checkpoint
 
 
+@nnx.jit(static_argnames=("use_ttt",))
+def _model_forward_jit(model, input_ids, use_ttt, gating_scale):
+    return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
+
+
+@nnx.jit(static_argnames=("deterministic",))
+def _policy_forward_jit(net, x, deterministic):
+    return net(x, deterministic=deterministic)
+
+
+@nnx.jit(static_argnames=("train",))
+def _gating_forward_jit(net, x, train):
+    return net(x, train=train)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run benchmarks (Debug Mode)")
     parser.add_argument(
@@ -68,21 +83,6 @@ class SimpleGenerator:
             seq_length_norm=512,
         )
 
-        @nnx.jit(static_argnames=("use_ttt",))
-        def model_forward(model, input_ids, use_ttt, gating_scale):
-            return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
-        self.model_forward = model_forward
-
-        @nnx.jit(static_argnames=("deterministic",))
-        def policy_forward(net, x, deterministic):
-            return net(x, deterministic=deterministic)
-        self.policy_forward = policy_forward
-
-        @nnx.jit(static_argnames=("train",))
-        def gating_forward(net, x, train):
-            return net(x, train=train)
-        self.gating_forward = gating_forward
-        
         vocab_size = tokenizer.get_vocab_size()
         pad_id = self.pad_token_id
         
@@ -103,7 +103,7 @@ class SimpleGenerator:
         batch_size = input_tensor.shape[0]
         if gating_scale is None:
             gating_scale = jnp.zeros((batch_size, 1), dtype=jnp.float32)
-        return self.model_forward(self.model, input_tensor, use_ttt=use_ttt, gating_scale=gating_scale)
+        return _model_forward_jit(self.model, input_tensor, use_ttt=use_ttt, gating_scale=gating_scale)
 
     def _truncate_context(self, token_ids: list[int]) -> list[int]:
         if len(token_ids) <= self.max_seq_len:
@@ -160,14 +160,11 @@ class SimpleGenerator:
                 
             input_tensor = jnp.array(padded_input_ids, dtype=jnp.int32)
             mask_tensor = jnp.array(attention_masks, dtype=jnp.int32)
-            
-            use_ttt = False
-            gating_scale = None
-            
+
+            gating_scale = None            
             if self.force_scale is not None:
                 scale = self.force_scale
                 if scale > 0.001:
-                    use_ttt = True
                     gating_scale = jnp.full((batch_size, 1), scale, dtype=jnp.float32)
                     outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
                 else:
@@ -180,15 +177,14 @@ class SimpleGenerator:
                     attention_mask=mask_tensor
                 )
                 if hasattr(self.gating_net, "evaluate_actions"):
-                    policy_out = self.policy_forward(self.gating_net, features, deterministic=True)
+                    policy_out = _policy_forward_jit(self.gating_net, features, deterministic=True)
                     actions = policy_out["action"]
                     step_map = jnp.array([0.0, 1.0, 2.0, 4.0])
                     scales = step_map[actions.astype(int)]
                 else:
-                    scales = self.gating_forward(self.gating_net, features, train=False)[:, 0]
+                    scales = _gating_forward_jit(self.gating_net, features, train=False)[:, 0]
 
                 if jnp.any(scales > 0.01):
-                    use_ttt = True
                     gating_scale = scales[:, None]
                     outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
                 else:
@@ -196,7 +192,7 @@ class SimpleGenerator:
             else:
                 outputs = self._call_model(input_tensor, use_ttt=False, gating_scale=None)
             
-            indices = jnp.array([l - 1 for l in current_lens])
+            indices = jnp.array([length - 1 for length in current_lens])
             next_token_logits = outputs["logits"][jnp.arange(batch_size), indices, :]
             
             if temperature > 0:

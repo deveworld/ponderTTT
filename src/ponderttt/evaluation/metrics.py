@@ -60,11 +60,12 @@ def compute_flops(
     Returns:
         Total FLOPs multiplier
     """
+    # Cost model: 1 (base forward) + 2 * num_steps
     action_costs = {
-        "SKIP": 1.0,
-        "UPDATE_1": 3.0,
-        "UPDATE_2": 6.0,
-        "UPDATE_4": 12.0,
+        "SKIP": 1.0,      # 1 + 2*0 = 1
+        "UPDATE_1": 3.0,  # 1 + 2*1 = 3
+        "UPDATE_2": 5.0,  # 1 + 2*2 = 5
+        "UPDATE_4": 9.0,  # 1 + 2*4 = 9
     }
 
     total_cost = sum(action_costs.get(action, 1.0) for action in actions)

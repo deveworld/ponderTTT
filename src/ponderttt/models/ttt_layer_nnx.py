@@ -378,7 +378,7 @@ class TTTLayer(nnx.Module):
         """
         W1_init, b1_init = ttt_params_mini_batch_init
         square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
-        last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
+        # last_eta_in_mini_batch was incorrect and is no longer used
 
         X1 = XK_mini_batch
 
@@ -412,16 +412,22 @@ class TTTLayer(nnx.Module):
         # Causal processing with updated weights
         X1_bar = XQ_mini_batch
         Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0))  # Causal mask!
-        b1_bar = b1_init - (square_eta_mini_batch * jnp.tril(jnp.ones_like(Attn1))) @ grad_l_wrt_Z1
-        Z1_bar = X1_bar @ W1_init - (square_eta_mini_batch * Attn1) @ grad_l_wrt_Z1 + b1_bar
+        
+        # Fix: Scale columns by eta (eta_k), not rows (eta_t)
+        # square_eta_mini_batch is [M, 1], we need [1, M] for broadcasting over columns
+        eta_row = square_eta_mini_batch.reshape(1, -1)
+        
+        b1_bar = b1_init - (jnp.tril(jnp.ones_like(Attn1)) * eta_row) @ grad_l_wrt_Z1
+        Z1_bar = X1_bar @ W1_init - (Attn1 * eta_row) @ grad_l_wrt_Z1 + b1_bar
         ttt_norm_out_bar = ttt_norm_fn(Z1_bar)
 
         # Output with residual connection
         output_mini_batch = X1_bar + ttt_norm_out_bar
 
         # Weight update for next mini-batch
-        W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
-        b1_bar_last = b1_init - jnp.sum(last_eta_in_mini_batch * grad_l_wrt_Z1, axis=0, keepdims=True)
+        # Fix: Use all etas in mini-batch, not just the last one
+        W1_bar_last = W1_init - (eta_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
+        b1_bar_last = b1_init - jnp.sum(eta_mini_batch * grad_l_wrt_Z1, axis=0, keepdims=True)
 
         # Calculate ttt loss with updated weights
         if self.config.output_ttt_stats:
