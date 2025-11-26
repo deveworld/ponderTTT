@@ -480,21 +480,26 @@ def main():
                     )
                     batch_size = chunk_batch["input_ids"].shape[0]
 
-                    policy_rng, action_key = jax.random.split(policy_rng)
-                    policy_output = policy(
-                        features,
-                        deterministic=False,
-                        rng=action_key,
-                    )
+            policy_rng, action_key = jax.random.split(policy_rng)
+            policy_output = policy(
+                features,
+                deterministic=False,
+                return_logits=True,
+                rng=action_key,
+            )
 
-                    actions = policy_output["action"]
-                    if not jnp.all(actions == actions[0]):
-                        raise ValueError(
-                            "All actions in the batch must match. Use batch_size=1 or ensure identical actions."
-                        )
-                    action_idx = int(actions[0])
-                    action_steps = step_map[action_idx]
-                    cost = float(costs_map[action_idx])
+            actions = policy_output["action"]
+            action_idx = int(actions[0])
+            if not jnp.all(actions == action_idx):
+                # Enforce a single action for the whole batch (use first action)
+                actions = jnp.full_like(actions, action_idx)
+                log_probs = jax.nn.log_softmax(policy_output["logits"], axis=-1)
+                policy_output["action"] = actions
+                policy_output["log_prob"] = jnp.take_along_axis(
+                    log_probs, actions[:, None], axis=-1
+                ).squeeze(-1)
+            action_steps = step_map[action_idx]
+            cost = float(costs_map[action_idx])
 
                     if action_steps == 0:
                         loss_after_ce = float(loss_baseline)
