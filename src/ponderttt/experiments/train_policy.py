@@ -206,9 +206,10 @@ def main():
     chunk_size = 512
     chunks_per_sequence = max(1, seq_length // chunk_size)
 
-    # Estimate examples needed (2x safety margin)
-    examples_per_iteration = math.ceil(args.rollout_length / chunks_per_sequence) * batch_size
-    num_examples = examples_per_iteration * args.num_iterations * 2
+    # Estimate examples needed (align max_examples formula with baseline)
+    total_chunks = args.num_iterations * args.rollout_length
+    examples_needed = math.ceil(total_chunks / chunks_per_sequence)
+    max_examples = examples_needed * batch_size
 
     def build_data_iter():
         return create_data_iterator(
@@ -217,7 +218,7 @@ def main():
             batch_size=batch_size,
             seq_length=seq_length,
             chunk_size=chunk_size,
-            max_examples=num_examples,
+            max_examples=max_examples,
             num_workers=args.num_workers,
         )
 
