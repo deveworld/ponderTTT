@@ -245,14 +245,56 @@ class CodeDataset:
 
         # Use ThreadPoolExecutor to prefetch and process examples in parallel
         # This significantly speeds up streaming when cache_data=False
+        # We use a bounded buffer to prevent memory exhaustion while keeping workers busy
+        
+        iterator = example_generator()
         with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-            # map returns an iterator that yields results as they complete (if using as_completed logic)
-            # or in order. executor.map preserves order.
-            # For training data, order doesn't strictly matter, but map is convenient.
-            # We use a reasonable chunksize to keep workers busy.
-            for processed in executor.map(self._process_example, example_generator()):
-                if processed is not None:
-                    yield processed
+            futures = []
+            
+            # Initial fill of the pipeline
+            for _ in range(self.num_workers * 2):
+                try:
+                    item = next(iterator)
+                    futures.append(executor.submit(self._process_example, item))
+                except StopIteration:
+                    break
+            
+            while futures:
+                # Wait for the first completed future
+                # Note: as_completed yields futures as they complete
+                # We use a small batch approach to replenish the pool
+                
+                done_futures = []
+                # Check for completed futures without blocking too long on any single one
+                # But we need to yield results in order or out of order?
+                # Out of order is fine for training data.
+                
+                # Simple strategy: wait for at least one, then collect all currently done
+                # and replenish.
+                
+                # Using as_completed on the current set of futures
+                # We need to be careful not to create a new as_completed iterator every loop
+                # if we are modifying the list.
+                
+                # Better approach: Use a list of futures and check them, or use a queue.
+                # Since we want to use ThreadPoolExecutor, let's use a simple loop with wait.
+                from concurrent.futures import wait, FIRST_COMPLETED
+                
+                done, not_done = wait(futures, return_when=FIRST_COMPLETED)
+                
+                for future in done:
+                    result = future.result()
+                    if result is not None:
+                        yield result
+                    
+                    # Submit a new task for each completed one to keep pool full
+                    try:
+                        item = next(iterator)
+                        not_done.add(executor.submit(self._process_example, item))
+                    except StopIteration:
+                        pass
+                
+                futures = list(not_done)
 
 
 def create_data_iterator(
