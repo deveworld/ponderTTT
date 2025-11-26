@@ -371,41 +371,41 @@ def create_data_iterator(
         print(f"Cache not found. Downloading with {num_workers} parallel workers...")
         from tqdm import tqdm
 
-        # Collect raw examples first
+        # Collect and process in parallel
         total_examples = max_examples if max_examples else batch_size * 100
-        raw_examples = []
-
-        for repo in dataset.dataset:
-            if isinstance(repo, dict) and "files" in repo:
-                for file_info in repo["files"]:
-                    if file_info.get("language") == dataset.language:
-                        raw_examples.append(file_info)
-                        if len(raw_examples) >= total_examples:
-                            break
-            if len(raw_examples) >= total_examples:
-                break
-
-        print(f"Processing {len(raw_examples)} examples in parallel...")
-
-        # Process examples in parallel
-        processed_examples: list[dict[str, np.ndarray] | None] = [None] * len(
-            raw_examples
-        )
+        processed_examples = []
+        
+        print(f"Scanning and downloading {total_examples} examples in parallel...")
+        from threading import Lock
+        pbar_lock = Lock()
+        
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            # Submit all processing jobs
-            futures = {
-                executor.submit(dataset._process_example, example): i
-                for i, example in enumerate(raw_examples)
-            }
+            futures = []
+            
+            with tqdm(total=total_examples, desc="Downloading") as pbar:
+                def update_pbar(f):
+                    with pbar_lock:
+                        pbar.update(1)
 
-            # Collect results with progress bar
-            for future in tqdm(
-                as_completed(futures), total=len(futures), desc="Downloading"
-            ):
-                idx = futures[future]
-                result = future.result()
-                if result is not None:
-                    processed_examples[idx] = result
+                for repo in dataset.dataset:
+                    if isinstance(repo, dict) and "files" in repo:
+                        for file_info in repo["files"]:
+                            if file_info.get("language") == dataset.language:
+                                future = executor.submit(dataset._process_example, file_info)
+                                future.add_done_callback(update_pbar)
+                                futures.append(future)
+                                
+                                if len(futures) >= total_examples:
+                                    break
+                    if len(futures) >= total_examples:
+                        break
+            
+            # Collect results
+            print("Waiting for remaining downloads...")
+            for f in futures:
+                res = f.result()
+                if res is not None:
+                    processed_examples.append(res)
 
         print(f"Successfully processed {len(processed_examples)} examples")
 

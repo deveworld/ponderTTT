@@ -158,6 +158,11 @@ def parse_args():
         default=None,
         help="Optional override for data cache size (defaults to required minimum)",
     )
+    parser.add_argument(
+        "--no_cache",
+        action="store_true",
+        help="Disable data caching (streaming mode)",
+    )
 
     return parser.parse_args()
 
@@ -239,6 +244,7 @@ def main():
             chunk_size=chunk_size,
             max_examples=max_examples,
             num_workers=args.num_workers,
+            cache_data=not args.no_cache,
         )
 
     # Initialize policy network
