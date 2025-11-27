@@ -642,15 +642,20 @@ def main():
             # Create dones array (now using collected dones)
             dones_array = rollout_dones_array
 
-            # Cost-aware rewards
-            adjusted_rewards = rollout_rewards_array - pid.lambda_value * rollout_costs_array
+            # Normalize rewards and costs separately to ensure balanced contribution
+            # 1. Normalize task rewards
+            rew_mean = jnp.mean(rollout_rewards_array)
+            rew_std = jnp.std(rollout_rewards_array) + 1e-8
+            norm_rewards = (rollout_rewards_array - rew_mean) / rew_std
+            
+            # 2. Normalize costs
+            cost_mean = jnp.mean(rollout_costs_array)
+            cost_std = jnp.std(rollout_costs_array) + 1e-8
+            norm_costs = (rollout_costs_array - cost_mean) / cost_std
 
-            # Normalize rewards for stability (Fix for scale mismatch)
-            # This ensures that the value function targets are well-scaled (N(0,1))
-            # while preserving the relative order of preferences induced by lambda.
-            rew_mean = jnp.mean(adjusted_rewards)
-            rew_std = jnp.std(adjusted_rewards) + 1e-8
-            adjusted_rewards = (adjusted_rewards - rew_mean) / rew_std
+            # 3. Combine: Adjusted Reward = Norm(Reward) - Lambda * Norm(Cost)
+            # This ensures Lambda acts on a standard scale (N(0,1)) for both terms.
+            adjusted_rewards = norm_rewards - pid.lambda_value * norm_costs
 
             # Compute advantages and returns using GAE (with jax.lax.scan)
             advantages, returns = compute_gae(
