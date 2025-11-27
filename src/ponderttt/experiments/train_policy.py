@@ -395,7 +395,7 @@ def main():
             ki=0.005,   # Increased from 0.0005
             kd=0.01,
             lambda_value=0.0, # Start with no penalty
-            lambda_max=5.0,   # Cap penalty
+            lambda_max=1.0,   # Reduced from 5.0 for better balance
         )
         print(f"OK PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}, lambda_init={pid.lambda_value}")
 
@@ -649,12 +649,15 @@ def main():
             norm_rewards = (rollout_rewards_array - rew_mean) / rew_std
             
             # 2. Normalize costs
-            cost_mean = jnp.mean(rollout_costs_array)
-            cost_std = jnp.std(rollout_costs_array) + 1e-8
-            norm_costs = (rollout_costs_array - cost_mean) / cost_std
+            # Fix: Use absolute scaling instead of z-score to prevent vanishing penalty
+            # when policy collapses to a single action (std -> 0).
+            norm_costs = rollout_costs_array / args.budget_limit
 
             # 3. Combine: Adjusted Reward = Norm(Reward) - Lambda * Norm(Cost)
-            # This ensures Lambda acts on a standard scale (N(0,1)) for both terms.
+            # Clip normalized rewards to prevent extreme values destabilizing training
+            norm_rewards = jnp.clip(norm_rewards, -5.0, 5.0)
+            
+            # This ensures Lambda acts on a standard scale for both terms.
             adjusted_rewards = norm_rewards - pid.lambda_value * norm_costs
 
             # Compute advantages and returns using GAE (with jax.lax.scan)
