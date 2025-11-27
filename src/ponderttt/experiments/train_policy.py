@@ -663,8 +663,9 @@ def main():
                 last_value=0.0,
             )
 
-            # Normalize advantages
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            # Normalize advantages - REMOVED to allow absolute penalty signal
+            # We rely on raw negative advantages to drive policy away from high cost.
+            # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
             # Policy update using minibatches
             old_log_probs = rollout_log_probs_array
@@ -705,7 +706,7 @@ def main():
                     )
                     value_losses = jnp.square(new_values - mb_returns)
                     value_losses_clipped = jnp.square(value_pred_clipped - mb_returns)
-                    value_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
+                    value_loss = 0.1 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
 
                     # Entropy bonus (encourage exploration)
                     # Increased to 0.05 to force policy out of high-cost local optimum

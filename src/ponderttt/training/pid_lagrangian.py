@@ -94,7 +94,7 @@ class PIDLagrangianPPO:
         self,
         budget_limit: float,
         clip_epsilon: float = 0.2,
-        value_coef: float = 0.5,
+        value_coef: float = 0.1,
         entropy_coef: float = 0.01,
         pid_kp: float = 0.1,
         pid_ki: float = 0.01,
