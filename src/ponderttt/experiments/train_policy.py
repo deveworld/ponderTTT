@@ -389,12 +389,13 @@ def main():
         print("OK Feature extractor initialized (32D features)")
 
         # PID controller for budget constraint
-        # Start with lambda=0.5 to encourage low-cost actions from the beginning
+        # Updated for stability: lower gains and start with lambda=0
         pid = PIDController(
-            kp=0.1,   # Proportional gain for responsive cost control
-            ki=0.02,  # Integral gain for steady-state error correction
-            kd=0.02,  # Derivative gain for damping
-            lambda_value=0.5,  # Start with moderate cost penalty
+            kp=0.01,    # Reduced from 0.1
+            ki=0.0005,  # Reduced from 0.02
+            kd=0.01,
+            lambda_value=0.0, # Start with no penalty
+            lambda_max=5.0,   # Cap penalty
         )
         print(f"OK PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}, lambda_init={pid.lambda_value}")
 
