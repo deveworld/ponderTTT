@@ -58,7 +58,7 @@ def parse_args():
     parser.add_argument(
         "--learning_rate",
         type=float,
-        default=3e-4,
+        default=5e-5,
         help="Learning rate",
     )
     parser.add_argument(
@@ -708,7 +708,8 @@ def main():
                     value_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
 
                     # Entropy bonus (encourage exploration)
-                    entropy_bonus = -0.01 * jnp.mean(entropies)
+                    # Increased to 0.05 to force policy out of high-cost local optimum
+                    entropy_bonus = -0.05 * jnp.mean(entropies)
 
                     # Approximate KL divergence for monitoring (correct formula)
                     # KL(old || new) ≈ E[(old_log_prob - new_log_prob)]
