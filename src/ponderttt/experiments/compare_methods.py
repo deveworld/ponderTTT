@@ -23,6 +23,15 @@ from ..utils import FeatureExtractor, cross_entropy_loss
 from ..utils.checkpointing import load_checkpoint
 
 
+def unwrap_state(state):
+    """Recursively unwrap Orbax-serialized NNX state dicts (remove 'value' wrappers)."""
+    if isinstance(state, dict):
+        if "value" in state and len(state) == 1:
+            return state["value"]
+        return {k: unwrap_state(v) for k, v in state.items()}
+    return state
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare optimization methods")
     parser.add_argument("--model_scale", type=str, default="125m", choices=["125m", "350m", "1b"])
@@ -238,7 +247,8 @@ def main():
         # Update model state from checkpoint
         # We assume ckpt["state"]["model"] exists and matches trainable_system structure
         if "state" in ckpt and "model" in ckpt["state"]:
-            nnx.update(trainable_system, ckpt["state"]["model"])
+            model_state = unwrap_state(ckpt["state"]["model"])
+            nnx.update(trainable_system, model_state)
             print("Differentiable Gating and TTT weights loaded.")
         else:
             print("Warning: Could not find 'state.model' in checkpoint. Weights might not be loaded.")
@@ -253,7 +263,8 @@ def main():
         # Load without target
         ckpt = load_checkpoint(args.rl_checkpoint, target=None)
         if "state" in ckpt and "policy" in ckpt["state"]:
-            nnx.update(rl_net, ckpt["state"]["policy"])
+            policy_state = unwrap_state(ckpt["state"]["policy"])
+            nnx.update(rl_net, policy_state)
             print("RL Policy weights loaded.")
         else:
             print("Warning: Could not find 'state.policy' in checkpoint.")
