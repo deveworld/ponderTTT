@@ -645,6 +645,13 @@ def main():
             # Cost-aware rewards
             adjusted_rewards = rollout_rewards_array - pid.lambda_value * rollout_costs_array
 
+            # Normalize rewards for stability (Fix for scale mismatch)
+            # This ensures that the value function targets are well-scaled (N(0,1))
+            # while preserving the relative order of preferences induced by lambda.
+            rew_mean = jnp.mean(adjusted_rewards)
+            rew_std = jnp.std(adjusted_rewards) + 1e-8
+            adjusted_rewards = (adjusted_rewards - rew_mean) / rew_std
+
             # Compute advantages and returns using GAE (with jax.lax.scan)
             advantages, returns = compute_gae(
                 rewards=adjusted_rewards,
@@ -770,7 +777,9 @@ def main():
             print(f"  Average loss_ce: {avg_loss_ce:.4f}")
             print(f"  Average perplexity: {avg_perplexity:.2f}")
             print(f"  Lambda (penalty): {pid.lambda_value:.4f}")
-            print(f"  Policy loss: {loss:.4f}")
+            print(f"  Total loss: {loss:.4f}")
+            print(f"  Policy loss: {float(last_metrics.get('policy_loss', 0.0)):.4f}")
+            print(f"  Value loss: {float(last_metrics.get('value_loss', 0.0)):.4f}")
             print(f"  Approx KL: {float(last_metrics.get('approx_kl', 0.0)):.6f}")
             print(f"  Chunks collected: {chunks_collected}")
 
