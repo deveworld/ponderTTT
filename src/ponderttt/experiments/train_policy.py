@@ -46,7 +46,7 @@ def parse_args():
     parser.add_argument(
         "--rollout_length",
         type=int,
-        default=32,
+        default=64,
         help="Number of chunks per rollout",
     )
     parser.add_argument(
@@ -389,10 +389,10 @@ def main():
         print("OK Feature extractor initialized (32D features)")
 
         # PID controller for budget constraint
-        # Updated for stability: lower gains and start with lambda=0
+        # Updated for stability: stronger gains for better responsiveness
         pid = PIDController(
-            kp=0.01,    # Reduced from 0.1
-            ki=0.0005,  # Reduced from 0.02
+            kp=0.05,    # Increased from 0.01
+            ki=0.005,   # Increased from 0.0005
             kd=0.01,
             lambda_value=0.0, # Start with no penalty
             lambda_max=5.0,   # Cap penalty
