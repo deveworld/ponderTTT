@@ -134,6 +134,27 @@ class SimpleGenerator:
             self._warned_truncation = True
         return token_ids[-self.max_seq_len:]
 
+    def _clean_completion(self, completion: str, prompt: str = None) -> str:
+        """
+        Clean up the generated completion by truncating at stop sequences.
+        This prevents syntax errors caused by the model rambling on.
+        """
+        # Common stop sequences for code generation
+        stop_sequences = ["\ndef ", "\nclass ", "\n#", "\nif __name__", "\n\n\n"]
+        
+        # Find the earliest occurrence of any stop sequence
+        min_idx = len(completion)
+        
+        for seq in stop_sequences:
+            idx = completion.find(seq)
+            if idx != -1 and idx < min_idx:
+                min_idx = idx
+        
+        if min_idx < len(completion):
+            completion = completion[:min_idx]
+            
+        return completion
+
     def generate(
         self, 
         prompt: str, 
@@ -229,7 +250,7 @@ class SimpleGenerator:
                 
         # Decode
         completion = self.tokenizer.decode(generated_tokens)
-        return completion
+        return self._clean_completion(completion, prompt)
 
     def generate_batch(
         self, 
@@ -350,7 +371,8 @@ class SimpleGenerator:
         # Decode
         completions = []
         for i in range(batch_size):
-            completions.append(self.tokenizer.decode(generated_tokens[i]))
+            completion = self.tokenizer.decode(generated_tokens[i])
+            completions.append(self._clean_completion(completion, prompts[i]))
             
         return completions
 
