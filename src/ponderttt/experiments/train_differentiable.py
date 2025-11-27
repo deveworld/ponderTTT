@@ -124,6 +124,12 @@ def parse_args():
         default=512,
         help="Chunk size for TTT processing",
     )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=200,
+        help="Number of steps to disable cost penalty for warmup",
+    )
     
     return parser.parse_args()
 
@@ -147,6 +153,7 @@ def main():
     print(f"Max steps: {args.max_steps}")
     print(f"Budget limit (avg steps): {args.budget_limit}")
     print(f"Cost weight (gamma): {args.cost_weight}")
+    print(f"Warmup steps: {args.warmup_steps}")
     
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -261,6 +268,7 @@ def main():
         batch: dict, 
         budget_remaining: jax.Array,
         baseline_loss: jax.Array,  # Previous chunk's loss for reward shaping
+        is_warmup: bool, # New argument
         beta_ttt: float = 0.1,
         tie_word_embeddings: bool = True,
     ):
@@ -382,14 +390,17 @@ def main():
                 overdraft = jnp.maximum(0.0, -budget_remaining)
                 uneven_usage = jnp.maximum(0.0, normalized_cost - difficulty_weight)
 
-                cost_penalty = (
+                raw_cost_penalty = (
                     efficiency_penalty
                     - efficiency_reward
                     + overdraft * (1.0 + 2.0 * normalized_cost)
                     + uneven_usage * ease_weight
                 ) * args.cost_weight
             else:
-                cost_penalty = jnp.mean(gating_scale) * args.cost_weight
+                raw_cost_penalty = jnp.mean(gating_scale) * args.cost_weight
+            
+            # Apply warmup: suppress cost penalty while ramping up training stability
+            cost_penalty = jnp.where(is_warmup, 0.0, raw_cost_penalty)
             
             total_loss = ce_loss + (beta_ttt * l_ttt) + cost_penalty
             
@@ -441,6 +452,9 @@ def main():
         avg_gate_val = 0.0
         prev_ce_loss = jnp.array(3.0)  # Initialize with reasonable baseline
         
+        # Check if in warmup period
+        is_warmup = iter_count < args.warmup_steps
+        
         for c_idx in range(num_chunks):
             chunk_batch = {
                 "input_ids": chunks[:, c_idx],
@@ -471,6 +485,7 @@ def main():
                 chunk_batch, 
                 jnp.array(budget_rem_fraction),
                 prev_ce_loss,
+                is_warmup, # Pass warmup flag
                 tie_word_embeddings=ttt_model.tie_word_embeddings,
             )
             
@@ -496,8 +511,9 @@ def main():
         perplexity = math.exp(avg_ce_loss)
         budget_util = current_spend / max(1e-6, total_budget)
         
+        warmup_status = " [WARMUP]" if is_warmup else ""
         print(
-            f"Iter {iter_count+1}: LossTotal={avg_total_loss:.4f}, "
+            f"Iter {iter_count+1}{warmup_status}: LossTotal={avg_total_loss:.4f}, "
             f"LossCE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
             f"L_TTT={float(l_ttt):.4f}, Gate={avg_gate_val:.4f}, RemBudget={1.0 - budget_util:.2f}"
         )
@@ -511,6 +527,7 @@ def main():
                 f"seed_{args.seed}/l_ttt": float(l_ttt),
                 f"seed_{args.seed}/gate_mean": float(avg_gate_val),
                 f"seed_{args.seed}/budget_utilization": budget_util,
+                f"seed_{args.seed}/is_warmup": float(is_warmup),
                 "iteration": iter_count + 1,
             })
 
@@ -521,7 +538,8 @@ def main():
             "perplexity": perplexity,
             "l_ttt": float(l_ttt),
             "gate_mean": float(avg_gate_val),
-            "budget_utilization": budget_util
+            "budget_utilization": budget_util,
+            "is_warmup": is_warmup
         })
         
         # Periodic Checkpoint

@@ -64,12 +64,19 @@ def parse_args():
 class SimpleGenerator:
     """Simple autoregressive generator for NNX models."""
     
-    def __init__(self, model: TTTTransformerLM, tokenizer, gating_net=None):
+    def __init__(
+        self, 
+        model: TTTTransformerLM, 
+        tokenizer, 
+        gating_net=None,
+        rng_key: jax.Array | None = None,
+    ):
         self.model = model
         self.tokenizer = tokenizer
         self.gating_net = gating_net
         self.pad_token_id = tokenizer.token_to_id("<|pad|>")
         self.eos_token_id = tokenizer.token_to_id("<|endoftext|>")
+        self._rng_key = rng_key if rng_key is not None else jax.random.PRNGKey(0)
         # GPT-2 variants cap usable context via learned position embeddings
         base_config = getattr(model, "gpt2_config", None)
         if base_config is None and hasattr(model, "base_model"):
@@ -101,6 +108,11 @@ class SimpleGenerator:
                 budget_remaining=1.0
             )
         self.extract_features_jit = extract_features_jit
+
+    def _next_rng_key(self) -> jax.Array:
+        """Split and return the next PRNG key for sampling."""
+        self._rng_key, subkey = jax.random.split(self._rng_key)
+        return subkey
 
     def _get_target_length(self, current_len: int, alignment: int) -> int:
         """Calculate target length using power-of-2 buckets to minimize recompilation."""
@@ -134,7 +146,7 @@ class SimpleGenerator:
             self._warned_truncation = True
         return token_ids[-self.max_seq_len:]
 
-    def _clean_completion(self, completion: str, prompt: str = None) -> str:
+    def _clean_completion(self, completion: str, prompt: str | None = None) -> str:
         """
         Clean up the generated completion by truncating at stop sequences.
         This prevents syntax errors caused by the model rambling on.
@@ -232,8 +244,9 @@ class SimpleGenerator:
             
             # Sampling
             if temperature > 0:
-                probs = jax.nn.softmax(logits / temperature, axis=-1)
-                next_token = jax.random.categorical(jax.random.PRNGKey(0), jnp.log(probs)) 
+                key = self._next_rng_key()
+                scaled_logits = logits / float(temperature)
+                next_token = jax.random.categorical(key, scaled_logits, axis=-1)
             else:
                 next_token = jnp.argmax(logits, axis=-1)
             
@@ -349,8 +362,9 @@ class SimpleGenerator:
             
             # Sampling
             if temperature > 0:
-                probs = jax.nn.softmax(next_token_logits / temperature, axis=-1)
-                next_tokens = jax.random.categorical(jax.random.PRNGKey(0), jnp.log(probs)) 
+                key = self._next_rng_key()
+                scaled_logits = next_token_logits / float(temperature)
+                next_tokens = jax.random.categorical(key, scaled_logits, axis=-1)
             else:
                 next_tokens = jnp.argmax(next_token_logits, axis=-1)
             
@@ -536,7 +550,12 @@ def main():
                  raise
     
     # Initialize Generator
-    generator = SimpleGenerator(model, tokenizer, gating_net)
+    generator = SimpleGenerator(
+        model,
+        tokenizer,
+        gating_net,
+        rng_key=jax.random.PRNGKey(args.seed),
+    )
     
     # Select Benchmarks
     suite = BenchmarkSuite(
