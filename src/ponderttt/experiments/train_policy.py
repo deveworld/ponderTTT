@@ -642,23 +642,16 @@ def main():
             # Create dones array (now using collected dones)
             dones_array = rollout_dones_array
 
-            # Normalize rewards and costs separately to ensure balanced contribution
-            # 1. Normalize task rewards
-            rew_mean = jnp.mean(rollout_rewards_array)
-            rew_std = jnp.std(rollout_rewards_array) + 1e-8
-            norm_rewards = (rollout_rewards_array - rew_mean) / rew_std
-            
-            # 2. Normalize costs
+            # Normalize costs (absolute scaling)
             # Fix: Use absolute scaling instead of z-score to prevent vanishing penalty
             # when policy collapses to a single action (std -> 0).
             norm_costs = rollout_costs_array / args.budget_limit
 
-            # 3. Combine: Adjusted Reward = Norm(Reward) - Lambda * Norm(Cost)
-            # Clip normalized rewards to prevent extreme values destabilizing training
-            norm_rewards = jnp.clip(norm_rewards, -5.0, 5.0)
-            
-            # This ensures Lambda acts on a standard scale for both terms.
-            adjusted_rewards = norm_rewards - pid.lambda_value * norm_costs
+            # 3. Combine: Adjusted Reward = Raw Reward - Lambda * Norm(Cost)
+            # We use raw rewards to preserve the physical magnitude difference between
+            # "No Update" (Reward 0) and "Update" (Reward ~0.5-2.0).
+            # Z-score normalization was artificially inflating the benefit of high-cost actions.
+            adjusted_rewards = rollout_rewards_array - pid.lambda_value * norm_costs
 
             # Compute advantages and returns using GAE (with jax.lax.scan)
             advantages, returns = compute_gae(
