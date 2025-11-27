@@ -389,13 +389,13 @@ def main():
         print("OK Feature extractor initialized (32D features)")
 
         # PID controller for budget constraint
-        # Updated for stability: stronger gains for better responsiveness
+        # SHOCK THERAPY: Aggressive gains and high lambda max
         pid = PIDController(
-            kp=0.05,    # Increased from 0.01
-            ki=0.005,   # Increased from 0.0005
+            kp=0.1,     # Increased for instant reaction
+            ki=0.05,    # Massively increased to ramp up penalty fast
             kd=0.01,
             lambda_value=0.0, # Start with no penalty
-            lambda_max=1.0,   # Reduced from 5.0 for better balance
+            lambda_max=10.0,  # High cap to drown out reward
         )
         print(f"OK PID controller: kp={pid.kp}, ki={pid.ki}, kd={pid.kd}, lambda_init={pid.lambda_value}")
 
@@ -643,14 +643,14 @@ def main():
             dones_array = rollout_dones_array
 
             # Normalize costs (absolute scaling)
-            # Fix: Use absolute scaling instead of z-score to prevent vanishing penalty
-            # when policy collapses to a single action (std -> 0).
-            norm_costs = rollout_costs_array / args.budget_limit
+            # SHOCK THERAPY: Use raw costs to maximize penalty magnitude.
+            # We want the penalty to be 1.0 ~ 9.0, multiplied by Lambda (up to 10.0).
+            # This creates a penalty of 10.0 ~ 90.0, forcing the agent to SKIP.
+            norm_costs = rollout_costs_array
 
-            # 3. Combine: Adjusted Reward = Raw Reward - Lambda * Norm(Cost)
+            # 3. Combine: Adjusted Reward = Raw Reward - Lambda * Cost
             # We use raw rewards to preserve the physical magnitude difference between
             # "No Update" (Reward 0) and "Update" (Reward ~0.5-2.0).
-            # Z-score normalization was artificially inflating the benefit of high-cost actions.
             adjusted_rewards = rollout_rewards_array - pid.lambda_value * norm_costs
 
             # Compute advantages and returns using GAE (with jax.lax.scan)
