@@ -1,7 +1,4 @@
 
-import os
-import jax
-import jax.numpy as jnp
 from flax import nnx
 from ponderttt.data import get_tokenizer
 from ponderttt.models import load_ttt_model
