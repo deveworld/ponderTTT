@@ -8,7 +8,7 @@ import warnings
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 from tqdm import tqdm
 
@@ -257,13 +257,14 @@ def _check_solution(problem: CodeProblem, completion: str, timeout: int = 3) -> 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=SyntaxWarning)
                 # Execute the generated code (defines the function)
-                exec(compile(source, "<completion>", "exec"), namespace, namespace)  # noqa: S102
+                exec(compile(source, "<completion>", "exec"), namespace, namespace)
                 # Execute the test code (defines the check function)
-                exec(compile(problem.test_code, "<tests>", "exec"), namespace, namespace)  # noqa: S102
+                exec(compile(problem.test_code, "<tests>", "exec"), namespace, namespace)
                 # HumanEval test code defines a check(candidate) function that must be called
                 # with the entry point function to actually run the assertions
-                if "check" in namespace and problem.entry_point in namespace:
-                    namespace["check"](namespace[problem.entry_point])  # noqa: S102
+                check_fn = namespace.get("check")
+                if callable(check_fn) and problem.entry_point in namespace:
+                    cast(Callable[[Any], None], check_fn)(namespace[problem.entry_point])
                 elif problem.entry_point not in namespace:
                     # Function was not defined - fail the test
                     return False

@@ -35,10 +35,12 @@ class DebugGenerator(SimpleGenerator):
             mini_batch_size = 16
             remat_group_size = 1
             if hasattr(self.model, "fast_layer") and hasattr(self.model.fast_layer, "config"):
-                 if hasattr(self.model.fast_layer.config, 'mini_batch_size'):
-                    mini_batch_size = self.model.fast_layer.config.mini_batch_size
-                    remat_group_size = self.model.fast_layer.config.remat_mini_batch_group_size
-            
+                config = self.model.fast_layer.config
+                if hasattr(config, 'mini_batch_size'):
+                    mini_batch_size = int(getattr(config, 'mini_batch_size'))
+                if hasattr(config, 'remat_mini_batch_group_size'):
+                    remat_group_size = int(getattr(config, 'remat_mini_batch_group_size'))
+
             alignment = mini_batch_size * remat_group_size
             target_len = self._get_target_length(current_len, alignment)
             pad_len = target_len - current_len
@@ -159,8 +161,7 @@ def main():
     generator = DebugGenerator(model, tokenizer, gating_net)
     
     # Test prompts (Simulate HumanEval structure)
-    from ponderttt.evaluation.benchmarks import CodeProblem, _check_solution
-    import os
+    from ponderttt.evaluation.benchmarks import CodeProblem
     os.environ["PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS"] = "1"
 
     # Create a fake problem resembling a simple HumanEval task

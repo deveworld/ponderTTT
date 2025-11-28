@@ -7,10 +7,8 @@ import hashlib
 import logging
 import pickle
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import BinaryIO, cast
 
 import boto3
 import jax
@@ -19,7 +17,6 @@ import numpy as np
 from botocore import UNSIGNED
 from botocore.client import Config
 from datasets import load_dataset
-from smart_open import open as smart_open
 from tokenizers import Tokenizer
 
 
@@ -164,7 +161,7 @@ class CodeDataset:
             )
             content_gz = response["Body"].read()
             return gzip.decompress(content_gz).decode(src_encoding)
-        except Exception as exc:
+        except Exception:
             # logging.warning("Failed to download blob %s: %s", blob_id, exc)
             return ""
 
@@ -263,8 +260,7 @@ class CodeDataset:
                 # Wait for the first completed future
                 # Note: as_completed yields futures as they complete
                 # We use a small batch approach to replenish the pool
-                
-                done_futures = []
+
                 # Check for completed futures without blocking too long on any single one
                 # But we need to yield results in order or out of order?
                 # Out of order is fine for training data.

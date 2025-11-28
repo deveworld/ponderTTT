@@ -1,6 +1,7 @@
+from typing import cast
+
 import pandas as pd
 import numpy as np
-import sys
 import os
 
 # File Map
@@ -56,7 +57,8 @@ for metric, path in files.items():
             
         # Stats (Last 20% for convergence)
         last_n = int(len(data) * 0.2)
-        if last_n < 5: last_n = len(data)
+        if last_n < 5:
+            last_n = len(data)
         final_data = data.iloc[-last_n:]
         
         mean_val = final_data.mean()
@@ -82,10 +84,14 @@ def estimate_cost(row):
         return np.nan
         
     method = row.name
-    if "UPDATE_4" in method: return 9.0
-    if "UPDATE_2" in method: return 5.0
-    if "UPDATE_1" in method: return 3.0
-    if "SKIP" in method: return 1.0
+    if "UPDATE_4" in method:
+        return 9.0
+    if "UPDATE_2" in method:
+        return 5.0
+    if "UPDATE_1" in method:
+        return 3.0
+    if "SKIP" in method:
+        return 1.0
     return np.nan
 
 df_res["Est. Cost"] = df_res.apply(estimate_cost, axis=1)
@@ -93,17 +99,19 @@ df_res["Est. Cost"] = df_res.apply(estimate_cost, axis=1)
 # Formatting
 cols_order = ["Loss", "Perplexity", "L_TTT", "Gate Mean", "Budget Util", "Est. Cost"]
 existing_cols = [c for c in cols_order if c in df_res.columns]
-df_res = df_res[existing_cols].sort_values("Loss")
+df_res = cast(pd.DataFrame, df_res[existing_cols])
+df_res = df_res.sort_values(by="Loss")
 
 print("\n=== Comprehensive Experiment Analysis ===")
 print(df_res.to_string(float_format="%.4f"))
 
 print("\n=== Pareto Efficiency Check ===")
 # Baseline reference
+skip_loss: float = 0.0
 try:
     skip_loss = df_res.loc[df_res.index.str.contains("SKIP"), "Loss"].values[0]
     print(f"Baseline (SKIP) Loss: {skip_loss:.4f}")
-except:
+except Exception:
     pass
 
 diff_rows = df_res[df_res.index.str.contains("diff")]
@@ -111,7 +119,7 @@ for method, row in diff_rows.iterrows():
     loss = row.get("Loss", 999)
     cost = row.get("Est. Cost", 999)
     ppl = row.get("Perplexity", 999)
-    
+
     print(f"\n{method}:")
     print(f"  - Loss: {loss:.4f} (vs SKIP: {skip_loss:.4f})")
     print(f"  - PPL : {ppl:.2f}")

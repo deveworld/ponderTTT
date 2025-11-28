@@ -31,7 +31,8 @@ for col in cols:
     # Compute statistics (using last 20% of steps to simulate converged performance)
     # or just overall mean if short
     last_n = int(len(data) * 0.2)
-    if last_n < 5: last_n = len(data)
+    if last_n < 5:
+        last_n = len(data)
     
     final_data = data.iloc[-last_n:]
     
@@ -40,10 +41,13 @@ for col in cols:
     min_loss = data.min()
     
     # Approximate cost (inferred from name)
-    cost = 1.0 # Base (SKIP)
-    if "UPDATE_1" in method: cost = 3.0
-    elif "UPDATE_2" in method: cost = 5.0
-    elif "UPDATE_4" in method: cost = 9.0
+    cost = 1.0  # Base (SKIP)
+    if "UPDATE_1" in method:
+        cost = 3.0
+    elif "UPDATE_2" in method:
+        cost = 5.0
+    elif "UPDATE_4" in method:
+        cost = 9.0
     elif "budget" in method:
         # Extract budget from name e.g. diff_125m_budget2.5
         try:
@@ -55,7 +59,7 @@ for col in cols:
             # But let's just use the budget number for labeling.
             cost_val = float(budget_str)
             cost = 1.0 + 2.0 * cost_val 
-        except:
+        except Exception:
             cost = -1.0
             
     stats.append({

@@ -26,8 +26,12 @@ def scan_remat_every_n_iterations_scan(f, n, carry, x):
     memory usage during backpropagation.
     """
     x_grouped = tree_map(lambda x: x.reshape((-1, n, *x.shape[1:])), x)
+
+    def inner_scan(c, xs):
+        return jax.lax.scan(f, c, xs)
+
     carry, y_grouped = jax.lax.scan(
-        jax.remat(partial(jax.lax.scan, f), prevent_cse=False), # type: ignore[arg-type]
+        jax.remat(inner_scan, prevent_cse=False), # type: ignore[arg-type]
         carry,
         x_grouped
     )
@@ -54,6 +58,7 @@ class TTTConfig:
     conv_width: int = 4
     remat_mini_batch_group_size: int = 4
     output_ttt_stats: bool = True
+    causal_k: int = 0  # Causal mask diagonal: 0 includes diagonal, -1 excludes it
 
 
 def precompute_freqs_cis(
@@ -411,13 +416,13 @@ class TTTLayer(nnx.Module):
 
         # Causal processing with updated weights
         X1_bar = XQ_mini_batch
-        Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0))  # Causal mask!
+        Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0), k=self.config.causal_k)  # Causal mask!
         
         # Fix: Scale columns by eta (eta_k), not rows (eta_t)
         # square_eta_mini_batch is [M, 1], we need [1, M] for broadcasting over columns
         eta_row = square_eta_mini_batch.reshape(1, -1)
         
-        b1_bar = b1_init - (jnp.tril(jnp.ones_like(Attn1)) * eta_row) @ grad_l_wrt_Z1
+        b1_bar = b1_init - (jnp.tril(jnp.ones_like(Attn1), k=self.config.causal_k) * eta_row) @ grad_l_wrt_Z1
         Z1_bar = X1_bar @ W1_init - (Attn1 * eta_row) @ grad_l_wrt_Z1 + b1_bar
         ttt_norm_out_bar = ttt_norm_fn(Z1_bar)
 

@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from ..data import get_tokenizer
 from ..evaluation.benchmarks import BenchmarkSuite, _check_solution
-from ..models import TTTTransformerLM, load_ttt_model, TTTConfig
+from ..models import LoRALayer, TTTTransformerLM, load_ttt_model, TTTConfig
 from ..models.gating_nnx import GatingConfig, GatingNetwork
 from ..utils import FeatureExtractor, extract_features
 from ..utils.checkpointing import load_checkpoint
@@ -259,8 +259,9 @@ def main():
     )
     
     print("\n[DEBUG] Initial Model Stats (Pretrained):")
-    print_stats("base_model.wte", model.base_model.wte.embedding[...])
-    print_stats("fast_layer.wo", model.fast_layer.wo.kernel[...]) # type: ignore
+    print_stats("base_model.wte", jnp.asarray(model.base_model.wte.embedding))
+    if not isinstance(model.fast_layer, LoRALayer):
+        print_stats("fast_layer.wo", jnp.asarray(model.fast_layer.wo.kernel))
     
     gating_net = None
 
@@ -317,9 +318,10 @@ def main():
                      raise ValueError("Could not load checkpoint")
 
     print("\n[DEBUG] Post-Load Model Stats:")
-    print_stats("base_model.wte", model.base_model.wte.embedding[...])
-    print_stats("fast_layer.wo", model.fast_layer.wo.kernel[...]) # type: ignore
-    print_stats("fast_norm.scale", model.fast_norm.scale.value) # type: ignore
+    print_stats("base_model.wte", jnp.asarray(model.base_model.wte.embedding))
+    if not isinstance(model.fast_layer, LoRALayer):
+        print_stats("fast_layer.wo", jnp.asarray(model.fast_layer.wo.kernel))
+    print_stats("fast_norm.scale", jnp.asarray(model.fast_norm.scale))
 
     generator = SimpleGenerator(model, tokenizer, gating_net, force_scale=args.force_scale)
     

@@ -290,7 +290,7 @@ def main():
         
         # Compute logits for features (also frozen base)
         if tie_word_embeddings:
-            embedding_kernel = base_model.wte.embedding[...]  # type: ignore
+            embedding_kernel = jnp.asarray(base_model.wte.embedding)
             logits_base = hidden_states @ embedding_kernel.T
         else:
             # If lm_head is separate, it might be in trainable_sys or not?
@@ -333,7 +333,7 @@ def main():
             
             # Final Logits
             if tie_word_embeddings:
-                embedding_kernel = base_model.wte.embedding[...]  # type: ignore
+                embedding_kernel = jnp.asarray(base_model.wte.embedding)
                 logits = adapted_hidden @ embedding_kernel.T
             elif sys.lm_head:
                 logits = sys.lm_head(adapted_hidden)
@@ -402,7 +402,11 @@ def main():
             # Apply warmup: suppress cost penalty while ramping up training stability
             cost_penalty = jnp.where(is_warmup, 0.0, raw_cost_penalty)
             
-            total_loss = ce_loss + (beta_ttt * l_ttt) + cost_penalty
+            total_loss = (
+                jnp.asarray(ce_loss)
+                + (beta_ttt * jnp.asarray(l_ttt))
+                + jnp.asarray(cost_penalty)
+            )
             
             return total_loss, (ce_loss, l_ttt, cost_penalty, jnp.mean(gating_scale))
 
