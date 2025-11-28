@@ -209,15 +209,15 @@ def main():
     tokenizer = get_tokenizer(model_name)
     vocab_size = tokenizer.get_vocab_size()
 
-    # Differentiable Network
-    diff_net = GatingNetwork(
-        config=GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0), 
-        rngs=rngs
-    )
-    
+    # Differentiable Network (optional)
+    diff_net: Optional[GatingNetwork] = None
     diff_ttt_model = None
     
     if args.diff_checkpoint:
+        diff_net = GatingNetwork(
+            config=GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0), 
+            rngs=rngs
+        )
         print(f"Loading Differentiable Gating checkpoint from {args.diff_checkpoint}...")
         
         # Instantiate fresh TTT model to load weights into
@@ -255,13 +255,16 @@ def main():
             print("Differentiable Gating and TTT weights loaded.")
         else:
             print("Warning: Could not find 'state.model' in checkpoint. Weights might not be loaded.")
+    else:
+        print("No Differentiable checkpoint supplied; skipping differentiable evaluation.")
 
     # RL Network
-    rl_net = PolicyNetwork(
-        config=PolicyConfig(feature_dim=32, hidden_dim=128, num_actions=4),
-        rngs=rngs
-    )
+    rl_net: Optional[PolicyNetwork] = None
     if args.rl_checkpoint:
+        rl_net = PolicyNetwork(
+            config=PolicyConfig(feature_dim=32, hidden_dim=128, num_actions=4),
+            rngs=rngs
+        )
         print(f"Loading RL Policy checkpoint from {args.rl_checkpoint}...")
         # Load without target
         ckpt = load_checkpoint(args.rl_checkpoint, target=None)
@@ -271,6 +274,8 @@ def main():
             print("RL Policy weights loaded.")
         else:
             print("Warning: Could not find 'state.policy' in checkpoint.")
+    else:
+        print("No RL checkpoint supplied; skipping RL policy evaluation.")
     
     all_results = []
     
@@ -293,38 +298,40 @@ def main():
     
     # 3. Evaluate Differentiable
     # Use loaded model if available
-    df_diff = evaluate_model(
-        "Differentiable", 
-        args.model_scale, 
-        args.budget, 
-        args.num_eval_batches, 
-        args.batch_size, 
-        args.seed, 
-        diff_net, 
-        is_rl=False,
-        model=diff_ttt_model, # Pass the loaded model
-        language=args.language,
-        split=args.split,
-        num_workers=args.num_workers,
-    )
-    all_results.append(df_diff)
+    if diff_net is not None:
+        df_diff = evaluate_model(
+            "Differentiable", 
+            args.model_scale, 
+            args.budget, 
+            args.num_eval_batches, 
+            args.batch_size, 
+            args.seed, 
+            diff_net, 
+            is_rl=False,
+            model=diff_ttt_model, # Pass the loaded model
+            language=args.language,
+            split=args.split,
+            num_workers=args.num_workers,
+        )
+        all_results.append(df_diff)
     
     # 4. Evaluate RL
     # RL uses standard model (policy chooses actions)
-    df_rl = evaluate_model(
-        "RL (PPO)", 
-        args.model_scale, 
-        args.budget, 
-        args.num_eval_batches, 
-        args.batch_size, 
-        args.seed, 
-        rl_net, 
-        is_rl=True,
-        language=args.language,
-        split=args.split,
-        num_workers=args.num_workers,
-    )
-    all_results.append(df_rl)
+    if rl_net is not None:
+        df_rl = evaluate_model(
+            "RL (PPO)", 
+            args.model_scale, 
+            args.budget, 
+            args.num_eval_batches, 
+            args.batch_size, 
+            args.seed, 
+            rl_net, 
+            is_rl=True,
+            language=args.language,
+            split=args.split,
+            num_workers=args.num_workers,
+        )
+        all_results.append(df_rl)
     
     # 5. Visualize & Report
     full_df = pd.concat(all_results)
