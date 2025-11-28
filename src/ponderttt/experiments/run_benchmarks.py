@@ -19,7 +19,7 @@ from tqdm import tqdm
 from ..data import get_tokenizer
 from ..evaluation.benchmarks import BenchmarkSuite, _check_solution
 from ..models import TTTTransformerLM, load_ttt_model, TTTConfig
-from ..models.gating_nnx import GatingConfig, GatingNetwork
+from ..models.gating_nnx import GatingConfig, GatingNetwork, BinaryGatingConfig, BinaryGatingNetwork
 from ..utils import FeatureExtractor, extract_features
 from ..utils.checkpointing import load_checkpoint
 
@@ -58,22 +58,25 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for generation")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--allow_unsafe", action="store_true", help="Allow unsafe code execution")
+    parser.add_argument("--hard_skip_threshold", type=float, default=0.1, help="Hard Skip threshold: skip TTT if gating scale < threshold (default: 0.1)")
     return parser.parse_args()
 
 
 class SimpleGenerator:
     """Simple autoregressive generator for NNX models."""
-    
+
     def __init__(
-        self, 
-        model: TTTTransformerLM, 
-        tokenizer, 
+        self,
+        model: TTTTransformerLM,
+        tokenizer,
         gating_net=None,
         rng_key: jax.Array | None = None,
+        hard_skip_threshold: float = 0.1,  # Hard Skip: skip TTT if scale < threshold
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.gating_net = gating_net
+        self.hard_skip_threshold = hard_skip_threshold
         self.pad_token_id = tokenizer.token_to_id("<|pad|>")
         self.eos_token_id = tokenizer.token_to_id("<|endoftext|>")
         self._rng_key = rng_key if rng_key is not None else jax.random.PRNGKey(0)
@@ -224,18 +227,36 @@ class SimpleGenerator:
                 )
 
                 if hasattr(self.gating_net, "evaluate_actions"):
+                    # RL policy: discrete actions
                     policy_out = _policy_forward_jit(self.gating_net, features, deterministic=True)
                     action = int(policy_out["action"][0])
                     step_map = [0, 1, 2, 4]
                     scale = float(step_map[action])
+                    # RL uses discrete skip (action=0), so Hard Skip is automatic
+                    if action == 0:
+                        outputs = out_base  # Skip TTT
+                    else:
+                        gating_scale = jnp.array([[scale]])
+                        outputs = self._call_model(padded_input, use_ttt=True, gating_scale=gating_scale)
+                elif isinstance(self.gating_net, BinaryGatingNetwork):
+                    # Binary Gating (Hard Skip with Gumbel-Softmax training)
+                    hard_scale, decision = self.gating_net.get_decision(features)
+                    decision_val = int(decision[0])
+                    if decision_val == 0:
+                        outputs = out_base  # SKIP: use base output
+                    else:
+                        gating_scale = jnp.array([[1.0]])  # UPDATE: full TTT
+                        outputs = self._call_model(padded_input, use_ttt=True, gating_scale=gating_scale)
                 else:
+                    # Continuous gating (GatingNetwork): apply Hard Skip threshold
                     scale = float(_gating_forward_jit(self.gating_net, features, train=False)[0, 0])
 
-                # Fix: Always use TTT to match training "Soft Skip" behavior (discrepancy fix)
-                # Training uses scale=0.0 (no update) but runs the layer (static output).
-                # Evaluation previously skipped the layer entirely (output=0), creating skew.
-                gating_scale = jnp.array([[scale]])
-                outputs = self._call_model(padded_input, use_ttt=True, gating_scale=gating_scale)
+                    # Hard Skip: if scale < threshold, skip TTT entirely
+                    if scale < self.hard_skip_threshold:
+                        outputs = out_base  # Use base output (no TTT)
+                    else:
+                        gating_scale = jnp.array([[scale]])
+                        outputs = self._call_model(padded_input, use_ttt=True, gating_scale=gating_scale)
             else:
                 outputs = self._call_model(padded_input, use_ttt=False, gating_scale=None)
             
@@ -343,16 +364,45 @@ class SimpleGenerator:
                 )
 
                 if hasattr(self.gating_net, "evaluate_actions"):
+                    # RL policy: discrete actions
                     policy_out = _policy_forward_jit(self.gating_net, features, deterministic=True)
                     actions = policy_out["action"]
                     step_map = jnp.array([0.0, 1.0, 2.0, 4.0])
                     scales = step_map[actions.astype(int)]
+
+                    # Hard Skip for RL: check if all actions are SKIP (action=0)
+                    if jnp.all(actions == 0):
+                        outputs = out_base
+                    else:
+                        gating_scale = scales[:, None]
+                        outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
+                elif isinstance(self.gating_net, BinaryGatingNetwork):
+                    # Binary Gating (Hard Skip with Gumbel-Softmax training)
+                    hard_scales, decisions = self.gating_net.get_decision(features)
+
+                    # Hard Skip for Binary: check if all decisions are SKIP (0)
+                    if jnp.all(decisions == 0):
+                        outputs = out_base
+                    else:
+                        # Run TTT with full scale for UPDATE decisions
+                        gating_scale = jnp.where(
+                            decisions[:, None] == 1,
+                            1.0,  # UPDATE: full TTT
+                            0.0   # SKIP: no effect
+                        )
+                        outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
                 else:
+                    # Continuous gating (GatingNetwork): apply Hard Skip threshold
                     scales = _gating_forward_jit(self.gating_net, features, train=False)[:, 0]
 
-                # Fix: Always use TTT to match training "Soft Skip" behavior
-                gating_scale = scales[:, None]
-                outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
+                    # Hard Skip: if all scales < threshold, skip TTT entirely
+                    if jnp.all(scales < self.hard_skip_threshold):
+                        outputs = out_base
+                    else:
+                        # For batch processing, we run TTT for all items
+                        # Items below threshold will have minimal effect due to low scale
+                        gating_scale = scales[:, None]
+                        outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
             else:
                 outputs = self._call_model(input_tensor, use_ttt=False, gating_scale=None)
             
@@ -555,6 +605,7 @@ def main():
         tokenizer,
         gating_net,
         rng_key=jax.random.PRNGKey(args.seed),
+        hard_skip_threshold=args.hard_skip_threshold,
     )
     
     # Select Benchmarks
