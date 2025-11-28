@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("--model_scale", type=str, default="125m", choices=["125m", "350m", "1b"])
     parser.add_argument("--budget", type=float, default=2.0, help="Target budget (avg steps)")
     parser.add_argument("--num_eval_batches", type=int, default=20, help="Number of batches for evaluation")
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size (must be 1 for dynamic gating evaluation)")
     parser.add_argument("--diff_checkpoint", type=str, help="Path to differentiable gating checkpoint (optional)")
     parser.add_argument("--rl_checkpoint", type=str, help="Path to RL policy checkpoint (optional)")
     parser.add_argument("--output_dir", type=str, default="outputs/comparison")
@@ -62,6 +62,9 @@ def evaluate_model(
     split: str = "test",
     num_workers: int = 32,
 ):
+    if gating_net is not None:
+        assert batch_size == 1, "Batch size must be 1 for dynamic gating evaluation (mixed SKIP/TTT strategies)."
+
     print(f"\nEvaluating {method_name} on {language} ({split})...")
     
     model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
@@ -130,7 +133,7 @@ def evaluate_model(
             budget_rem = max(0.0, (total_budget - current_spend) / total_budget) if total_budget > 0 else 0.0
             
             # Extract Features (using base forward)
-            out_base = ttt_model(chunk_batch["input_ids"], use_ttt=False)
+            out_base = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=False)
             features = feature_extractor.extract(
                 input_ids=chunk_batch["input_ids"],
                 logits=out_base["logits"],
@@ -162,9 +165,9 @@ def evaluate_model(
                 # For discrete RL, we simulate K steps or use scaling approximation
                 # Assuming scaling approx for fairness in this script
                 if steps == 0:
-                    out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=False)
+                    out_ttt = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=False)
                 else:
-                    out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=True, gating_scale=jnp.array([[scale]]))
+                    out_ttt = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=True, gating_scale=jnp.array([[scale]]))
                 
                 loss = float(cross_entropy_loss(out_ttt["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
                 
@@ -173,10 +176,10 @@ def evaluate_model(
                 scale = float(gating_net(features, train=False)[0, 0])
                 
                 if scale < 0.01:
-                    out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=False)
+                    out_ttt = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=False)
                     cost = 1.0
                 else:
-                    out_ttt = ttt_model(chunk_batch["input_ids"], use_ttt=True, gating_scale=jnp.array([[scale]]))
+                    out_ttt = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=True, gating_scale=jnp.array([[scale]]))
                     # Cost model (1 step update)
                     cost = 3.0 
                 
