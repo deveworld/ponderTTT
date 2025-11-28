@@ -8,17 +8,20 @@ Usage:
 import argparse
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 from flax import nnx
+import optax
 from tqdm import tqdm
 from typing import Optional, cast
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import load_ttt_model, PolicyConfig, PolicyNetwork, TTTTransformerLM
 from ..models.gating_nnx import GatingConfig, GatingNetwork
+from .training_utils import run_chunk_step
 from ..utils import FeatureExtractor, cross_entropy_loss
 from ..utils.checkpointing import load_checkpoint
 
@@ -45,6 +48,9 @@ def parse_args():
     parser.add_argument("--language", type=str, default="Python", help="Programming language for OOD testing")
     parser.add_argument("--split", type=str, default="train", help="Dataset split (train/validation/test). Note: The Stack v2 only has 'train'.")
     parser.add_argument("--num_workers", type=int, default=32, help="Number of parallel workers for data downloading")
+    parser.add_argument("--rl_learning_rate", type=float, default=5e-5, help="Learning rate for RL TTT updates during evaluation")
+    parser.add_argument("--rl_max_grad_norm", type=float, default=1.0, help="Gradient norm clip for RL evaluation updates")
+    parser.add_argument("--rl_ssl_weight", type=float, default=0.1, help="Auxiliary SSL loss weight when replaying RL updates")
     return parser.parse_args()
 
 
@@ -61,6 +67,9 @@ def evaluate_model(
     language: str = "Python",
     split: str = "test",
     num_workers: int = 32,
+    rl_learning_rate: float = 5e-5,
+    rl_max_grad_norm: float = 1.0,
+    rl_ssl_weight: float = 0.1,
 ):
     if gating_net is not None:
         assert batch_size == 1, "Batch size must be 1 for dynamic gating evaluation (mixed SKIP/TTT strategies)."
@@ -87,6 +96,41 @@ def evaluate_model(
         pad_token_id=tokenizer.token_to_id("<|pad|>"),
         seq_length_norm=512,
     )
+
+    def clone_state(state):
+        if state is None:
+            return None
+        return jax.tree_util.tree_map(
+            lambda x: x.copy() if hasattr(x, "copy") else jnp.array(x),
+            state,
+        )
+
+    fast_layer_init = None
+    fast_norm_init = None
+
+    if is_rl:
+        ttt_model.train()
+        fast_layer_init = clone_state(nnx.state(ttt_model.fast_layer))
+        fast_norm_init = clone_state(nnx.state(ttt_model.fast_norm)) if hasattr(ttt_model, "fast_norm") else None
+
+    def reset_rl_state():
+        if not is_rl: 
+            return
+        nnx.update(ttt_model.fast_layer, clone_state(fast_layer_init))
+        if fast_norm_init is not None:
+            nnx.update(ttt_model.fast_norm, clone_state(fast_norm_init))
+
+    def create_rl_optimizer():
+        if not is_rl: 
+            return
+        return nnx.Optimizer(
+            ttt_model,
+            optax.chain(
+                optax.clip_by_global_norm(rl_max_grad_norm),
+                optax.adam(rl_learning_rate),
+            ),
+            wrt=nnx.All(nnx.Param),
+        )
     
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
@@ -122,18 +166,38 @@ def evaluate_model(
         current_spend = 0.0
         
         feature_extractor.reset_history()
+
+        if is_rl:
+            reset_rl_state()
+            rl_optimizer = create_rl_optimizer()
+        else:
+            rl_optimizer = None
         
         for c_idx in range(num_chunks):
             chunk_batch = {
                 "input_ids": chunks[:, c_idx],
                 "attention_mask": masks[:, c_idx]
             }
+
+            chunk_len = chunk_batch["input_ids"].shape[-1]
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
+            position_ids = position_ids + c_idx * chunk_len
+            position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
+            chunk_batch_with_pos = {
+                **chunk_batch,
+                "position_ids": position_ids,
+            }
             
             # Budget Feature
-            budget_rem = max(0.0, (total_budget - current_spend) / total_budget) if total_budget > 0 else 0.0
+            budget_rem = (total_budget - current_spend) / total_budget if total_budget > 0 else 0.0
             
             # Extract Features (using base forward)
-            out_base = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=False)
+            out_base = ttt_model(
+                chunk_batch["input_ids"],
+                attention_mask=chunk_batch["attention_mask"],
+                position_ids=chunk_batch_with_pos["position_ids"],
+                use_ttt=False,
+            )
             features = feature_extractor.extract(
                 input_ids=chunk_batch["input_ids"],
                 logits=out_base["logits"],
@@ -147,43 +211,80 @@ def evaluate_model(
             loss = 0.0
 
             if gating_net is None:
-                # Fixed Baseline (e.g. Skip) 
-                scale = 0.0
+                # Fixed Baseline (e.g. Skip)
                 cost = 1.0
-                
-                # If using standard SKIP, we just use out_base
-                loss = float(cross_entropy_loss(out_base["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
-                
+                loss = float(
+                    cross_entropy_loss(
+                        out_base["logits"][:, :-1],
+                        chunk_batch["input_ids"][:, 1:],
+                        chunk_batch["attention_mask"][:, 1:],
+                    )
+                )
+
             elif is_rl and isinstance(gating_net, PolicyNetwork):
-                # RL Policy
-                out = gating_net(features, deterministic=True)
-                action = int(out["action"][0]) 
+                if rl_optimizer is None:
+                    raise RuntimeError("RL optimizer was not initialized")
+
+                policy_out = gating_net(features, deterministic=True)
+                action = int(policy_out["action"][0])
                 steps = step_map[action]
                 cost = costs_map[action]
-                scale = float(steps) 
-                
-                # For discrete RL, we simulate K steps or use scaling approximation
-                # Assuming scaling approx for fairness in this script
+
                 if steps == 0:
-                    out_ttt = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=False)
+                    out_ttt = ttt_model(
+                        chunk_batch["input_ids"],
+                        attention_mask=chunk_batch["attention_mask"],
+                        position_ids=chunk_batch_with_pos["position_ids"],
+                        use_ttt=False,
+                    )
+                    loss = float(
+                        cross_entropy_loss(
+                            out_ttt["logits"][:, :-1],
+                            chunk_batch["input_ids"][:, 1:],
+                            chunk_batch["attention_mask"][:, 1:],
+                        )
+                    )
                 else:
-                    out_ttt = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=True, gating_scale=jnp.array([[scale]]))
-                
-                loss = float(cross_entropy_loss(out_ttt["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
-                
+                    metrics = None
+                    for _ in range(steps):
+                        metrics = run_chunk_step(
+                            ttt_model,
+                            rl_optimizer,
+                            chunk_batch_with_pos,
+                            use_ttt=True,
+                            apply_update=True,
+                            ssl_weight=rl_ssl_weight,
+                        )
+                    eval_metrics = run_chunk_step(
+                        ttt_model,
+                        None,
+                        chunk_batch_with_pos,
+                        use_ttt=True,
+                        apply_update=False,
+                        ssl_weight=rl_ssl_weight,
+                    )
+                    loss = float(eval_metrics["loss_ce"])
+
             elif isinstance(gating_net, GatingNetwork):
                 # Differentiable Gating
                 scale = float(gating_net(features, train=False)[0, 0])
-                
-                if scale < 0.01:
-                    out_ttt = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=False)
-                    cost = 1.0
-                else:
-                    out_ttt = ttt_model(chunk_batch["input_ids"], attention_mask=chunk_batch["attention_mask"], use_ttt=True, gating_scale=jnp.array([[scale]]))
-                    # Cost model (1 step update)
-                    cost = 3.0 
-                
-                loss = float(cross_entropy_loss(out_ttt["logits"][:, :-1], chunk_batch["input_ids"][:, 1:], chunk_batch["attention_mask"][:, 1:]))
+                scale = max(0.0, scale)
+                gating_scale = jnp.array([[scale]], dtype=jnp.float32)
+                out_ttt = ttt_model(
+                    chunk_batch["input_ids"],
+                    attention_mask=chunk_batch["attention_mask"],
+                    position_ids=chunk_batch_with_pos["position_ids"],
+                    use_ttt=True,
+                    gating_scale=gating_scale,
+                )
+                cost = float(jnp.clip(1.0 + 2.0 * scale, a_min=1.0, a_max=9.0))
+                loss = float(
+                    cross_entropy_loss(
+                        out_ttt["logits"][:, :-1],
+                        chunk_batch["input_ids"][:, 1:],
+                        chunk_batch["attention_mask"][:, 1:],
+                    )
+                )
             
             results["loss"].append(loss)
             results["cost"].append(cost)
@@ -330,6 +431,9 @@ def main():
             language=args.language,
             split=args.split,
             num_workers=args.num_workers,
+            rl_learning_rate=args.rl_learning_rate,
+            rl_max_grad_norm=args.rl_max_grad_norm,
+            rl_ssl_weight=args.rl_ssl_weight,
         )
         all_results.append(df_rl)
     
