@@ -248,9 +248,8 @@ def evaluate_model(
                         )
                     )
                 else:
-                    metrics = None
                     for _ in range(steps):
-                        metrics = run_chunk_step(
+                        run_chunk_step(
                             ttt_model,
                             rl_optimizer,
                             chunk_batch_with_pos,

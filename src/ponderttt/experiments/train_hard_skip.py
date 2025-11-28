@@ -530,7 +530,6 @@ def main():
         avg_loss = total_loss / valid_chunks
         avg_ce_loss = total_ce_loss / valid_chunks
         avg_l_ttt = total_l_ttt / valid_chunks
-        avg_cost = total_cost / valid_chunks
         avg_update_prob = total_update_prob / valid_chunks
         avg_hard_cost = total_hard_cost / valid_chunks
         avg_skip_rate = total_skip_rate / valid_chunks
