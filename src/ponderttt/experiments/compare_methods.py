@@ -20,7 +20,7 @@ from typing import Optional, cast
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import load_ttt_model, PolicyConfig, PolicyNetwork, TTTTransformerLM
-from ..models.gating_nnx import GatingConfig, GatingNetwork
+from ..models.gating_nnx import GatingConfig, GatingNetwork, BinaryGatingConfig, BinaryGatingNetwork
 from .training_utils import run_chunk_step
 from ..utils import FeatureExtractor, cross_entropy_loss
 from ..utils.checkpointing import load_checkpoint
@@ -51,6 +51,8 @@ def parse_args():
     parser.add_argument("--rl_learning_rate", type=float, default=5e-5, help="Learning rate for RL TTT updates during evaluation")
     parser.add_argument("--rl_max_grad_norm", type=float, default=1.0, help="Gradient norm clip for RL evaluation updates")
     parser.add_argument("--rl_ssl_weight", type=float, default=0.1, help="Auxiliary SSL loss weight when replaying RL updates")
+    parser.add_argument("--hard_skip_threshold", type=float, default=0.1, help="Hard Skip threshold: skip TTT if gating scale < threshold (default: 0.1)")
+    parser.add_argument("--binary_gating_checkpoint", type=str, help="Path to Binary Gating (Hard Skip) checkpoint (optional)")
     return parser.parse_args()
 
 
@@ -61,7 +63,7 @@ def evaluate_model(
     num_batches: int,
     batch_size: int,
     seed: int,
-    gating_net: Optional[GatingNetwork | PolicyNetwork] = None,
+    gating_net: Optional[GatingNetwork | BinaryGatingNetwork | PolicyNetwork] = None,
     is_rl: bool = False,
     model: Optional[TTTTransformerLM] = None,  # Accept pre-loaded model
     language: str = "Python",
@@ -70,6 +72,7 @@ def evaluate_model(
     rl_learning_rate: float = 5e-5,
     rl_max_grad_norm: float = 1.0,
     rl_ssl_weight: float = 0.1,
+    hard_skip_threshold: float = 0.1,  # Hard Skip: skip TTT if scale < threshold (for GatingNetwork)
 ):
     if gating_net is not None:
         assert batch_size == 1, "Batch size must be 1 for dynamic gating evaluation (mixed SKIP/TTT strategies)."
@@ -265,26 +268,76 @@ def evaluate_model(
                     )
                     loss = float(eval_metrics["loss_ce"])
 
+            elif isinstance(gating_net, BinaryGatingNetwork):
+                # Binary Gating (Hard Skip) - trained with Gumbel-Softmax
+                hard_scale, decision = gating_net.get_decision(features)
+                decision_val = int(decision[0])
+
+                if decision_val == 0:
+                    # SKIP: use base forward output
+                    cost = 1.0
+                    loss = float(
+                        cross_entropy_loss(
+                            out_base["logits"][:, :-1],
+                            chunk_batch["input_ids"][:, 1:],
+                            chunk_batch["attention_mask"][:, 1:],
+                        )
+                    )
+                else:
+                    # UPDATE: run TTT
+                    gating_scale = jnp.array([[1.0]], dtype=jnp.float32)  # Full TTT
+                    out_ttt = ttt_model(
+                        chunk_batch["input_ids"],
+                        attention_mask=chunk_batch["attention_mask"],
+                        position_ids=chunk_batch_with_pos["position_ids"],
+                        use_ttt=True,
+                        gating_scale=gating_scale,
+                    )
+                    cost = 3.0
+                    loss = float(
+                        cross_entropy_loss(
+                            out_ttt["logits"][:, :-1],
+                            chunk_batch["input_ids"][:, 1:],
+                            chunk_batch["attention_mask"][:, 1:],
+                        )
+                    )
+
             elif isinstance(gating_net, GatingNetwork):
-                # Differentiable Gating
+                # Continuous Gating with Hard Skip threshold
                 scale = float(gating_net(features, train=False)[0, 0])
                 scale = max(0.0, scale)
-                gating_scale = jnp.array([[scale]], dtype=jnp.float32)
-                out_ttt = ttt_model(
-                    chunk_batch["input_ids"],
-                    attention_mask=chunk_batch["attention_mask"],
-                    position_ids=chunk_batch_with_pos["position_ids"],
-                    use_ttt=True,
-                    gating_scale=gating_scale,
-                )
-                cost = float(jnp.clip(1.0 + 2.0 * scale, a_min=1.0, a_max=9.0))
-                loss = float(
-                    cross_entropy_loss(
-                        out_ttt["logits"][:, :-1],
-                        chunk_batch["input_ids"][:, 1:],
-                        chunk_batch["attention_mask"][:, 1:],
+
+                # Hard Skip: if scale < threshold, skip TTT entirely (cost=1.0)
+                if scale < hard_skip_threshold:
+                    # Use base forward output (no TTT)
+                    cost = 1.0
+                    loss = float(
+                        cross_entropy_loss(
+                            out_base["logits"][:, :-1],
+                            chunk_batch["input_ids"][:, 1:],
+                            chunk_batch["attention_mask"][:, 1:],
+                        )
                     )
-                )
+                else:
+                    # Run TTT with full gating scale
+                    gating_scale = jnp.array([[scale]], dtype=jnp.float32)
+                    out_ttt = ttt_model(
+                        chunk_batch["input_ids"],
+                        attention_mask=chunk_batch["attention_mask"],
+                        position_ids=chunk_batch_with_pos["position_ids"],
+                        use_ttt=True,
+                        gating_scale=gating_scale,
+                    )
+                    # Cost: 1 (base forward already done) + 2 (TTT forward + backward)
+                    # When TTT runs, cost is always 3.0 (like UPDATE_1)
+                    cost = 3.0
+                    loss = float(
+                        cross_entropy_loss(
+                            out_ttt["logits"][:, :-1],
+                            chunk_batch["input_ids"][:, 1:],
+                            chunk_batch["attention_mask"][:, 1:],
+                        )
+                    )
             
             results["loss"].append(loss)
             results["cost"].append(cost)
@@ -377,9 +430,52 @@ def main():
             print("Warning: Could not find 'state.policy' in checkpoint.")
     else:
         print("No RL checkpoint supplied; skipping RL policy evaluation.")
-    
+
+    # Binary Gating Network (Hard Skip, trained with Gumbel-Softmax)
+    binary_net: Optional[BinaryGatingNetwork] = None
+    binary_ttt_model = None
+
+    if args.binary_gating_checkpoint:
+        binary_net = BinaryGatingNetwork(
+            config=BinaryGatingConfig(feature_dim=32, hidden_dim=64, scale_when_update=1.0),
+            rngs=rngs
+        )
+        print(f"Loading Binary Gating (Hard Skip) checkpoint from {args.binary_gating_checkpoint}...")
+
+        # Instantiate fresh TTT model to load weights into
+        binary_ttt_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=args.seed,
+            load_pretrained=True,
+            vocab_size=vocab_size,
+        )
+
+        class TrainableSystemBinary(nnx.Module):
+            def __init__(self, ttt_model, gating_net):
+                self.fast_layer = ttt_model.fast_layer
+                self.fast_norm = ttt_model.fast_norm
+                self.gating_net = gating_net
+                if hasattr(ttt_model, 'lm_head'):
+                    self.lm_head = ttt_model.lm_head
+                else:
+                    self.lm_head = None
+
+        trainable_system_binary = TrainableSystemBinary(binary_ttt_model, binary_net)
+
+        ckpt = load_checkpoint(args.binary_gating_checkpoint, target=None)
+
+        if "state" in ckpt and "model" in ckpt["state"]:
+            model_state = unwrap_state(ckpt["state"]["model"])
+            nnx.update(trainable_system_binary, model_state)
+            print("Binary Gating (Hard Skip) and TTT weights loaded.")
+        else:
+            print("Warning: Could not find 'state.model' in checkpoint.")
+    else:
+        print("No Binary Gating checkpoint supplied; skipping binary gating evaluation.")
+
     all_results = []
-    
+
     # 2. Evaluate Baselines (SKIP)
     # Use fresh model for baseline
     df_skip = evaluate_model(
@@ -397,22 +493,23 @@ def main():
     )
     all_results.append(df_skip)
     
-    # 3. Evaluate Differentiable
+    # 3. Evaluate Differentiable (with Hard Skip)
     # Use loaded model if available
     if diff_net is not None:
         df_diff = evaluate_model(
-            "Differentiable", 
-            args.model_scale, 
-            args.budget, 
-            args.num_eval_batches, 
-            args.batch_size, 
-            args.seed, 
-            diff_net, 
+            "Differentiable (Hard Skip)",
+            args.model_scale,
+            args.budget,
+            args.num_eval_batches,
+            args.batch_size,
+            args.seed,
+            diff_net,
             is_rl=False,
             model=diff_ttt_model, # Pass the loaded model
             language=args.language,
             split=args.split,
             num_workers=args.num_workers,
+            hard_skip_threshold=args.hard_skip_threshold,
         )
         all_results.append(df_diff)
     
@@ -436,8 +533,26 @@ def main():
             rl_ssl_weight=args.rl_ssl_weight,
         )
         all_results.append(df_rl)
-    
-    # 5. Visualize & Report
+
+    # 5. Evaluate Binary Gating (Hard Skip with Gumbel-Softmax)
+    if binary_net is not None:
+        df_binary = evaluate_model(
+            "Binary Gating (Hard Skip)",
+            args.model_scale,
+            args.budget,
+            args.num_eval_batches,
+            args.batch_size,
+            args.seed,
+            binary_net,
+            is_rl=False,
+            model=binary_ttt_model,
+            language=args.language,
+            split=args.split,
+            num_workers=args.num_workers,
+        )
+        all_results.append(df_binary)
+
+    # 6. Visualize & Report
     full_df = pd.concat(all_results)
     
     print("\n=== Final Results ===")
