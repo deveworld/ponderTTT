@@ -32,6 +32,7 @@ def parse_args():
     parser.add_argument("--num_batches", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max_steps", type=float, default=4.0)
     return parser.parse_args()
 
 
@@ -102,26 +103,54 @@ def main():
 
     # Load gating network
     print("Loading gating network...")
-    gating_net = GatingNetwork(
-        config=GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0),
-        rngs=nnx.Rngs(args.seed)
+    gating_config = GatingConfig(
+        feature_dim=32,
+        hidden_dim=64,
+        scale_output=args.max_steps
     )
+    gating_net = GatingNetwork(config=gating_config, rngs=nnx.Rngs(args.seed + 1))
 
-    # Create trainable system for checkpoint loading
+    # Create trainable system for checkpoint loading (same structure as training)
     class TrainableSystem(nnx.Module):
         def __init__(self, ttt_model, gating_net):
             self.fast_layer = ttt_model.fast_layer
             self.fast_norm = ttt_model.fast_norm
             self.gating_net = gating_net
-            self.lm_head = getattr(ttt_model, 'lm_head', None)
+            if hasattr(ttt_model, 'lm_head'):
+                self.lm_head = ttt_model.lm_head
+            else:
+                self.lm_head = None
 
     trainable_system = TrainableSystem(model, gating_net)
 
-    # Load checkpoint
-    ckpt = load_checkpoint(args.checkpoint, target=None)
-    if "state" in ckpt and "model" in ckpt["state"]:
-        nnx.update(trainable_system, ckpt["state"]["model"])
-        print("Checkpoint loaded successfully.")
+    # Create optimizer to match checkpoint structure
+    import optax
+    optimizer = nnx.Optimizer(
+        trainable_system,
+        optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.adam(1e-3),
+        ),
+        wrt=nnx.All(nnx.Param),
+    )
+
+    # Load checkpoint with proper target structure
+    print(f"Loading checkpoint from {args.checkpoint}...")
+    target = {
+        "state": {"model": nnx.state(trainable_system), "optimizer": nnx.state(optimizer)},
+        "step": 0,
+        "metadata": {
+            "model_scale": "",
+            "max_steps": 0.0,
+            "budget_limit": 0.0,
+        }
+    }
+    ckpt = load_checkpoint(args.checkpoint, target=target)
+    nnx.update(trainable_system, ckpt["state"]["model"])
+    print(f"Checkpoint loaded successfully (step {ckpt.get('step', 'unknown')}).")
+
+    # Use the loaded gating network from trainable_system
+    gating_net = trainable_system.gating_net
 
     # Feature extractor
     feature_extractor = FeatureExtractor(
