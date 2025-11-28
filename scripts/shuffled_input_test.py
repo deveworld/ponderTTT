@@ -229,6 +229,8 @@ def main():
 
     def ppl(loss):
         import math
+        if loss > 20:  # Cap to avoid overflow (exp(20) ≈ 485M)
+            return float('inf')
         return math.exp(loss)
 
     print(f"\n1. Normal Text (N={len(results['normal_skip'])} chunks):")
@@ -241,8 +243,10 @@ def main():
     print(f"\n2. Shuffled Text (N={len(results['shuffled_skip'])} chunks):")
     shuf_skip_loss = avg(results["shuffled_skip"])
     shuf_ponder_loss = avg(results["shuffled_ponder"])
-    print(f"   SKIP:      Loss = {shuf_skip_loss:.4f}, PPL = {ppl(shuf_skip_loss):.2f}")
-    print(f"   PonderTTT: Loss = {shuf_ponder_loss:.4f}, PPL = {ppl(shuf_ponder_loss):.2f}")
+    shuf_skip_ppl = ppl(shuf_skip_loss)
+    shuf_ponder_ppl = ppl(shuf_ponder_loss)
+    print(f"   SKIP:      Loss = {shuf_skip_loss:.4f}, PPL = {'inf' if shuf_skip_ppl == float('inf') else f'{shuf_skip_ppl:.2f}'}")
+    print(f"   PonderTTT: Loss = {shuf_ponder_loss:.4f}, PPL = {'inf' if shuf_ponder_ppl == float('inf') else f'{shuf_ponder_ppl:.2f}'}")
     print(f"   Improvement: {(1 - shuf_ponder_loss/shuf_skip_loss)*100:.1f}%")
 
     print("\n" + "=" * 70)
@@ -265,6 +269,12 @@ def main():
     print("\n" + "=" * 70)
     print("FOR PAPER (Appendix)")
     print("=" * 70)
+
+    def fmt_ppl(p):
+        if p == float('inf') or p > 1e6:
+            return "$\\infty$"
+        return f"{p:.1f}"
+
     print(f"""
 \\begin{{table}}[h]
 \\centering
@@ -273,11 +283,17 @@ def main():
 \\toprule
 \\textbf{{Input Type}} & \\textbf{{SKIP PPL}} & \\textbf{{Ours PPL}} & \\textbf{{Improv.}} \\\\
 \\midrule
-Normal Text & {ppl(normal_skip_loss):.1f} & {ppl(normal_ponder_loss):.1f} & {normal_improvement:.1f}\\% \\\\
-Shuffled Text & {ppl(shuf_skip_loss):.1f} & {ppl(shuf_ponder_loss):.1f} & {shuffled_improvement:.1f}\\% \\\\
+Normal Text & {fmt_ppl(ppl(normal_skip_loss))} & {fmt_ppl(ppl(normal_ponder_loss))} & {normal_improvement:.1f}\\% \\\\
+Shuffled Text & {fmt_ppl(ppl(shuf_skip_loss))} & {fmt_ppl(ppl(shuf_ponder_loss))} & {shuffled_improvement:.1f}\\% \\\\
 \\bottomrule
 \\end{{tabular}}
 \\end{{table}}
+
+Raw Loss Values (for reference):
+- Normal SKIP: {normal_skip_loss:.4f}
+- Normal Ours: {normal_ponder_loss:.4f}
+- Shuffled SKIP: {shuf_skip_loss:.4f}
+- Shuffled Ours: {shuf_ponder_loss:.4f}
 """)
 
 
