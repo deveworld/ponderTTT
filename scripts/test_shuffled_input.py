@@ -86,6 +86,24 @@ def parse_args():
     return parser.parse_args()
 
 
+@jax.jit
+def shuffle_chunk(chunk_ids, chunk_mask, key):
+    """Shuffle valid tokens in a chunk using fixed-size operations."""
+    chunk_size = chunk_ids.shape[0]
+
+    # Generate random values for sorting (full size to avoid recompilation)
+    rand_vals = jax.random.uniform(key, (chunk_size,))
+
+    # Set padding positions to very high values so they stay at the end
+    rand_vals = jnp.where(chunk_mask > 0, rand_vals, 2.0)
+
+    # Sort indices by random values
+    perm = jnp.argsort(rand_vals)
+
+    # Apply permutation
+    return chunk_ids[perm]
+
+
 def evaluate_chunks(forward_skip_jit, forward_update_jit, get_decision_jit,
                     batches, min_valid_tokens=64, shuffle=False):
     """Evaluate on chunks, optionally with shuffled tokens."""
@@ -94,6 +112,7 @@ def evaluate_chunks(forward_skip_jit, forward_update_jit, get_decision_jit,
     total_chunks = 0
     total_updates = 0
     skipped_empty = 0
+    chunk_counter = 0
 
     for batch in tqdm(batches, desc="Shuffled" if shuffle else "Normal"):
         # Use pre-chunked data from dataset
@@ -112,14 +131,13 @@ def evaluate_chunks(forward_skip_jit, forward_update_jit, get_decision_jit,
                 valid_tokens = int(chunk_mask.sum())
                 if valid_tokens < min_valid_tokens:
                     skipped_empty += 1
+                    chunk_counter += 1
                     continue
 
-                # Shuffle tokens within chunk if requested
+                # Shuffle tokens within chunk if requested (using fixed-size ops)
                 if shuffle:
-                    key = jax.random.PRNGKey(total_chunks + c_idx + b_idx * 1000)
-                    # Shuffle only valid tokens
-                    perm = jax.random.permutation(key, valid_tokens)
-                    chunk_ids = chunk_ids.at[:valid_tokens].set(chunk_ids[:valid_tokens][perm])
+                    key = jax.random.PRNGKey(chunk_counter)
+                    chunk_ids = shuffle_chunk(chunk_ids, chunk_mask, key)
 
                 # Add batch dimension
                 input_ids = chunk_ids[None, :]  # [1, chunk_size]
@@ -160,6 +178,7 @@ def evaluate_chunks(forward_skip_jit, forward_update_jit, get_decision_jit,
                 total_loss_skip += loss_skip_val
                 total_loss_ours += loss_ours_val
                 total_chunks += 1
+                chunk_counter += 1
 
     if total_chunks == 0:
         return float('nan'), float('nan'), 0, 0, 0
