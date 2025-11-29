@@ -185,48 +185,47 @@ def main():
     )
 
     # Measure gating overhead only (includes base model forward for features)
-    latency_gating = measure_latency(
+    latency_gating_full = measure_latency(
         lambda: get_features_and_decision(dummy_input),
         args.num_warmup,
         args.num_trials,
     )
 
+    # Gating overhead (excluding base forward, which is already measured in latency_skip)
+    # gating_overhead = feature extraction + decision making
+    gating_overhead = max(0, latency_gating_full - latency_skip)
+
     # Measure Hard Skip with actual decisions
-    # Run multiple trials to get average decision rate
+    # First, determine the decision distribution
     total_skip = 0
     total_update = 0
-    decision_times = []
 
     for _ in range(args.num_trials):
         _, decision = get_features_and_decision(dummy_input)
         decision_val = int(decision[0])
-
-        start = time.perf_counter()
-        if decision_val == 0:  # SKIP
-            # SKIP: No additional computation (base forward already done in gating)
+        if decision_val == 0:
             total_skip += 1
-        else:  # UPDATE
-            result = forward_update(dummy_input)
-            jax.block_until_ready(result)
+        else:
             total_update += 1
-        end = time.perf_counter()
 
-        decision_times.append((end - start) * 1000 + latency_gating)
-
-    latency_hard_skip = sum(decision_times) / len(decision_times)
     skip_rate = total_skip / (total_skip + total_update)
     update_rate = total_update / (total_skip + total_update)
 
-    # Expected latency based on skip rate
-    expected_latency = skip_rate * latency_skip + update_rate * latency_update + latency_gating
+    # Calculate Hard Skip latency correctly:
+    # - Always: base forward (for features) + gating decision
+    # - If SKIP: done (use base forward output)
+    # - If UPDATE: need TTT, so add (UPDATE - SKIP) overhead
+    # Total = base_forward + gating_overhead + update_rate * (UPDATE - SKIP)
+    ttt_overhead = latency_update - latency_skip  # Just the TTT part
+    latency_hard_skip = latency_skip + gating_overhead + update_rate * ttt_overhead
 
     # Results
     results = [
-        {"Method": "SKIP (Baseline)", "Latency (ms)": latency_skip, "Rel. Speed": 1.0, "Note": ""},
-        {"Method": "UPDATE_1 (Fixed)", "Latency (ms)": latency_update, "Rel. Speed": latency_update / latency_skip, "Note": ""},
-        {"Method": "Gating Overhead", "Latency (ms)": latency_gating, "Rel. Speed": latency_gating / latency_skip, "Note": ""},
+        {"Method": "SKIP (Baseline)", "Latency (ms)": latency_skip, "Rel. Speed": 1.0, "Note": "use_ttt=False"},
+        {"Method": "UPDATE_1 (Fixed)", "Latency (ms)": latency_update, "Rel. Speed": latency_update / latency_skip, "Note": "use_ttt=True"},
+        {"Method": "TTT Overhead", "Latency (ms)": ttt_overhead, "Rel. Speed": ttt_overhead / latency_skip, "Note": "UPDATE - SKIP"},
+        {"Method": "Gating Overhead", "Latency (ms)": gating_overhead, "Rel. Speed": gating_overhead / latency_skip, "Note": "features + decision"},
         {"Method": "Hard Skip (Ours)", "Latency (ms)": latency_hard_skip, "Rel. Speed": latency_hard_skip / latency_skip, "Note": f"Skip={skip_rate:.0%}"},
-        {"Method": "Expected (Theory)", "Latency (ms)": expected_latency, "Rel. Speed": expected_latency / latency_skip, "Note": f"Skip={skip_rate:.0%}"},
     ]
 
     df = pd.DataFrame(results)
