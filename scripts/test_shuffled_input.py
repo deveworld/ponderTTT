@@ -85,9 +85,14 @@ def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, shuffle=F
     total_loss_ours = 0.0
     total_chunks = 0
 
+    first_batch = True
     for batch in tqdm(batches, desc="Shuffled" if shuffle else "Normal"):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
+
+        if first_batch:
+            print(f"  [DEBUG] input_ids shape: {input_ids.shape}, attention_mask shape: {attention_mask.shape}")
+            first_batch = False
 
         # Shuffle tokens within each sequence if requested
         if shuffle:
@@ -144,9 +149,21 @@ def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, shuffle=F
                     chunk["attention_mask"][:, 1:],
                 )
 
-            total_loss_skip += float(loss_skip)
-            total_loss_ours += float(loss_ours)
-            total_chunks += 1
+            loss_skip_val = float(loss_skip)
+            loss_ours_val = float(loss_ours)
+
+            # Debug first chunk
+            if total_chunks == 0:
+                print(f"  [DEBUG] First chunk - loss_skip: {loss_skip_val:.4f}, loss_ours: {loss_ours_val:.4f}, decision: {decision_val}")
+
+            # Skip NaN values
+            if not math.isnan(loss_skip_val) and not math.isnan(loss_ours_val):
+                total_loss_skip += loss_skip_val
+                total_loss_ours += loss_ours_val
+                total_chunks += 1
+
+    if total_chunks == 0:
+        return float('nan'), float('nan'), 0
 
     avg_loss_skip = total_loss_skip / total_chunks
     avg_loss_ours = total_loss_ours / total_chunks
