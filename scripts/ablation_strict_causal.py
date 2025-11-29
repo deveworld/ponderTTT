@@ -59,63 +59,6 @@ class TrainableSystem(nnx.Module):
             self.lm_head = None
 
 
-def create_jitted_functions(ttt_model, gating_net, feature_extractor):
-    """Create JIT-compiled functions for evaluation."""
-
-    model_graph, model_state = nnx.split(ttt_model)
-    gating_graph, gating_state = nnx.split(gating_net)
-
-    @jax.jit
-    def forward_skip(model_state, input_ids):
-        """Forward pass without TTT."""
-        model = nnx.merge(model_graph, model_state)
-        out = model(input_ids, use_ttt=False, gating_scale=None)
-        return out["logits"]
-
-    @jax.jit
-    def forward_update(model_state, input_ids):
-        """Forward pass with TTT (k=0, standard)."""
-        model = nnx.merge(model_graph, model_state)
-        # Ensure k=0 (standard causal)
-        model.fast_layer.config.causal_k = 0
-        out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
-        return out["logits"]
-
-    @jax.jit
-    def forward_update_strict(model_state, input_ids):
-        """Forward pass with TTT (k=-1, strict causal)."""
-        model = nnx.merge(model_graph, model_state)
-        # Set k=-1 (strict causal)
-        model.fast_layer.config.causal_k = -1
-        out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
-        return out["logits"]
-
-    @jax.jit
-    def compute_loss(logits, input_ids, attention_mask):
-        """Compute cross-entropy loss."""
-        return cross_entropy_loss(
-            logits[:, :-1],
-            input_ids[:, 1:],
-            attention_mask[:, 1:],
-        )
-
-    @jax.jit
-    def get_features_and_decision(model_state, gating_state, input_ids, logits, attention_mask):
-        """Extract features and get gating decision."""
-        gating = nnx.merge(gating_graph, gating_state)
-        features = feature_extractor.extract(
-            input_ids=input_ids,
-            logits=logits,
-            attention_mask=attention_mask,
-            budget_remaining=1.0,
-        )
-        hard_scale, decision = gating.get_decision(features)
-        return decision
-
-    return (forward_skip, forward_update, forward_update_strict, compute_loss,
-            get_features_and_decision, model_state, gating_state)
-
-
 def main():
     args = parse_args()
 
@@ -154,23 +97,51 @@ def main():
         seq_length_norm=args.chunk_size,
     )
 
-    # Create JIT-compiled functions
+    # Create JIT-compiled functions using nnx.jit
     print("Compiling JIT functions...")
-    (forward_skip, forward_update, forward_update_strict, compute_loss,
-     get_features_and_decision, jit_model_state, jit_gating_state) = \
-        create_jitted_functions(model, gating_net, feature_extractor)
+
+    @nnx.jit
+    def forward_skip(input_ids):
+        """Forward pass without TTT."""
+        out = model(input_ids, use_ttt=False, gating_scale=None)
+        return out["logits"]
+
+    @nnx.jit
+    def forward_update_k0(input_ids):
+        """Forward pass with TTT (k=0, standard)."""
+        model.fast_layer.config.causal_k = 0
+        out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
+        return out["logits"]
+
+    @nnx.jit
+    def forward_update_k_neg1(input_ids):
+        """Forward pass with TTT (k=-1, strict causal)."""
+        model.fast_layer.config.causal_k = -1
+        out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
+        return out["logits"]
+
+    @nnx.jit
+    def get_decision(input_ids, logits, attention_mask):
+        """Extract features and get gating decision."""
+        features = feature_extractor.extract(
+            input_ids=input_ids,
+            logits=logits,
+            attention_mask=attention_mask,
+            budget_remaining=1.0,
+        )
+        _, decision = gating_net.get_decision(features)
+        return decision
 
     # Warmup JIT compilation
     print("Warming up JIT...")
     dummy_input = jnp.ones((1, args.chunk_size), dtype=jnp.int32)
     dummy_mask = jnp.ones((1, args.chunk_size), dtype=jnp.float32)
-    _ = forward_skip(jit_model_state, dummy_input)
-    _ = forward_update(jit_model_state, dummy_input)
-    _ = forward_update_strict(jit_model_state, dummy_input)
-    logits = forward_skip(jit_model_state, dummy_input)
-    _ = compute_loss(logits, dummy_input, dummy_mask)
-    _ = get_features_and_decision(jit_model_state, jit_gating_state, dummy_input, logits, dummy_mask)
+    logits = forward_skip(dummy_input)
+    _ = forward_update_k0(dummy_input)
+    _ = forward_update_k_neg1(dummy_input)
+    _ = get_decision(dummy_input, logits, dummy_mask)
     jax.block_until_ready(logits)
+    print("JIT compilation complete.")
 
     print("Loading data...")
     seq_length = args.chunk_size * 4  # 4 chunks per sequence
@@ -222,8 +193,12 @@ def main():
                 attention_mask = chunk_mask[None, :]  # [1, chunk_size]
 
                 # SKIP baseline (no TTT)
-                logits_skip = forward_skip(jit_model_state, input_ids)
-                loss_skip = float(compute_loss(logits_skip, input_ids, attention_mask))
+                logits_skip = forward_skip(input_ids)
+                loss_skip = float(cross_entropy_loss(
+                    logits_skip[:, :-1],
+                    input_ids[:, 1:],
+                    attention_mask[:, 1:],
+                ))
 
                 # Skip invalid loss values
                 if math.isnan(loss_skip) or loss_skip < 0:
@@ -232,16 +207,18 @@ def main():
                 results_skip.append(loss_skip)
 
                 # Get decision for k=0
-                decision = get_features_and_decision(
-                    jit_model_state, jit_gating_state, input_ids, logits_skip, attention_mask
-                )
+                decision = get_decision(input_ids, logits_skip, attention_mask)
                 decision_val = int(decision[0])
                 decisions_k0.append(decision_val)
 
                 # k=0 (standard, includes diagonal) - only if UPDATE
                 if decision_val == 1:
-                    logits_k0 = forward_update(jit_model_state, input_ids)
-                    loss_k0 = float(compute_loss(logits_k0, input_ids, attention_mask))
+                    logits_k0 = forward_update_k0(input_ids)
+                    loss_k0 = float(cross_entropy_loss(
+                        logits_k0[:, :-1],
+                        input_ids[:, 1:],
+                        attention_mask[:, 1:],
+                    ))
                 else:
                     loss_k0 = loss_skip
 
@@ -250,8 +227,12 @@ def main():
 
                 # k=-1 (strict causal, excludes diagonal) - only if UPDATE
                 if decision_val == 1:
-                    logits_k_neg1 = forward_update_strict(jit_model_state, input_ids)
-                    loss_k_neg1 = float(compute_loss(logits_k_neg1, input_ids, attention_mask))
+                    logits_k_neg1 = forward_update_k_neg1(input_ids)
+                    loss_k_neg1 = float(cross_entropy_loss(
+                        logits_k_neg1[:, :-1],
+                        input_ids[:, 1:],
+                        attention_mask[:, 1:],
+                    ))
                 else:
                     loss_k_neg1 = loss_skip
 
