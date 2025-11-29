@@ -92,6 +92,8 @@ def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, shuffle=F
 
         if first_batch:
             print(f"  [DEBUG] input_ids shape: {input_ids.shape}, attention_mask shape: {attention_mask.shape}")
+            print(f"  [DEBUG] attention_mask sum: {attention_mask.sum()}, min: {attention_mask.min()}, max: {attention_mask.max()}")
+            print(f"  [DEBUG] input_ids sample: {input_ids[0, :10]}")
             first_batch = False
 
         # Shuffle tokens within each sequence if requested
@@ -154,6 +156,9 @@ def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, shuffle=F
 
             # Debug first chunk
             if total_chunks == 0:
+                mask_sum = float(chunk["attention_mask"][:, 1:].sum())
+                logits_shape = out_skip["logits"].shape
+                print(f"  [DEBUG] First chunk - logits shape: {logits_shape}, mask_sum: {mask_sum}")
                 print(f"  [DEBUG] First chunk - loss_skip: {loss_skip_val:.4f}, loss_ours: {loss_ours_val:.4f}, decision: {decision_val}")
 
             # Skip NaN values
