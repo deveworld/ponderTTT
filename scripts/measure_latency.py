@@ -118,7 +118,13 @@ def main():
     print(f"Checkpoint loaded (step {ckpt.get('step', 'unknown')})")
 
     # Feature extractor
-    feature_extractor = FeatureExtractor(feature_dim=32)
+    from ponderttt.data import get_tokenizer as get_tok
+    tok = get_tok(model_name)
+    feature_extractor = FeatureExtractor(
+        vocab_size=tok.get_vocab_size(),
+        pad_token_id=tok.token_to_id("<|pad|>"),
+        seq_length_norm=512,
+    )
 
     # Create dummy input
     dummy_input = jnp.ones((1, args.chunk_size), dtype=jnp.int32)
@@ -134,12 +140,15 @@ def main():
     def forward_update(x):
         return ttt_model(x, use_ttt=True, gating_scale=[[1.0]])
 
-    @jax.jit
-    def get_features(x):
-        return feature_extractor(x)
-
-    @jax.jit
-    def get_decision(features):
+    def get_features_and_decision(x):
+        """Get features from base model output and make gating decision."""
+        out = forward_skip(x)
+        features = feature_extractor.extract(
+            input_ids=x,
+            logits=out["logits"],
+            attention_mask=jnp.ones_like(x),
+            budget_remaining=1.0,
+        )
         return gating_net.get_decision(features)
 
     # Warmup all functions
@@ -147,8 +156,7 @@ def main():
     for _ in range(args.num_warmup):
         forward_skip(dummy_input)
         forward_update(dummy_input)
-        features = get_features(dummy_input)
-        get_decision(features)
+        get_features_and_decision(dummy_input)
 
     jax.block_until_ready(forward_skip(dummy_input))
 
@@ -166,9 +174,9 @@ def main():
         args.num_trials,
     )
 
-    # Measure gating overhead only
+    # Measure gating overhead only (includes base model forward for features)
     latency_gating = measure_latency(
-        lambda: get_decision(get_features(dummy_input)),
+        lambda: get_features_and_decision(dummy_input),
         args.num_warmup,
         args.num_trials,
     )
@@ -180,18 +188,17 @@ def main():
     decision_times = []
 
     for _ in range(args.num_trials):
-        features = get_features(dummy_input)
-        _, decision = get_decision(features)
+        _, decision = get_features_and_decision(dummy_input)
         decision_val = int(decision[0])
 
         start = time.perf_counter()
         if decision_val == 0:  # SKIP
-            result = forward_skip(dummy_input)
+            # SKIP: No additional computation (base forward already done in gating)
             total_skip += 1
         else:  # UPDATE
             result = forward_update(dummy_input)
+            jax.block_until_ready(result)
             total_update += 1
-        jax.block_until_ready(result)
         end = time.perf_counter()
 
         decision_times.append((end - start) * 1000 + latency_gating)
