@@ -148,7 +148,7 @@ def main():
 
     @jax.jit
     def forward_update(x):
-        return ttt_model(x, use_ttt=True, gating_scale=[[1.0]])
+        return ttt_model(x, use_ttt=True, gating_scale=jnp.array([[1.0]]))
 
     def get_features_and_decision(x):
         """Get features from base model output and make gating decision."""
