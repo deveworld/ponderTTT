@@ -21,6 +21,15 @@ from ponderttt.models.gating_nnx import BinaryGatingConfig, BinaryGatingNetwork
 from ponderttt.utils import FeatureExtractor, cross_entropy_loss
 from ponderttt.utils.checkpointing import load_checkpoint
 
+
+def unwrap_state(state):
+    """Recursively unwrap Orbax-serialized NNX state dicts (remove 'value' wrappers)."""
+    if isinstance(state, dict):
+        if "value" in state and len(state) == 1:
+            return state["value"]
+        return {k: unwrap_state(v) for k, v in state.items()}
+    return state
+
 MODEL_SCALES = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}
 
 
@@ -114,7 +123,8 @@ def main():
 
     # Update model with loaded state
     if "state" in ckpt and "model" in ckpt["state"]:
-        nnx.update(trainable_system, ckpt["state"]["model"])
+        model_state = unwrap_state(ckpt["state"]["model"])
+        nnx.update(trainable_system, model_state)
     print(f"Checkpoint loaded (step {ckpt.get('step', 'unknown')}).")
 
     gating_net = trainable_system.gating_net
