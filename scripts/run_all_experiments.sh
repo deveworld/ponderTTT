@@ -47,6 +47,28 @@ log_phase() {
     echo -e "${BLUE}========================================${NC}\n"
 }
 
+# Find the latest checkpoint in a directory (highest number)
+get_latest_checkpoint() {
+    local dir="$1"
+    if [ ! -d "$dir" ]; then
+        echo ""
+        return 1
+    fi
+
+    # Find checkpoint_* directories, extract numbers, sort, get highest
+    local latest=$(ls -d "${dir}"/checkpoint_* 2>/dev/null | \
+        sed 's/.*checkpoint_//' | \
+        sort -n | \
+        tail -1)
+
+    if [ -z "$latest" ]; then
+        echo ""
+        return 1
+    fi
+
+    echo "${dir}/checkpoint_${latest}"
+}
+
 # Run a single experiment with error handling
 run_experiment() {
     local name="$1"
@@ -166,22 +188,34 @@ phase3_eval_id() {
     log_phase "Phase 3: Evaluating In-Distribution (Python)"
 
     # 125M
-    run_experiment "Eval 125M Python" \
-        python -m ponderttt.experiments.compare_methods \
-            --model_scale 125m \
-            --binary_gating_checkpoint outputs/hard_skip/125m_skip0.8/checkpoint_final \
-            --num_eval_batches $NUM_EVAL_BATCHES \
-            --language Python \
-            --output_dir outputs/eval/125m_hard_skip_python
+    local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_skip0.8")
+    if [ -z "$ckpt_125m" ]; then
+        log_error "No checkpoint found for 125M Hard Skip"
+    else
+        log_info "Using checkpoint: $ckpt_125m"
+        run_experiment "Eval 125M Python" \
+            python -m ponderttt.experiments.compare_methods \
+                --model_scale 125m \
+                --binary_gating_checkpoint "$ckpt_125m" \
+                --num_eval_batches $NUM_EVAL_BATCHES \
+                --language Python \
+                --output_dir outputs/eval/125m_hard_skip_python
+    fi
 
     # 350M
-    run_experiment "Eval 350M Python" \
-        python -m ponderttt.experiments.compare_methods \
-            --model_scale 350m \
-            --binary_gating_checkpoint outputs/hard_skip/350m_skip0.8/checkpoint_final \
-            --num_eval_batches $NUM_EVAL_BATCHES \
-            --language Python \
-            --output_dir outputs/eval/350m_hard_skip_python
+    local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_skip0.8")
+    if [ -z "$ckpt_350m" ]; then
+        log_error "No checkpoint found for 350M Hard Skip"
+    else
+        log_info "Using checkpoint: $ckpt_350m"
+        run_experiment "Eval 350M Python" \
+            python -m ponderttt.experiments.compare_methods \
+                --model_scale 350m \
+                --binary_gating_checkpoint "$ckpt_350m" \
+                --num_eval_batches $NUM_EVAL_BATCHES \
+                --language Python \
+                --output_dir outputs/eval/350m_hard_skip_python
+    fi
 
     log_info "Phase 3 Complete!"
 }
@@ -194,29 +228,43 @@ phase4_eval_ood() {
 
     local languages=("JavaScript" "Java" "Go")
 
+    # Get checkpoints
+    local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_skip0.8")
+    local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_skip0.8")
+
     # 125M OOD
-    for lang in "${languages[@]}"; do
-        local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
-        run_experiment "Eval 125M $lang" \
-            python -m ponderttt.experiments.compare_methods \
-                --model_scale 125m \
-                --binary_gating_checkpoint outputs/hard_skip/125m_skip0.8/checkpoint_final \
-                --num_eval_batches $NUM_EVAL_BATCHES_OOD \
-                --language "$lang" \
-                --output_dir "outputs/eval/125m_hard_skip_${lang_lower}"
-    done
+    if [ -z "$ckpt_125m" ]; then
+        log_error "No checkpoint found for 125M Hard Skip"
+    else
+        log_info "Using 125M checkpoint: $ckpt_125m"
+        for lang in "${languages[@]}"; do
+            local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
+            run_experiment "Eval 125M $lang" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 125m \
+                    --binary_gating_checkpoint "$ckpt_125m" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_OOD \
+                    --language "$lang" \
+                    --output_dir "outputs/eval/125m_hard_skip_${lang_lower}"
+        done
+    fi
 
     # 350M OOD
-    for lang in "${languages[@]}"; do
-        local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
-        run_experiment "Eval 350M $lang" \
-            python -m ponderttt.experiments.compare_methods \
-                --model_scale 350m \
-                --binary_gating_checkpoint outputs/hard_skip/350m_skip0.8/checkpoint_final \
-                --num_eval_batches $NUM_EVAL_BATCHES_OOD \
-                --language "$lang" \
-                --output_dir "outputs/eval/350m_hard_skip_${lang_lower}"
-    done
+    if [ -z "$ckpt_350m" ]; then
+        log_error "No checkpoint found for 350M Hard Skip"
+    else
+        log_info "Using 350M checkpoint: $ckpt_350m"
+        for lang in "${languages[@]}"; do
+            local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
+            run_experiment "Eval 350M $lang" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 350m \
+                    --binary_gating_checkpoint "$ckpt_350m" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_OOD \
+                    --language "$lang" \
+                    --output_dir "outputs/eval/350m_hard_skip_${lang_lower}"
+        done
+    fi
 
     log_info "Phase 4 Complete!"
 }
@@ -278,12 +326,18 @@ phase6_rl() {
             --output_dir outputs/rl/125m_budget2.0 \
             --wandb_project ponderttt-rl
 
-    run_experiment "RL Evaluation" \
-        python -m ponderttt.experiments.compare_methods \
-            --model_scale 125m \
-            --rl_checkpoint outputs/rl/125m_budget2.0/checkpoint_final \
-            --num_eval_batches $NUM_EVAL_BATCHES_OOD \
-            --output_dir outputs/eval/125m_rl
+    local rl_ckpt=$(get_latest_checkpoint "outputs/rl/125m_budget2.0")
+    if [ -z "$rl_ckpt" ]; then
+        log_error "No checkpoint found for RL policy"
+    else
+        log_info "Using RL checkpoint: $rl_ckpt"
+        run_experiment "RL Evaluation" \
+            python -m ponderttt.experiments.compare_methods \
+                --model_scale 125m \
+                --rl_checkpoint "$rl_ckpt" \
+                --num_eval_batches $NUM_EVAL_BATCHES_OOD \
+                --output_dir outputs/eval/125m_rl
+    fi
 
     log_info "Phase 6 Complete!"
 }
