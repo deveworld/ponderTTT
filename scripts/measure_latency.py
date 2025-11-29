@@ -108,17 +108,13 @@ def main():
     # Create TrainableSystem for checkpoint loading
     trainable_system = TrainableSystem(ttt_model, gating_net)
 
-    # Load checkpoint
+    # Load checkpoint (model state only, no optimizer needed for inference)
     print(f"Loading checkpoint from {args.checkpoint}...")
-    import optax
-    optimizer = nnx.Optimizer(trainable_system, optax.adam(1e-3))
-    target = {
-        "state": {"model": nnx.state(trainable_system), "optimizer": nnx.state(optimizer)},
-        "step": 0,
-        "metadata": {}
-    }
-    ckpt = load_checkpoint(args.checkpoint, target=target)
-    nnx.update(trainable_system, ckpt["state"]["model"])
+    ckpt = load_checkpoint(args.checkpoint, target=None)
+
+    # Update model with loaded state
+    if "state" in ckpt and "model" in ckpt["state"]:
+        nnx.update(trainable_system, ckpt["state"]["model"])
     print(f"Checkpoint loaded (step {ckpt.get('step', 'unknown')})")
 
     # Feature extractor
