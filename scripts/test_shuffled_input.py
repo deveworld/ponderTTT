@@ -145,7 +145,7 @@ def main():
     config = BinaryGatingConfig(feature_dim=32, hidden_dim=64)
     rngs = nnx.Rngs(0)
     gating_net = BinaryGatingNetwork(config, rngs)
-    load_checkpoint(gating_net, args.checkpoint)
+    load_checkpoint(args.checkpoint, target=gating_net)
 
     # Feature extractor
     feature_extractor = FeatureExtractor(feature_dim=32)
