@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import jax
 import jax.numpy as jnp
 from flax import nnx
 from tqdm import tqdm
@@ -58,42 +59,61 @@ class TrainableSystem(nnx.Module):
             self.lm_head = None
 
 
-def evaluate_chunk(model, gating_net, feature_extractor, input_ids, attention_mask, causal_k=0):
-    """
-    Evaluate a single chunk with a specific causal_k setting.
-    Returns (loss, decision_val)
-    """
-    # Temporarily set the causal_k value on the model's TTT layer
-    model.fast_layer.config.causal_k = causal_k
+def create_jitted_functions(ttt_model, gating_net, feature_extractor):
+    """Create JIT-compiled functions for evaluation."""
 
-    # Get base model output for features
-    out_base = model(input_ids, use_ttt=False)
+    model_graph, model_state = nnx.split(ttt_model)
+    gating_graph, gating_state = nnx.split(gating_net)
 
-    # Get features for gating
-    features = feature_extractor.extract(
-        input_ids=input_ids,
-        logits=out_base["logits"],
-        attention_mask=attention_mask,
-        budget_remaining=1.0,
-    )
+    @jax.jit
+    def forward_skip(model_state, input_ids):
+        """Forward pass without TTT."""
+        model = nnx.merge(model_graph, model_state)
+        out = model(input_ids, use_ttt=False, gating_scale=None)
+        return out["logits"]
 
-    # Get binary decision
-    hard_scale, decision = gating_net.get_decision(features)
-    decision_val = int(decision[0])
+    @jax.jit
+    def forward_update(model_state, input_ids):
+        """Forward pass with TTT (k=0, standard)."""
+        model = nnx.merge(model_graph, model_state)
+        # Ensure k=0 (standard causal)
+        model.fast_layer.config.causal_k = 0
+        out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
+        return out["logits"]
 
-    # Forward with TTT based on decision
-    if decision_val == 0:  # SKIP
-        outputs = out_base  # Reuse the base model output
-    else:  # UPDATE
-        outputs = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
+    @jax.jit
+    def forward_update_strict(model_state, input_ids):
+        """Forward pass with TTT (k=-1, strict causal)."""
+        model = nnx.merge(model_graph, model_state)
+        # Set k=-1 (strict causal)
+        model.fast_layer.config.causal_k = -1
+        out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
+        return out["logits"]
 
-    logits = outputs["logits"]
-    loss = cross_entropy_loss(
-        logits[:, :-1],
-        input_ids[:, 1:],
-        attention_mask[:, 1:]
-    )
-    return float(loss), decision_val
+    @jax.jit
+    def compute_loss(logits, input_ids, attention_mask):
+        """Compute cross-entropy loss."""
+        return cross_entropy_loss(
+            logits[:, :-1],
+            input_ids[:, 1:],
+            attention_mask[:, 1:],
+        )
+
+    @jax.jit
+    def get_features_and_decision(model_state, gating_state, input_ids, logits, attention_mask):
+        """Extract features and get gating decision."""
+        gating = nnx.merge(gating_graph, gating_state)
+        features = feature_extractor.extract(
+            input_ids=input_ids,
+            logits=logits,
+            attention_mask=attention_mask,
+            budget_remaining=1.0,
+        )
+        hard_scale, decision = gating.get_decision(features)
+        return decision
+
+    return (forward_skip, forward_update, forward_update_strict, compute_loss,
+            get_features_and_decision, model_state, gating_state)
 
 
 def main():
@@ -133,6 +153,24 @@ def main():
         pad_token_id=tokenizer.token_to_id("<|pad|>"),
         seq_length_norm=args.chunk_size,
     )
+
+    # Create JIT-compiled functions
+    print("Compiling JIT functions...")
+    (forward_skip, forward_update, forward_update_strict, compute_loss,
+     get_features_and_decision, jit_model_state, jit_gating_state) = \
+        create_jitted_functions(model, gating_net, feature_extractor)
+
+    # Warmup JIT compilation
+    print("Warming up JIT...")
+    dummy_input = jnp.ones((1, args.chunk_size), dtype=jnp.int32)
+    dummy_mask = jnp.ones((1, args.chunk_size), dtype=jnp.float32)
+    _ = forward_skip(jit_model_state, dummy_input)
+    _ = forward_update(jit_model_state, dummy_input)
+    _ = forward_update_strict(jit_model_state, dummy_input)
+    logits = forward_skip(jit_model_state, dummy_input)
+    _ = compute_loss(logits, dummy_input, dummy_mask)
+    _ = get_features_and_decision(jit_model_state, jit_gating_state, dummy_input, logits, dummy_mask)
+    jax.block_until_ready(logits)
 
     print("Loading data...")
     seq_length = args.chunk_size * 4  # 4 chunks per sequence
@@ -184,12 +222,8 @@ def main():
                 attention_mask = chunk_mask[None, :]  # [1, chunk_size]
 
                 # SKIP baseline (no TTT)
-                out_skip = model(input_ids, use_ttt=False)
-                loss_skip = float(cross_entropy_loss(
-                    out_skip["logits"][:, :-1],
-                    input_ids[:, 1:],
-                    attention_mask[:, 1:]
-                ))
+                logits_skip = forward_skip(jit_model_state, input_ids)
+                loss_skip = float(compute_loss(logits_skip, input_ids, attention_mask))
 
                 # Skip invalid loss values
                 if math.isnan(loss_skip) or loss_skip < 0:
@@ -197,18 +231,30 @@ def main():
 
                 results_skip.append(loss_skip)
 
-                # k=0 (standard, includes diagonal)
-                loss_k0, decision = evaluate_chunk(
-                    model, gating_net, feature_extractor, input_ids, attention_mask, causal_k=0
+                # Get decision for k=0
+                decision = get_features_and_decision(
+                    jit_model_state, jit_gating_state, input_ids, logits_skip, attention_mask
                 )
+                decision_val = int(decision[0])
+                decisions_k0.append(decision_val)
+
+                # k=0 (standard, includes diagonal) - only if UPDATE
+                if decision_val == 1:
+                    logits_k0 = forward_update(jit_model_state, input_ids)
+                    loss_k0 = float(compute_loss(logits_k0, input_ids, attention_mask))
+                else:
+                    loss_k0 = loss_skip
+
                 if not math.isnan(loss_k0) and loss_k0 >= 0:
                     results_k0.append(loss_k0)
-                    decisions_k0.append(decision)
 
-                # k=-1 (strict causal, excludes diagonal)
-                loss_k_neg1, _ = evaluate_chunk(
-                    model, gating_net, feature_extractor, input_ids, attention_mask, causal_k=-1
-                )
+                # k=-1 (strict causal, excludes diagonal) - only if UPDATE
+                if decision_val == 1:
+                    logits_k_neg1 = forward_update_strict(jit_model_state, input_ids)
+                    loss_k_neg1 = float(compute_loss(logits_k_neg1, input_ids, attention_mask))
+                else:
+                    loss_k_neg1 = loss_skip
+
                 if not math.isnan(loss_k_neg1) and loss_k_neg1 >= 0:
                     results_k_neg1.append(loss_k_neg1)
 

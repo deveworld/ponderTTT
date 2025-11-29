@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import math
+import functools
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -86,7 +87,54 @@ def parse_args():
     return parser.parse_args()
 
 
-def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, min_valid_tokens=64, shuffle=False):
+def create_jitted_functions(ttt_model, gating_net, feature_extractor):
+    """Create JIT-compiled functions for evaluation."""
+
+    # Get the pure function and state for the model
+    model_graph, model_state = nnx.split(ttt_model)
+    gating_graph, gating_state = nnx.split(gating_net)
+
+    @jax.jit
+    def forward_skip(model_state, input_ids):
+        """Forward pass without TTT."""
+        model = nnx.merge(model_graph, model_state)
+        out = model(input_ids, use_ttt=False, gating_scale=None)
+        return out["logits"]
+
+    @jax.jit
+    def forward_update(model_state, input_ids):
+        """Forward pass with TTT."""
+        model = nnx.merge(model_graph, model_state)
+        out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
+        return out["logits"]
+
+    @jax.jit
+    def compute_loss(logits, input_ids, attention_mask):
+        """Compute cross-entropy loss."""
+        return cross_entropy_loss(
+            logits[:, :-1],
+            input_ids[:, 1:],
+            attention_mask[:, 1:],
+        )
+
+    @jax.jit
+    def get_features_and_decision(model_state, gating_state, input_ids, logits, attention_mask):
+        """Extract features and get gating decision."""
+        gating = nnx.merge(gating_graph, gating_state)
+        features = feature_extractor.extract(
+            input_ids=input_ids,
+            logits=logits,
+            attention_mask=attention_mask,
+            budget_remaining=1.0,
+        )
+        hard_scale, decision = gating.get_decision(features)
+        return decision
+
+    return forward_skip, forward_update, compute_loss, get_features_and_decision, model_state, gating_state
+
+
+def evaluate_chunks(forward_skip, forward_update, compute_loss, get_features_and_decision,
+                    model_state, gating_state, batches, min_valid_tokens=64, shuffle=False):
     """Evaluate on chunks, optionally with shuffled tokens."""
     total_loss_skip = 0.0
     total_loss_ours = 0.0
@@ -124,42 +172,22 @@ def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, min_valid
                 input_ids = chunk_ids[None, :]  # [1, chunk_size]
                 attention_mask = chunk_mask[None, :]  # [1, chunk_size]
 
-                # SKIP baseline
-                out_skip = ttt_model(
-                    input_ids,
-                    use_ttt=False,
-                    gating_scale=None,
-                )
-                loss_skip = cross_entropy_loss(
-                    out_skip["logits"][:, :-1],
-                    input_ids[:, 1:],
-                    attention_mask[:, 1:],
-                )
+                # SKIP baseline (JIT-compiled)
+                logits_skip = forward_skip(model_state, input_ids)
+                loss_skip = compute_loss(logits_skip, input_ids, attention_mask)
 
-                # Binary Gating (Hard Skip)
-                features = feature_extractor.extract(
-                    input_ids=input_ids,
-                    logits=out_skip["logits"],
-                    attention_mask=attention_mask,
-                    budget_remaining=1.0,
+                # Get decision (JIT-compiled)
+                decision = get_features_and_decision(
+                    model_state, gating_state, input_ids, logits_skip, attention_mask
                 )
-                hard_scale, decision = gating_net.get_decision(features)
                 decision_val = int(decision[0])
 
                 if decision_val == 0:  # SKIP
                     loss_ours = loss_skip
                 else:  # UPDATE
                     total_updates += 1
-                    out_ttt = ttt_model(
-                        input_ids,
-                        use_ttt=True,
-                        gating_scale=jnp.array([[1.0]]),
-                    )
-                    loss_ours = cross_entropy_loss(
-                        out_ttt["logits"][:, :-1],
-                        input_ids[:, 1:],
-                        attention_mask[:, 1:],
-                    )
+                    logits_update = forward_update(model_state, input_ids)
+                    loss_ours = compute_loss(logits_update, input_ids, attention_mask)
 
                 loss_skip_val = float(loss_skip)
                 loss_ours_val = float(loss_ours)
@@ -224,6 +252,22 @@ def main():
         seq_length_norm=args.chunk_size,
     )
 
+    # Create JIT-compiled functions
+    print("Compiling JIT functions...")
+    forward_skip, forward_update, compute_loss, get_features_and_decision, model_state, gating_state = \
+        create_jitted_functions(ttt_model, gating_net, feature_extractor)
+
+    # Warmup JIT compilation
+    print("Warming up JIT...")
+    dummy_input = jnp.ones((1, args.chunk_size), dtype=jnp.int32)
+    dummy_mask = jnp.ones((1, args.chunk_size), dtype=jnp.float32)
+    _ = forward_skip(model_state, dummy_input)
+    _ = forward_update(model_state, dummy_input)
+    logits = forward_skip(model_state, dummy_input)
+    _ = compute_loss(logits, dummy_input, dummy_mask)
+    _ = get_features_and_decision(model_state, gating_state, dummy_input, logits, dummy_mask)
+    jax.block_until_ready(logits)
+
     # Use shorter sequences to get more valid chunks
     seq_length = args.chunk_size * 4  # 4 chunks per sequence
     data_iter = create_data_iterator(
@@ -248,22 +292,19 @@ def main():
     # Evaluate normal text
     print("\n1. Evaluating on NORMAL text...")
     loss_skip_normal, loss_ours_normal, n_normal, update_rate_normal, skipped_normal = evaluate_chunks(
-        ttt_model, gating_net, feature_extractor, batches,
+        forward_skip, forward_update, compute_loss, get_features_and_decision,
+        model_state, gating_state, batches,
         min_valid_tokens=args.min_valid_tokens, shuffle=False
     )
     ppl_skip_normal = math.exp(min(loss_skip_normal, 20)) if not math.isnan(loss_skip_normal) else float('inf')
     ppl_ours_normal = math.exp(min(loss_ours_normal, 20)) if not math.isnan(loss_ours_normal) else float('inf')
     improv_normal = (loss_skip_normal - loss_ours_normal) / loss_skip_normal * 100 if loss_skip_normal > 0 else 0
 
-    # Reset feature extractor history
-    feature_extractor.difficulty_ema = 0.0
-    feature_extractor.difficulty_sq_ema = 0.0
-    feature_extractor.cost_ema = 0.0
-
     # Evaluate shuffled text
     print("\n2. Evaluating on SHUFFLED text...")
     loss_skip_shuffled, loss_ours_shuffled, n_shuffled, update_rate_shuffled, skipped_shuffled = evaluate_chunks(
-        ttt_model, gating_net, feature_extractor, batches,
+        forward_skip, forward_update, compute_loss, get_features_and_decision,
+        model_state, gating_state, batches,
         min_valid_tokens=args.min_valid_tokens, shuffle=True
     )
     ppl_skip_shuffled = math.exp(min(loss_skip_shuffled, 20)) if not math.isnan(loss_skip_shuffled) else float('inf')

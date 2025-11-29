@@ -85,8 +85,8 @@ def measure_latency(func, num_warmup, num_trials):
     """Measure latency of a function."""
     # Warmup
     for _ in range(num_warmup):
-        func()
-        jax.block_until_ready(func())
+        result = func()
+        jax.block_until_ready(result)
 
     # Timing
     times = []
@@ -98,6 +98,42 @@ def measure_latency(func, num_warmup, num_trials):
         times.append((end - start) * 1000)  # ms
 
     return sum(times) / len(times)
+
+
+def create_jitted_functions(ttt_model, gating_net, feature_extractor):
+    """Create JIT-compiled functions for latency measurement."""
+
+    model_graph, model_state = nnx.split(ttt_model)
+    gating_graph, gating_state = nnx.split(gating_net)
+
+    @jax.jit
+    def forward_skip(model_state, input_ids):
+        """Forward pass without TTT."""
+        model = nnx.merge(model_graph, model_state)
+        out = model(input_ids, use_ttt=False, gating_scale=None)
+        return out["logits"]
+
+    @jax.jit
+    def forward_update(model_state, input_ids):
+        """Forward pass with TTT."""
+        model = nnx.merge(model_graph, model_state)
+        out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
+        return out["logits"]
+
+    @jax.jit
+    def get_features_and_decision(model_state, gating_state, input_ids, logits):
+        """Extract features and get gating decision."""
+        gating = nnx.merge(gating_graph, gating_state)
+        features = feature_extractor.extract(
+            input_ids=input_ids,
+            logits=logits,
+            attention_mask=jnp.ones_like(input_ids, dtype=jnp.float32),
+            budget_remaining=1.0,
+        )
+        hard_scale, decision = gating.get_decision(features)
+        return decision
+
+    return forward_skip, forward_update, get_features_and_decision, model_state, gating_state
 
 
 def main():
@@ -136,57 +172,50 @@ def main():
         seq_length_norm=512,
     )
 
+    # Create JIT-compiled functions
+    print("Compiling JIT functions...")
+    forward_skip, forward_update, get_features_and_decision, jit_model_state, jit_gating_state = \
+        create_jitted_functions(ttt_model, gating_net, feature_extractor)
+
     # Create dummy input
     dummy_input = jnp.ones((1, args.chunk_size), dtype=jnp.int32)
 
-    # JIT compile functions
-    print("Compiling functions...")
-
-    @jax.jit
-    def forward_skip(x):
-        return ttt_model(x, use_ttt=False, gating_scale=None)
-
-    @jax.jit
-    def forward_update(x):
-        return ttt_model(x, use_ttt=True, gating_scale=jnp.array([[1.0]]))
-
-    def get_features_and_decision(x):
-        """Get features from base model output and make gating decision."""
-        out = forward_skip(x)
-        features = feature_extractor.extract(
-            input_ids=x,
-            logits=out["logits"],
-            attention_mask=jnp.ones_like(x),
-            budget_remaining=1.0,
-        )
-        return gating_net.get_decision(features)
-
     # Warmup all functions
-    print("Warmup...")
+    print("Warming up JIT...")
     for _ in range(args.num_warmup):
-        forward_skip(dummy_input)
-        forward_update(dummy_input)
-        get_features_and_decision(dummy_input)
+        _ = forward_skip(jit_model_state, dummy_input)
+        _ = forward_update(jit_model_state, dummy_input)
+        logits = forward_skip(jit_model_state, dummy_input)
+        _ = get_features_and_decision(jit_model_state, jit_gating_state, dummy_input, logits)
 
-    jax.block_until_ready(forward_skip(dummy_input))
+    jax.block_until_ready(forward_skip(jit_model_state, dummy_input))
+    print("JIT compilation complete.")
 
     # Measure SKIP baseline
+    print("Measuring SKIP latency...")
     latency_skip = measure_latency(
-        lambda: forward_skip(dummy_input),
+        lambda: forward_skip(jit_model_state, dummy_input),
         args.num_warmup,
         args.num_trials,
     )
 
     # Measure UPDATE_1 (fixed)
+    print("Measuring UPDATE latency...")
     latency_update = measure_latency(
-        lambda: forward_update(dummy_input),
+        lambda: forward_update(jit_model_state, dummy_input),
         args.num_warmup,
         args.num_trials,
     )
 
     # Measure gating overhead only (includes base model forward for features)
+    print("Measuring gating latency...")
+    def gating_with_skip():
+        logits = forward_skip(jit_model_state, dummy_input)
+        decision = get_features_and_decision(jit_model_state, jit_gating_state, dummy_input, logits)
+        return decision
+
     latency_gating_full = measure_latency(
-        lambda: get_features_and_decision(dummy_input),
+        gating_with_skip,
         args.num_warmup,
         args.num_trials,
     )
@@ -200,8 +229,10 @@ def main():
     total_skip = 0
     total_update = 0
 
+    print("Measuring decision distribution...")
     for _ in range(args.num_trials):
-        _, decision = get_features_and_decision(dummy_input)
+        logits = forward_skip(jit_model_state, dummy_input)
+        decision = get_features_and_decision(jit_model_state, jit_gating_state, dummy_input, logits)
         decision_val = int(decision[0])
         if decision_val == 0:
             total_skip += 1
