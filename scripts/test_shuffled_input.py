@@ -136,7 +136,7 @@ def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, shuffle=F
                 out_ttt = ttt_model(
                     chunk["input_ids"],
                     use_ttt=True,
-                    gating_scale=[[1.0]],
+                    gating_scale=jnp.array([[1.0]]),
                 )
                 loss_ours = cross_entropy_loss(
                     out_ttt["logits"][:, :-1],

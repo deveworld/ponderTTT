@@ -86,7 +86,7 @@ def evaluate_with_causal_k(model, gating_net, feature_extractor, chunk_batch, ca
     if decision_val == 0:  # SKIP
         outputs = out_base  # Reuse the base model output
     else:  # UPDATE
-        outputs = model(input_ids, use_ttt=True, gating_scale=[[1.0]])
+        outputs = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
 
     logits = outputs["logits"]
     loss = cross_entropy_loss(
