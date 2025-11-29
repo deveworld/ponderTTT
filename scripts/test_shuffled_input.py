@@ -175,16 +175,14 @@ def main():
         nnx.update(trainable_system, ckpt["state"]["model"])
     print(f"Checkpoint loaded (step {ckpt.get('step', 'unknown')})")
 
-    # Feature extractor
+    # Load tokenizer and feature extractor
+    print("Loading data...")
+    tokenizer = get_tokenizer(model_name)
     feature_extractor = FeatureExtractor(
         vocab_size=tokenizer.get_vocab_size(),
         pad_token_id=tokenizer.token_to_id("<|pad|>"),
         seq_length_norm=512,
     )
-
-    # Load data
-    print("Loading data...")
-    tokenizer = get_tokenizer(model_name)
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         batch_size=args.batch_size,
