@@ -26,6 +26,18 @@ from ponderttt.utils.checkpointing import load_checkpoint
 MODEL_SCALES = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}
 
 
+class TrainableSystem(nnx.Module):
+    """Mirror of TrainableSystem from train_hard_skip.py for checkpoint loading."""
+    def __init__(self, ttt_model, gating_net):
+        self.fast_layer = ttt_model.fast_layer
+        self.fast_norm = ttt_model.fast_norm
+        self.gating_net = gating_net
+        if hasattr(ttt_model, 'lm_head'):
+            self.lm_head = ttt_model.lm_head
+        else:
+            self.lm_head = None
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Measure Latency")
     parser.add_argument(
@@ -88,11 +100,26 @@ def main():
     model_name = MODEL_SCALES[args.model_scale]
     ttt_model, _ = load_ttt_model(model_name, load_pretrained=True)
 
-    # Load Binary Gating network
+    # Initialize Binary Gating network
     config = BinaryGatingConfig(feature_dim=32, hidden_dim=64)
     rngs = nnx.Rngs(0)
     gating_net = BinaryGatingNetwork(config, rngs)
-    load_checkpoint(args.checkpoint, target=gating_net)
+
+    # Create TrainableSystem for checkpoint loading
+    trainable_system = TrainableSystem(ttt_model, gating_net)
+
+    # Load checkpoint
+    print(f"Loading checkpoint from {args.checkpoint}...")
+    import optax
+    optimizer = nnx.Optimizer(trainable_system, optax.adam(1e-3))
+    target = {
+        "state": {"model": nnx.state(trainable_system), "optimizer": nnx.state(optimizer)},
+        "step": 0,
+        "metadata": {}
+    }
+    ckpt = load_checkpoint(args.checkpoint, target=target)
+    nnx.update(trainable_system, ckpt["state"]["model"])
+    print(f"Checkpoint loaded (step {ckpt.get('step', 'unknown')})")
 
     # Feature extractor
     feature_extractor = FeatureExtractor(feature_dim=32)
