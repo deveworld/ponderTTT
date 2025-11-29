@@ -11,7 +11,6 @@ Usage:
 
 import argparse
 import math
-import functools
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -87,54 +86,8 @@ def parse_args():
     return parser.parse_args()
 
 
-def create_jitted_functions(ttt_model, gating_net, feature_extractor):
-    """Create JIT-compiled functions for evaluation."""
-
-    # Get the pure function and state for the model
-    model_graph, model_state = nnx.split(ttt_model)
-    gating_graph, gating_state = nnx.split(gating_net)
-
-    @jax.jit
-    def forward_skip(model_state, input_ids):
-        """Forward pass without TTT."""
-        model = nnx.merge(model_graph, model_state)
-        out = model(input_ids, use_ttt=False, gating_scale=None)
-        return out["logits"]
-
-    @jax.jit
-    def forward_update(model_state, input_ids):
-        """Forward pass with TTT."""
-        model = nnx.merge(model_graph, model_state)
-        out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
-        return out["logits"]
-
-    @jax.jit
-    def compute_loss(logits, input_ids, attention_mask):
-        """Compute cross-entropy loss."""
-        return cross_entropy_loss(
-            logits[:, :-1],
-            input_ids[:, 1:],
-            attention_mask[:, 1:],
-        )
-
-    @jax.jit
-    def get_features_and_decision(model_state, gating_state, input_ids, logits, attention_mask):
-        """Extract features and get gating decision."""
-        gating = nnx.merge(gating_graph, gating_state)
-        features = feature_extractor.extract(
-            input_ids=input_ids,
-            logits=logits,
-            attention_mask=attention_mask,
-            budget_remaining=1.0,
-        )
-        hard_scale, decision = gating.get_decision(features)
-        return decision
-
-    return forward_skip, forward_update, compute_loss, get_features_and_decision, model_state, gating_state
-
-
-def evaluate_chunks(forward_skip, forward_update, compute_loss, get_features_and_decision,
-                    model_state, gating_state, batches, min_valid_tokens=64, shuffle=False):
+def evaluate_chunks(forward_skip_jit, forward_update_jit, get_decision_jit,
+                    batches, min_valid_tokens=64, shuffle=False):
     """Evaluate on chunks, optionally with shuffled tokens."""
     total_loss_skip = 0.0
     total_loss_ours = 0.0
@@ -173,21 +126,27 @@ def evaluate_chunks(forward_skip, forward_update, compute_loss, get_features_and
                 attention_mask = chunk_mask[None, :]  # [1, chunk_size]
 
                 # SKIP baseline (JIT-compiled)
-                logits_skip = forward_skip(model_state, input_ids)
-                loss_skip = compute_loss(logits_skip, input_ids, attention_mask)
+                logits_skip = forward_skip_jit(input_ids)
+                loss_skip = cross_entropy_loss(
+                    logits_skip[:, :-1],
+                    input_ids[:, 1:],
+                    attention_mask[:, 1:],
+                )
 
                 # Get decision (JIT-compiled)
-                decision = get_features_and_decision(
-                    model_state, gating_state, input_ids, logits_skip, attention_mask
-                )
+                decision = get_decision_jit(input_ids, logits_skip, attention_mask)
                 decision_val = int(decision[0])
 
                 if decision_val == 0:  # SKIP
                     loss_ours = loss_skip
                 else:  # UPDATE
                     total_updates += 1
-                    logits_update = forward_update(model_state, input_ids)
-                    loss_ours = compute_loss(logits_update, input_ids, attention_mask)
+                    logits_update = forward_update_jit(input_ids)
+                    loss_ours = cross_entropy_loss(
+                        logits_update[:, :-1],
+                        input_ids[:, 1:],
+                        attention_mask[:, 1:],
+                    )
 
                 loss_skip_val = float(loss_skip)
                 loss_ours_val = float(loss_ours)
@@ -243,6 +202,9 @@ def main():
         nnx.update(trainable_system, model_state)
     print(f"Checkpoint loaded (step {ckpt.get('step', 'unknown')})")
 
+    # Get updated gating_net from trainable_system
+    gating_net = trainable_system.gating_net
+
     # Load tokenizer and feature extractor
     print("Loading data...")
     tokenizer = get_tokenizer(model_name)
@@ -252,21 +214,39 @@ def main():
         seq_length_norm=args.chunk_size,
     )
 
-    # Create JIT-compiled functions
+    # Create JIT-compiled functions using nnx.jit
     print("Compiling JIT functions...")
-    forward_skip, forward_update, compute_loss, get_features_and_decision, model_state, gating_state = \
-        create_jitted_functions(ttt_model, gating_net, feature_extractor)
+
+    @nnx.jit
+    def forward_skip_jit(input_ids):
+        out = ttt_model(input_ids, use_ttt=False, gating_scale=None)
+        return out["logits"]
+
+    @nnx.jit
+    def forward_update_jit(input_ids):
+        out = ttt_model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
+        return out["logits"]
+
+    @nnx.jit
+    def get_decision_jit(input_ids, logits, attention_mask):
+        features = feature_extractor.extract(
+            input_ids=input_ids,
+            logits=logits,
+            attention_mask=attention_mask,
+            budget_remaining=1.0,
+        )
+        _, decision = gating_net.get_decision(features)
+        return decision
 
     # Warmup JIT compilation
     print("Warming up JIT...")
     dummy_input = jnp.ones((1, args.chunk_size), dtype=jnp.int32)
     dummy_mask = jnp.ones((1, args.chunk_size), dtype=jnp.float32)
-    _ = forward_skip(model_state, dummy_input)
-    _ = forward_update(model_state, dummy_input)
-    logits = forward_skip(model_state, dummy_input)
-    _ = compute_loss(logits, dummy_input, dummy_mask)
-    _ = get_features_and_decision(model_state, gating_state, dummy_input, logits, dummy_mask)
+    logits = forward_skip_jit(dummy_input)
+    _ = forward_update_jit(dummy_input)
+    _ = get_decision_jit(dummy_input, logits, dummy_mask)
     jax.block_until_ready(logits)
+    print("JIT compilation complete.")
 
     # Use shorter sequences to get more valid chunks
     seq_length = args.chunk_size * 4  # 4 chunks per sequence
@@ -292,8 +272,7 @@ def main():
     # Evaluate normal text
     print("\n1. Evaluating on NORMAL text...")
     loss_skip_normal, loss_ours_normal, n_normal, update_rate_normal, skipped_normal = evaluate_chunks(
-        forward_skip, forward_update, compute_loss, get_features_and_decision,
-        model_state, gating_state, batches,
+        forward_skip_jit, forward_update_jit, get_decision_jit, batches,
         min_valid_tokens=args.min_valid_tokens, shuffle=False
     )
     ppl_skip_normal = math.exp(min(loss_skip_normal, 20)) if not math.isnan(loss_skip_normal) else float('inf')
@@ -303,8 +282,7 @@ def main():
     # Evaluate shuffled text
     print("\n2. Evaluating on SHUFFLED text...")
     loss_skip_shuffled, loss_ours_shuffled, n_shuffled, update_rate_shuffled, skipped_shuffled = evaluate_chunks(
-        forward_skip, forward_update, compute_loss, get_features_and_decision,
-        model_state, gating_state, batches,
+        forward_skip_jit, forward_update_jit, get_decision_jit, batches,
         min_valid_tokens=args.min_valid_tokens, shuffle=True
     )
     ppl_skip_shuffled = math.exp(min(loss_skip_shuffled, 20)) if not math.isnan(loss_skip_shuffled) else float('inf')
