@@ -115,6 +115,11 @@ def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, shuffle=F
                 "attention_mask": attention_mask[:, start : start + chunk_size],
             }
 
+            # Skip chunks with too few valid tokens
+            valid_tokens = int(chunk["attention_mask"][:, 1:].sum())
+            if valid_tokens < 32:  # Need at least 32 valid tokens for meaningful loss
+                continue
+
             # SKIP baseline
             out_skip = ttt_model(
                 chunk["input_ids"],
@@ -158,7 +163,11 @@ def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, shuffle=F
             if total_chunks == 0:
                 mask_sum = float(chunk["attention_mask"][:, 1:].sum())
                 logits_shape = out_skip["logits"].shape
+                logits_min = float(out_skip["logits"].min())
+                logits_max = float(out_skip["logits"].max())
+                logits_has_nan = bool(jnp.isnan(out_skip["logits"]).any())
                 print(f"  [DEBUG] First chunk - logits shape: {logits_shape}, mask_sum: {mask_sum}")
+                print(f"  [DEBUG] logits range: [{logits_min:.2f}, {logits_max:.2f}], has_nan: {logits_has_nan}")
                 print(f"  [DEBUG] First chunk - loss_skip: {loss_skip_val:.4f}, loss_ours: {loss_ours_val:.4f}, decision: {decision_val}")
 
             # Skip NaN values
