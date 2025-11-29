@@ -811,7 +811,6 @@ def main():
             })
 
             # Periodic Checkpoint
-            print(f"DEBUG: Checking checkpoint for iter {iteration+1}")
             if (iteration + 1) % args.save_every == 0 and (iteration + 1) < args.num_iterations:
                 checkpoint_dir = output_dir / f"seed_{seed}"
                 print(f"Saving checkpoint to {checkpoint_dir} at iter {iteration + 1}...")
