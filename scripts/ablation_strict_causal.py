@@ -58,8 +58,16 @@ def evaluate_with_causal_k(model, gating_net, feature_extractor, chunk_batch, ca
     # Temporarily set the causal_k value on the model's TTT layer
     model.fast_layer.config.causal_k = causal_k
 
+    # Get base model output for features
+    out_base = model(input_ids, use_ttt=False)
+
     # Get features for gating
-    features = feature_extractor(input_ids)
+    features = feature_extractor.extract(
+        input_ids=input_ids,
+        logits=out_base["logits"],
+        attention_mask=attention_mask,
+        budget_remaining=1.0,
+    )
 
     # Get binary decision
     hard_scale, decision = gating_net.get_decision(features)
@@ -67,7 +75,7 @@ def evaluate_with_causal_k(model, gating_net, feature_extractor, chunk_batch, ca
 
     # Forward with TTT based on decision
     if decision_val == 0:  # SKIP
-        outputs = model(input_ids, use_ttt=False)
+        outputs = out_base  # Reuse the base model output
     else:  # UPDATE
         outputs = model(input_ids, use_ttt=True, gating_scale=[[1.0]])
 
@@ -111,7 +119,11 @@ def main():
 
     gating_net = trainable_system.gating_net
 
-    feature_extractor = FeatureExtractor(feature_dim=32)
+    feature_extractor = FeatureExtractor(
+        vocab_size=tokenizer.get_vocab_size(),
+        pad_token_id=tokenizer.token_to_id("<|pad|>"),
+        seq_length_norm=512,
+    )
 
     print("Loading data...")
     data_iter = create_data_iterator(

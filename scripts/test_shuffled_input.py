@@ -112,7 +112,12 @@ def evaluate_chunks(ttt_model, gating_net, feature_extractor, batches, shuffle=F
             )
 
             # Binary Gating (Hard Skip)
-            features = feature_extractor(chunk["input_ids"])
+            features = feature_extractor.extract(
+                input_ids=chunk["input_ids"],
+                logits=out_skip["logits"],
+                attention_mask=chunk["attention_mask"],
+                budget_remaining=1.0,
+            )
             hard_scale, decision = gating_net.get_decision(features)
             decision_val = int(decision[0])
 
@@ -171,7 +176,11 @@ def main():
     print(f"Checkpoint loaded (step {ckpt.get('step', 'unknown')})")
 
     # Feature extractor
-    feature_extractor = FeatureExtractor(feature_dim=32)
+    feature_extractor = FeatureExtractor(
+        vocab_size=tokenizer.get_vocab_size(),
+        pad_token_id=tokenizer.token_to_id("<|pad|>"),
+        seq_length_norm=512,
+    )
 
     # Load data
     print("Loading data...")
