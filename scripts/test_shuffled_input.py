@@ -186,7 +186,8 @@ def main():
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         batch_size=args.batch_size,
-        seq_length=1024,
+        seq_length=2048,
+        chunk_size=512,
         split="train",
         language="Python",
     )
