@@ -30,6 +30,7 @@ def unwrap_state(state):
         return {k: unwrap_state(v) for k, v in state.items()}
     return state
 
+
 MODEL_SCALES = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}
 
 
@@ -37,8 +38,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--model_scale", type=str, default="125m", choices=["125m", "350m", "1b"])
-    parser.add_argument("--num_batches", type=int, default=30)
+    parser.add_argument("--num_batches", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--chunk_size", type=int, default=512)
+    parser.add_argument("--min_valid_tokens", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -55,15 +58,11 @@ class TrainableSystem(nnx.Module):
             self.lm_head = None
 
 
-def evaluate_with_causal_k(model, gating_net, feature_extractor, chunk_batch, causal_k=0):
+def evaluate_chunk(model, gating_net, feature_extractor, input_ids, attention_mask, causal_k=0):
     """
-    Evaluate with different causal mask variants.
-    k=0: standard (includes diagonal)
-    k=-1: strict causal (excludes diagonal)
+    Evaluate a single chunk with a specific causal_k setting.
+    Returns (loss, decision_val)
     """
-    input_ids = chunk_batch["input_ids"]
-    attention_mask = chunk_batch["attention_mask"]
-
     # Temporarily set the causal_k value on the model's TTT layer
     model.fast_layer.config.causal_k = causal_k
 
@@ -132,15 +131,17 @@ def main():
     feature_extractor = FeatureExtractor(
         vocab_size=tokenizer.get_vocab_size(),
         pad_token_id=tokenizer.token_to_id("<|pad|>"),
-        seq_length_norm=512,
+        seq_length_norm=args.chunk_size,
     )
 
     print("Loading data...")
+    seq_length = args.chunk_size * 4  # 4 chunks per sequence
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         split="train",
         batch_size=args.batch_size,
-        seq_length=1024,
+        seq_length=seq_length,
+        chunk_size=args.chunk_size,
         language="Python",
     )
 
@@ -148,80 +149,101 @@ def main():
     results_skip = []
     results_k0 = []
     results_k_neg1 = []
-    decisions = []
+    decisions_k0 = []
+    skipped_empty = 0
 
+    print(f"\nConfig: batch_size={args.batch_size}, chunk_size={args.chunk_size}, min_valid={args.min_valid_tokens}")
     print("\nRunning evaluation...")
+
     batches_processed = 0
     for batch in tqdm(data_iter, total=args.num_batches):
         if batches_processed >= args.num_batches:
             break
         batches_processed += 1
 
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
+        # Use pre-chunked data
+        chunks = batch["chunks"]  # [batch, num_chunks, chunk_size]
+        masks = batch["chunk_attention_mask"]  # [batch, num_chunks, chunk_size]
 
-        # Process in 512-token chunks
-        seq_len = input_ids.shape[1]
-        chunk_size = 512
+        batch_size = chunks.shape[0]
+        num_chunks = chunks.shape[1]
 
-        for start in range(0, seq_len - chunk_size, chunk_size):
-            chunk_batch = {
-                "input_ids": input_ids[:, start : start + chunk_size],
-                "attention_mask": attention_mask[:, start : start + chunk_size],
-            }
+        for b_idx in range(batch_size):
+            for c_idx in range(num_chunks):
+                chunk_ids = chunks[b_idx, c_idx]  # [chunk_size]
+                chunk_mask = masks[b_idx, c_idx]  # [chunk_size]
 
-            if jnp.sum(chunk_batch["attention_mask"][:, 1:]) < 16:
-                continue
+                # Check if chunk has enough valid tokens
+                valid_tokens = int(chunk_mask.sum())
+                if valid_tokens < args.min_valid_tokens:
+                    skipped_empty += 1
+                    continue
 
-            # SKIP baseline
-            out_skip = model(chunk_batch["input_ids"], use_ttt=False)
-            loss_skip = float(cross_entropy_loss(
-                out_skip["logits"][:, :-1],
-                chunk_batch["input_ids"][:, 1:],
-                chunk_batch["attention_mask"][:, 1:]
-            ))
-            results_skip.append(loss_skip)
+                # Add batch dimension
+                input_ids = chunk_ids[None, :]  # [1, chunk_size]
+                attention_mask = chunk_mask[None, :]  # [1, chunk_size]
 
-            # k=0 (standard, includes diagonal)
-            loss_k0, decision = evaluate_with_causal_k(
-                model, gating_net, feature_extractor, chunk_batch, causal_k=0
-            )
-            results_k0.append(loss_k0)
-            decisions.append(decision)
+                # SKIP baseline (no TTT)
+                out_skip = model(input_ids, use_ttt=False)
+                loss_skip = float(cross_entropy_loss(
+                    out_skip["logits"][:, :-1],
+                    input_ids[:, 1:],
+                    attention_mask[:, 1:]
+                ))
 
-            # k=-1 (strict causal, excludes diagonal)
-            loss_k_neg1, _ = evaluate_with_causal_k(
-                model, gating_net, feature_extractor, chunk_batch, causal_k=-1
-            )
-            results_k_neg1.append(loss_k_neg1)
+                # Skip invalid loss values
+                if math.isnan(loss_skip) or loss_skip < 0:
+                    continue
+
+                results_skip.append(loss_skip)
+
+                # k=0 (standard, includes diagonal)
+                loss_k0, decision = evaluate_chunk(
+                    model, gating_net, feature_extractor, input_ids, attention_mask, causal_k=0
+                )
+                if not math.isnan(loss_k0) and loss_k0 >= 0:
+                    results_k0.append(loss_k0)
+                    decisions_k0.append(decision)
+
+                # k=-1 (strict causal, excludes diagonal)
+                loss_k_neg1, _ = evaluate_chunk(
+                    model, gating_net, feature_extractor, input_ids, attention_mask, causal_k=-1
+                )
+                if not math.isnan(loss_k_neg1) and loss_k_neg1 >= 0:
+                    results_k_neg1.append(loss_k_neg1)
 
     # Print results
     print("\n" + "=" * 70)
     print("RESULTS")
     print("=" * 70)
 
+    if not results_skip:
+        print("ERROR: No valid chunks found!")
+        return
+
     avg_skip = sum(results_skip) / len(results_skip)
-    avg_k0 = sum(results_k0) / len(results_k0)
-    avg_k_neg1 = sum(results_k_neg1) / len(results_k_neg1)
-    update_rate = sum(decisions) / len(decisions)
+    avg_k0 = sum(results_k0) / len(results_k0) if results_k0 else float('nan')
+    avg_k_neg1 = sum(results_k_neg1) / len(results_k_neg1) if results_k_neg1 else float('nan')
+    update_rate = sum(decisions_k0) / len(decisions_k0) if decisions_k0 else 0
 
-    print(f"\nChunks evaluated: {len(results_skip)}")
-    print("\nSKIP Baseline:")
+    print(f"\nChunks evaluated: {len(results_skip)} (skipped {skipped_empty} empty)")
+
+    print("\nSKIP Baseline (no TTT):")
     print(f"  Loss: {avg_skip:.4f}")
-    print(f"  PPL:  {math.exp(avg_skip):.2f}")
+    print(f"  PPL:  {math.exp(min(avg_skip, 20)):.2f}")
 
-    print("\nPonderTTT with k=0 (includes diagonal, trained setting):")
+    print(f"\nPonderTTT with k=0 (includes diagonal, trained setting):")
     print(f"  Loss: {avg_k0:.4f}")
-    print(f"  PPL:  {math.exp(avg_k0):.2f}")
+    print(f"  PPL:  {math.exp(min(avg_k0, 20)):.2f}")
     print(f"  Update Rate: {update_rate:.1%}")
 
-    print("\nPonderTTT with k=-1 (strict causal, excludes diagonal):")
+    print(f"\nPonderTTT with k=-1 (strict causal, excludes diagonal):")
     print(f"  Loss: {avg_k_neg1:.4f}")
-    print(f"  PPL:  {math.exp(avg_k_neg1):.2f}")
+    print(f"  PPL:  {math.exp(min(avg_k_neg1, 20)):.2f}")
 
-    improvement_k0 = (1 - avg_k0 / avg_skip) * 100
-    improvement_k_neg1 = (1 - avg_k_neg1 / avg_skip) * 100
-    k0_vs_k_neg1 = (avg_k_neg1 - avg_k0) / avg_k0 * 100
+    improvement_k0 = (1 - avg_k0 / avg_skip) * 100 if avg_skip > 0 else 0
+    improvement_k_neg1 = (1 - avg_k_neg1 / avg_skip) * 100 if avg_skip > 0 else 0
+    k0_vs_k_neg1 = (avg_k_neg1 - avg_k0) / avg_k0 * 100 if avg_k0 > 0 else 0
 
     print("\n" + "-" * 70)
     print("COMPARISON")
@@ -268,9 +290,9 @@ INTERESTING: k=-1 performs similarly or better than k=0.
 \\toprule
 \\textbf{{Method}} & \\textbf{{Loss}} & \\textbf{{PPL}} & \\textbf{{Improv.}} \\\\
 \\midrule
-SKIP (no TTT) & {avg_skip:.4f} & {math.exp(avg_skip):.2f} & -- \\\\
-Ours (k=0, trained) & {avg_k0:.4f} & {math.exp(avg_k0):.2f} & {improvement_k0:.1f}\\% \\\\
-Ours (k=-1, strict) & {avg_k_neg1:.4f} & {math.exp(avg_k_neg1):.2f} & {improvement_k_neg1:.1f}\\% \\\\
+SKIP (no TTT) & {avg_skip:.4f} & {math.exp(min(avg_skip, 20)):.2f} & -- \\\\
+Ours (k=0, trained) & {avg_k0:.4f} & {math.exp(min(avg_k0, 20)):.2f} & {improvement_k0:.1f}\\% \\\\
+Ours (k=-1, strict) & {avg_k_neg1:.4f} & {math.exp(min(avg_k_neg1, 20)):.2f} & {improvement_k_neg1:.1f}\\% \\\\
 \\bottomrule
 \\end{{tabular}}
 \\end{{table}}
