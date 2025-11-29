@@ -22,6 +22,8 @@ from ponderttt.models.gating_nnx import BinaryGatingConfig, BinaryGatingNetwork
 from ponderttt.utils import FeatureExtractor, cross_entropy_loss
 from ponderttt.utils.checkpointing import load_checkpoint
 
+MODEL_SCALES = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Shuffled Input Sanity Check")
@@ -135,7 +137,8 @@ def main():
 
     # Load model
     print("\nLoading model...")
-    ttt_model = load_ttt_model(args.model_scale, load_pretrained=True)
+    model_name = MODEL_SCALES[args.model_scale]
+    ttt_model, _ = load_ttt_model(model_name, load_pretrained=True)
 
     # Load Binary Gating network
     print("Loading Binary Gating checkpoint...")
@@ -149,7 +152,7 @@ def main():
 
     # Load data
     print("Loading data...")
-    tokenizer = get_tokenizer(args.model_scale)
+    tokenizer = get_tokenizer(model_name)
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         batch_size=args.batch_size,

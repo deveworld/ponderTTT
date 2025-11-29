@@ -23,6 +23,8 @@ from ponderttt.models.gating_nnx import BinaryGatingConfig, BinaryGatingNetwork
 from ponderttt.utils import FeatureExtractor
 from ponderttt.utils.checkpointing import load_checkpoint
 
+MODEL_SCALES = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Measure Latency")
@@ -83,7 +85,8 @@ def main():
     print(f"Benchmarking Latency: {args.model_scale}, Chunk={args.chunk_size}")
 
     # Load model
-    ttt_model = load_ttt_model(args.model_scale, load_pretrained=True)
+    model_name = MODEL_SCALES[args.model_scale]
+    ttt_model, _ = load_ttt_model(model_name, load_pretrained=True)
 
     # Load Binary Gating network
     config = BinaryGatingConfig(feature_dim=32, hidden_dim=64)
