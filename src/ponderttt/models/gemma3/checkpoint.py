@@ -2,22 +2,23 @@
 
 Supports loading weights from:
 1. Orbax checkpoints (official Google format)
-2. HuggingFace transformers checkpoints
+2. HuggingFace safetensors checkpoints (without torch/transformers)
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TYPE_CHECKING, TypeVar
+from pathlib import Path
+from typing import Any, TypeVar, Optional
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
+from huggingface_hub import hf_hub_download
+from safetensors.numpy import load_file
 
 from .params import load_params, nest_params
-
-if TYPE_CHECKING:
-    from .model import Gemma3TTTModel
 
 # Generic type for model to preserve type through loading
 T = TypeVar("T", bound=nnx.Module)
@@ -150,55 +151,102 @@ def load_gemma3_from_orbax(
     return model
 
 
+def _download_safetensors(
+    model_id: str,
+    cache_dir: Optional[Path] = None,
+) -> dict[str, np.ndarray]:
+    """Download and load safetensors from HuggingFace.
+
+    Args:
+        model_id: HuggingFace model ID (e.g., "google/gemma-3-1b-pt")
+        cache_dir: Optional cache directory
+
+    Returns:
+        Dictionary of numpy arrays from safetensors
+    """
+    # Try single file first
+    try:
+        file_path = hf_hub_download(
+            repo_id=model_id,
+            filename="model.safetensors",
+            cache_dir=cache_dir,
+        )
+        print(f"Loading weights from {file_path}...")
+        return load_file(file_path)
+    except Exception:
+        pass
+
+    # Try sharded safetensors (model-00001-of-00002.safetensors, etc.)
+    try:
+        # Download the index file first
+        index_path = hf_hub_download(
+            repo_id=model_id,
+            filename="model.safetensors.index.json",
+            cache_dir=cache_dir,
+        )
+        import json
+        with open(index_path) as f:
+            index = json.load(f)
+
+        # Get unique shard files
+        shard_files = sorted(set(index.get("weight_map", {}).values()))
+        if not shard_files:
+            raise ValueError("No shard files found in index")
+
+        # Download and merge all shards
+        state_dict = {}
+        for shard_file in shard_files:
+            shard_path = hf_hub_download(
+                repo_id=model_id,
+                filename=shard_file,
+                cache_dir=cache_dir,
+            )
+            print(f"Loading shard: {shard_file}")
+            shard_dict = load_file(shard_path)
+            state_dict.update(shard_dict)
+
+        return state_dict
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not find safetensors weights for {model_id}. "
+            f"Tried 'model.safetensors' and sharded format.\n"
+            f"Error: {e}"
+        )
+
+
 def load_gemma3_from_huggingface(
     model: T,
     model_id: str,
-    device: str = "cpu",
+    cache_dir: Optional[Path] = None,
 ) -> T:
-    """Load Gemma 3 weights from HuggingFace checkpoint.
+    """Load Gemma 3 weights from HuggingFace checkpoint using safetensors.
 
     Args:
         model: Initialized NNX Gemma 3 model
-        model_id: HuggingFace model ID (e.g., "google/gemma-3-4b-pt")
-        device: Device to load weights on
+        model_id: HuggingFace model ID (e.g., "google/gemma-3-1b-pt")
+        cache_dir: Optional cache directory for downloaded weights
 
     Returns:
         Model with loaded weights (same type as input)
 
     Note:
-        Requires `transformers` and `torch` packages.
+        Uses safetensors and huggingface_hub directly without torch/transformers.
     """
-    try:
-        import torch
-        from transformers import AutoModelForCausalLM
-    except ImportError as e:
-        raise ImportError(
-            "Loading from HuggingFace requires 'transformers' and 'torch'. "
-            "Install with: pip install transformers torch"
-        ) from e
-
-    print(f"Loading HuggingFace model: {model_id}")
-    hf_model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.bfloat16,
-        device_map=device,
-    )
+    print(f"Downloading/Loading weights for {model_id} (safetensors)...")
+    state_dict = _download_safetensors(model_id, cache_dir)
 
     # Get gemma_config from model (Gemma3TTTModel has this attribute)
     gemma_config = getattr(model, "gemma_config", None)
     if gemma_config is None:
         raise ValueError("Model must have a 'gemma_config' attribute")
 
-    # Map HuggingFace weights to NNX model
-    hf_state_dict = hf_model.state_dict()
-
-    def hf_to_jax(tensor):
-        """Convert PyTorch tensor to JAX array."""
-        return jnp.array(tensor.cpu().numpy())
+    def np_to_jax(arr: np.ndarray) -> jnp.ndarray:
+        """Convert numpy array to JAX array."""
+        return jnp.array(arr)
 
     # Weight mapping: HuggingFace -> NNX
     # Note: HuggingFace uses (out, in) for Linear, NNX uses (in, out)
-    weight_mapping = {
+    weight_mapping: dict[str, tuple[str | int, ...]] = {
         # Embeddings
         "model.embed_tokens.weight": ("base_model", "embedder", "input_embedding"),
         # Final norm
@@ -208,9 +256,9 @@ def load_gemma3_from_huggingface(
     # Layer weights
     for i in range(gemma_config.num_layers):
         layer_prefix = f"model.layers.{i}"
-        nnx_layer = ("base_model", "layers", i)
+        nnx_layer: tuple[str | int, ...] = ("base_model", "layers", i)
 
-        layer_mapping = {
+        layer_mapping: dict[str, tuple[str | int, ...]] = {
             # Attention
             f"{layer_prefix}.self_attn.q_proj.weight": (*nnx_layer, "attn", "q_einsum", "w"),
             f"{layer_prefix}.self_attn.k_proj.weight": (*nnx_layer, "attn", "kv_einsum", "w"),
@@ -247,22 +295,16 @@ def load_gemma3_from_huggingface(
         weight_mapping.update(layer_mapping)
 
     # Apply weights
-    def get_nested(obj, path):
-        for key in path:
-            if isinstance(key, int):
-                obj = obj[key]
-            else:
-                obj = getattr(obj, key) if hasattr(obj, key) else obj[key]
-        return obj
-
-    def set_nested(obj, path, value):
+    def set_nested(obj: Any, path: tuple[str | int, ...], value: jnp.ndarray) -> None:
         for key in path[:-1]:
             if isinstance(key, int):
                 obj = obj[key]
             else:
                 obj = getattr(obj, key) if hasattr(obj, key) else obj[key]
         final_key = path[-1]
-        if hasattr(obj, final_key):
+        if isinstance(final_key, int):
+            obj[final_key] = value
+        elif hasattr(obj, final_key):
             target = getattr(obj, final_key)
             if hasattr(target, "value"):
                 target.value = value
@@ -271,9 +313,9 @@ def load_gemma3_from_huggingface(
 
     loaded_count = 0
     for hf_name, nnx_path in weight_mapping.items():
-        if hf_name in hf_state_dict:
+        if hf_name in state_dict:
             try:
-                weight = hf_to_jax(hf_state_dict[hf_name])
+                weight = np_to_jax(state_dict[hf_name])
 
                 # Transpose linear weights (HuggingFace: [out, in] -> NNX: [in, out])
                 if "weight" in hf_name and weight.ndim == 2:
@@ -284,13 +326,7 @@ def load_gemma3_from_huggingface(
             except Exception as e:
                 print(f"Warning: Failed to load {hf_name}: {e}")
 
-    print(f"Loaded {loaded_count} weights from HuggingFace")
-
-    # Clean up
-    del hf_model
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
+    print(f"Loaded {loaded_count} weights from HuggingFace (safetensors)")
     return model
 
 
