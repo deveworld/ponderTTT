@@ -2,7 +2,7 @@
 Base transformer language model with TTT layers in NNX.
 
 Migrated from Linen to NNX, removing HuggingFace Transformers dependency.
-Uses native GPT-2 implementation for TPU optimization.
+Supports both GPT-2 and Gemma 3 (4B, 12B) as base models.
 """
 
 from dataclasses import dataclass
@@ -245,26 +245,40 @@ def load_ttt_model(
     load_pretrained: bool = True,
     vocab_size: int | None = None,
     pad_token_id: int | None = None,
-) -> Tuple[TTTTransformerLM, GPT2Config]:
+    checkpoint_path: str | None = None,
+) -> Tuple[Union[TTTTransformerLM, "Gemma3TTTModel"], Union[GPT2Config, "Gemma3Config"]]:
     """
     Load TTT-augmented transformer model.
 
     Args:
-        model_name: GPT-2 variant (gpt2, gpt2-medium, gpt2-large, gpt2-xl)
+        model_name: Model identifier. Supported:
+            - GPT-2 variants: "gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"
+            - Gemma 3: "gemma3-4b", "gemma3-12b", "gemma3-1b" (test)
         ttt_config: TTT layer configuration (if fast_weight_type='ttt')
         lora_config: LoRA configuration (if fast_weight_type='lora')
         fast_weight_type: Type of fast weights ("ttt" or "lora")
         dtype: Data type for model
         seed: Random seed
-        load_pretrained: Whether to load pretrained weights from HuggingFace
-        vocab_size: Optional override for tokenizer vocab size (e.g., if a pad token was added)
-        pad_token_id: Optional pad token id to explicitly mask in logits. If None and
-            vocab_size increases beyond the pretrained value, we assume the new final id
-            is the pad token.
+        load_pretrained: Whether to load pretrained weights
+        vocab_size: Optional override for tokenizer vocab size (GPT-2 only)
+        pad_token_id: Optional pad token id to explicitly mask in logits (GPT-2 only)
+        checkpoint_path: Path to checkpoint (for Gemma 3 Orbax checkpoints)
+            For HuggingFace Gemma 3, use format "hf:google/gemma-3-4b-pt"
 
     Returns:
         (model, config) tuple
     """
+    # Handle Gemma 3 models
+    if model_name.startswith("gemma3"):
+        return _load_gemma3_ttt_model(
+            model_name=model_name,
+            ttt_config=ttt_config,
+            dtype=dtype,
+            seed=seed,
+            load_pretrained=load_pretrained,
+            checkpoint_path=checkpoint_path,
+        )
+
     # Get GPT-2 config
     gpt2_config = GPT2Config.from_pretrained(model_name)
     base_vocab_size = gpt2_config.vocab_size
@@ -438,6 +452,96 @@ def load_ttt_model(
         print(f"OK Loaded pretrained weights from {model_name}")
 
     return model, gpt2_config
+
+
+def _load_gemma3_ttt_model(
+    model_name: str,
+    ttt_config: Optional[TTTConfig] = None,
+    dtype: jnp.dtype = jnp.bfloat16,
+    seed: int = 0,
+    load_pretrained: bool = True,
+    checkpoint_path: str | None = None,
+) -> Tuple["Gemma3TTTModel", "Gemma3Config"]:
+    """
+    Load Gemma 3 TTT model.
+
+    Internal helper for load_ttt_model().
+
+    Args:
+        model_name: "gemma3-4b", "gemma3-12b", or "gemma3-1b"
+        ttt_config: TTT layer configuration
+        dtype: Data type (default bfloat16 for Gemma 3)
+        seed: Random seed
+        load_pretrained: Whether to load pretrained weights
+        checkpoint_path: Path to checkpoint
+            - Orbax: "/path/to/checkpoint"
+            - HuggingFace: "hf:google/gemma-3-4b-pt"
+
+    Returns:
+        (model, config) tuple
+    """
+    from ponderttt.models.gemma3 import (
+        Gemma3Config,
+        Gemma3TTTModel,
+        load_gemma3_from_orbax,
+        load_gemma3_from_huggingface,
+    )
+
+    # Select config based on model size
+    if "4b" in model_name:
+        gemma_config = Gemma3Config.gemma3_4b(dtype=dtype)
+    elif "12b" in model_name:
+        gemma_config = Gemma3Config.gemma3_12b(dtype=dtype)
+    elif "1b" in model_name:
+        gemma_config = Gemma3Config.gemma3_1b(dtype=dtype)
+    else:
+        raise ValueError(
+            f"Unknown Gemma 3 model: {model_name}. "
+            f"Supported: gemma3-4b, gemma3-12b, gemma3-1b"
+        )
+
+    # Default TTT config for Gemma 3
+    if ttt_config is None:
+        if "4b" in model_name:
+            ttt_config = TTTConfig.for_gemma3_4b(dtype=dtype)
+        elif "12b" in model_name:
+            ttt_config = TTTConfig.for_gemma3_12b(dtype=dtype)
+        else:
+            # 1B (testing)
+            ttt_config = TTTConfig(
+                hidden_dim=gemma_config.embed_dim,
+                num_heads=gemma_config.num_heads,
+                head_dim=gemma_config.head_dim,
+                dtype=dtype,
+                mini_batch_size=16,
+            )
+
+    # Create model
+    rngs = nnx.Rngs(seed)
+    model = Gemma3TTTModel(
+        gemma_config=gemma_config,
+        ttt_config=ttt_config,
+        rngs=rngs,
+        tie_word_embeddings=True,
+    )
+
+    # Load pretrained weights
+    if load_pretrained and checkpoint_path:
+        if checkpoint_path.startswith("hf:"):
+            # HuggingFace format: "hf:google/gemma-3-4b-pt"
+            hf_model_id = checkpoint_path[3:]  # Remove "hf:" prefix
+            model = load_gemma3_from_huggingface(model, hf_model_id)
+        else:
+            # Orbax checkpoint
+            model = load_gemma3_from_orbax(model, checkpoint_path)
+
+    print(f"Created Gemma 3 TTT model: {model_name}")
+    print(f"  - Layers: {gemma_config.num_layers}")
+    print(f"  - Hidden dim: {gemma_config.embed_dim}")
+    print(f"  - Heads: {gemma_config.num_heads} (KV: {gemma_config.num_kv_heads})")
+    print(f"  - Head dim: {gemma_config.head_dim}")
+
+    return model, gemma_config
 
 
 def count_parameters(model: nnx.Module) -> int:

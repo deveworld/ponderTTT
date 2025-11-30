@@ -5,16 +5,37 @@ Migrated from Linen to NNX while preserving TTT algorithm exactly.
 Based on official TTT-LM-JAX implementation.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
-from typing import Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 from jax import vmap
+from jax.sharding import PartitionSpec as P
 from jax.tree_util import tree_map
+
+
+def maybe_with_partitioning(
+    fn: Callable,
+    axis_rules: Optional[Callable] = None,
+    axis_rules_args: Tuple[str, ...] = (),
+) -> Callable:
+    """Apply sharding partitioning to initializer if axis_rules provided.
+
+    Args:
+        fn: Initializer function
+        axis_rules: Callable that maps logical axes to PartitionSpec
+        axis_rules_args: Arguments to pass to axis_rules
+
+    Returns:
+        Partitioned initializer or original if no axis_rules
+    """
+    if axis_rules is None:
+        return fn
+    return nnx.with_partitioning(fn, axis_rules(*axis_rules_args))
 
 
 def scan_remat_every_n_iterations_scan(f, n, carry, x):
@@ -59,6 +80,69 @@ class TTTConfig:
     remat_mini_batch_group_size: int = 4
     output_ttt_stats: bool = True
     causal_k: int = 0  # Causal mask diagonal: 0 includes diagonal, -1 excludes it
+    # Sharding configuration (for multi-host TPU)
+    axis_rules: Optional[Callable[..., P]] = None
+
+    @classmethod
+    def for_gpt2(cls, model_size: str = "125m") -> "TTTConfig":
+        """TTT config for GPT-2 models."""
+        configs = {
+            "125m": {"hidden_dim": 768, "num_heads": 12, "head_dim": 64},
+            "350m": {"hidden_dim": 1024, "num_heads": 16, "head_dim": 64},
+            "1b": {"hidden_dim": 1280, "num_heads": 20, "head_dim": 64},
+        }
+        return cls(**configs.get(model_size, configs["125m"]))
+
+    @classmethod
+    def for_gemma3_4b(cls, dtype: jnp.dtype = jnp.bfloat16) -> "TTTConfig":
+        """TTT config for Gemma 3 4B.
+
+        Gemma 3 4B specs:
+        - embed_dim: 2560
+        - num_heads: 8
+        - head_dim: 256
+        """
+        return cls(
+            hidden_dim=2560,
+            num_heads=8,
+            head_dim=256,
+            dtype=dtype,
+            rope_theta=10000.0,  # Use local attention frequency
+            mini_batch_size=16,
+            max_seq_length=131072,  # Gemma 3 supports 128K context
+        )
+
+    @classmethod
+    def for_gemma3_12b(cls, dtype: jnp.dtype = jnp.bfloat16) -> "TTTConfig":
+        """TTT config for Gemma 3 12B.
+
+        Gemma 3 12B specs:
+        - embed_dim: 3840
+        - num_heads: 16
+        - head_dim: 256
+        """
+        return cls(
+            hidden_dim=3840,
+            num_heads=16,
+            head_dim=256,
+            dtype=dtype,
+            rope_theta=10000.0,
+            mini_batch_size=16,
+            max_seq_length=131072,
+        )
+
+    @classmethod
+    def for_gemma3_1b(cls, dtype: jnp.dtype = jnp.bfloat16) -> "TTTConfig":
+        """TTT config for Gemma 3 1B (for testing)."""
+        return cls(
+            hidden_dim=1152,
+            num_heads=4,
+            head_dim=256,
+            dtype=dtype,
+            rope_theta=10000.0,
+            mini_batch_size=16,
+            max_seq_length=32768,
+        )
 
 
 def precompute_freqs_cis(
@@ -150,6 +234,7 @@ class TTTLayer(nnx.Module):
         self.num_heads = config.num_heads
         self.head_dim = config.head_dim
         self.mini_batch_size = config.mini_batch_size
+        axis_rules = config.axis_rules
 
         # Precompute RoPE frequencies
         self.freqs_cis = precompute_freqs_cis(
@@ -159,35 +244,75 @@ class TTTLayer(nnx.Module):
             dtype=config.dtype,
         )
 
-        # Q, K, V, O projections
-        self.wq = nnx.Linear(config.hidden_dim, config.num_heads * config.head_dim, use_bias=False, rngs=rngs)
-        self.wv = nnx.Linear(config.hidden_dim, config.num_heads * config.head_dim, use_bias=False, rngs=rngs)
-        # Zero-init output projection to ensure identity at start of training
-        self.wo = nnx.Linear(
-            config.num_heads * config.head_dim, 
-            config.hidden_dim, 
-            use_bias=False, 
-            kernel_init=nnx.initializers.zeros,
-            rngs=rngs
+        # Q, K, V, O projections with sharding
+        # Sharding: [hidden_dim, num_heads * head_dim] -> ('embed', 'kv')
+        self.wq = nnx.Linear(
+            config.hidden_dim,
+            config.num_heads * config.head_dim,
+            use_bias=False,
+            kernel_init=maybe_with_partitioning(
+                nnx.initializers.lecun_normal(),
+                axis_rules,
+                ('embed', 'kv'),
+            ),
+            rngs=rngs,
         )
-        self.wg = nnx.Linear(config.hidden_dim, config.hidden_dim, use_bias=False, rngs=rngs)
+        self.wv = nnx.Linear(
+            config.hidden_dim,
+            config.num_heads * config.head_dim,
+            use_bias=False,
+            kernel_init=maybe_with_partitioning(
+                nnx.initializers.lecun_normal(),
+                axis_rules,
+                ('embed', 'kv'),
+            ),
+            rngs=rngs,
+        )
+        # Zero-init output projection to ensure identity at start of training
+        # Sharding: [num_heads * head_dim, hidden_dim] -> ('kv', 'embed')
+        self.wo = nnx.Linear(
+            config.num_heads * config.head_dim,
+            config.hidden_dim,
+            use_bias=False,
+            kernel_init=maybe_with_partitioning(
+                nnx.initializers.zeros,
+                axis_rules,
+                ('kv', 'embed'),
+            ),
+            rngs=rngs,
+        )
+        # Gating projection: [hidden_dim, num_heads * head_dim] -> ('embed', 'kv')
+        # Note: Output dimension must match TTT output (num_heads * head_dim)
+        self.wg = nnx.Linear(
+            config.hidden_dim,
+            config.num_heads * config.head_dim,
+            use_bias=False,
+            kernel_init=maybe_with_partitioning(
+                nnx.initializers.lecun_normal(),
+                axis_rules,
+                ('embed', 'kv'),
+            ),
+            rngs=rngs,
+        )
 
         # Causal convolutions for Q and K
         # Note: NNX Conv doesn't directly support CAUSAL padding like Linen
         # We'll handle causal masking manually in forward pass
+        # Conv is applied after Q/K projection, so use num_heads * head_dim
+        qk_dim = config.num_heads * config.head_dim
         self.conv_q = nnx.Conv(
-            in_features=config.hidden_dim,
-            out_features=config.hidden_dim,
+            in_features=qk_dim,
+            out_features=qk_dim,
             kernel_size=(config.conv_width,),
-            feature_group_count=config.hidden_dim,  # Depthwise
-            rngs=rngs
+            feature_group_count=qk_dim,  # Depthwise
+            rngs=rngs,
         )
         self.conv_k = nnx.Conv(
-            in_features=config.hidden_dim,
-            out_features=config.hidden_dim,
+            in_features=qk_dim,
+            out_features=qk_dim,
             kernel_size=(config.conv_width,),
-            feature_group_count=config.hidden_dim,  # Depthwise
-            rngs=rngs
+            feature_group_count=qk_dim,  # Depthwise
+            rngs=rngs,
         )
 
         # Token position indices for learning rate
@@ -207,7 +332,12 @@ class TTTLayer(nnx.Module):
         self.post_norm = nnx.LayerNorm(config.num_heads * config.head_dim, epsilon=1e-5, rngs=rngs)
 
         # Fast weights for TTT (per-head)
-        normal_init = nnx.initializers.normal(config.initializer_range)
+        # Sharding: [num_heads, head_dim, head_dim] -> ('kv', None, None) - shard across heads
+        normal_init = maybe_with_partitioning(
+            nnx.initializers.normal(config.initializer_range),
+            axis_rules,
+            ('kv', None, None),
+        )
         self.W1 = nnx.Param(normal_init(rngs.params(), (config.num_heads, config.head_dim, config.head_dim)))
         self.b1 = nnx.Param(jnp.zeros((config.num_heads, 1, config.head_dim)))
 
@@ -547,9 +677,10 @@ class TTTLayer(nnx.Module):
         # Apply gating
         B, T, C = hidden_states.shape
         hidden_states_flat = hidden_states.astype(jnp.float32).reshape(-1, C)
-        
+
         y = self.wg(hidden_states_flat)
-        y = y.reshape(B, T, C)
+        # Gating output is [B*T, num_heads * head_dim]
+        y = y.reshape(B, T, self.num_heads * self.head_dim)
         y = jax.nn.gelu(y, approximate=True)
         Z = y * Z
 
