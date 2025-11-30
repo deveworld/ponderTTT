@@ -18,7 +18,7 @@ import math
 from typing import cast
 
 from ponderttt.data import create_data_iterator, get_tokenizer
-from ponderttt.models import load_ttt_model, TTTTransformerLM
+from ponderttt.models import load_ttt_model
 from ponderttt.models.ttt_layer_nnx import TTTConfig
 from ponderttt.models.gating_nnx import BinaryGatingConfig, BinaryGatingNetwork
 from ponderttt.utils import FeatureExtractor, cross_entropy_loss

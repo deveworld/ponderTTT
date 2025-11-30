@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import enum
-from typing import Any, Union
+from typing import Any, Union, TYPE_CHECKING, TypeAlias
 
 from flax import nnx
 from . import layers
@@ -27,14 +27,15 @@ from . import sow_lib
 import jax
 import jax.numpy as jnp
 
-# Try to import jaxtyping, fallback to JAX array types
-try:
-    from jaxtyping import Array, ArrayLike
-except ImportError:
+if TYPE_CHECKING:
+    Array: TypeAlias = jax.Array
+    ArrayLike: TypeAlias = jax.Array | jnp.ndarray | Any
+    LayerCache: TypeAlias = dict[str, jax.Array]
+else:
     Array = jax.Array
-    ArrayLike = Union[jax.Array, jnp.ndarray, Any]
+    ArrayLike = Any
+    LayerCache = dict
 
-LayerCache = dict[str, Array]
 Shape = Sequence[Union[int, Any]]
 
 K_MASK = -2.3819763e38  # Set to a large negative number.
@@ -261,9 +262,9 @@ class Attention(nnx.Module):
     if use_gqa:
       # Reshape matrices to enable einsums over groups.
       num_groups = self.num_heads // self.num_kv_heads
-      batch_size, seq_size1, _, _ = probs.shape
+      batch_size, seq_size, _, head_dim = query_scaled.shape
       probs = probs.reshape(
-        (batch_size, seq_size1, self.num_kv_heads, num_groups, -1)
+        (batch_size, seq_size, self.num_kv_heads, num_groups, -1)
       )
       encoded = jnp.einsum('BTKGS,BSKH->BTKGH', probs, value_proj)
       encoded = encoded.reshape(

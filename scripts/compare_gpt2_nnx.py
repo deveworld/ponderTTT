@@ -48,8 +48,8 @@ def main() -> None:
     args = parse_args()
 
     try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore[import-not-found]
+        import torch  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover
         print(f"[FAIL] transformers/torch not available: {exc}")
         return

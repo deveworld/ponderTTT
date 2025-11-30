@@ -19,6 +19,8 @@ import jax.numpy as jnp
 import optax
 from flax import nnx
 
+from typing import cast
+
 from ..data import create_data_iterator, get_tokenizer
 from ..models import GPT2Model, load_ttt_model
 from ..models.gating_nnx import BinaryGatingConfig, BinaryGatingNetwork
@@ -496,7 +498,7 @@ def main():
             loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate = train_step_jit(
                 trainable_system,
                 optimizer,
-                ttt_model.base_model,
+                cast(GPT2Model, ttt_model.base_model),  # train_hard_skip is GPT2-specific
                 chunk_batch,
                 temperature,
                 subkey,

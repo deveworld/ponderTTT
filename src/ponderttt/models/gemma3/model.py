@@ -6,26 +6,24 @@ for adaptive compute allocation during inference.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING, TypeAlias
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-# Try to import jaxtyping, fallback to JAX array types
-try:
-    from jaxtyping import Array
-except ImportError:
+if TYPE_CHECKING:
+    Array: TypeAlias = jax.Array
+    Cache: TypeAlias = dict[str, dict[str, jax.Array]]
+else:
     Array = jax.Array
+    Cache = dict
 
 from .config import Gemma3Config
 from .layers import RMSNorm
 from .modules import Block, Embedder
 from .sow_lib import SowConfig
 from ..ttt_layer_nnx import TTTLayer, TTTConfig
-
-
-Cache = dict[str, dict[str, Array]]
 
 
 def maybe_with_partitioning(fn, axis_rules, axis_rules_args=()):
@@ -118,9 +116,10 @@ class Gemma3Model(nnx.Module):
             attention_mask = attention_mask[None, :, :]  # Add batch dim
 
         # Process through layers
+        assert attention_mask is not None  # Set above if was None
         for i, layer in enumerate(self.layers):
             layer_name = f"layer_{i}"
-            layer_cache = cache[layer_name] if cache else None
+            layer_cache = cache.get(layer_name) if cache is not None else None
             layer_cache, x = layer(x, positions, layer_cache, attention_mask)
             if new_cache is not None:
                 new_cache[layer_name] = layer_cache

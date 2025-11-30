@@ -19,8 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-import flax
-from flax import nnx
+from flax import nnx, traverse_util
 from flax.typing import VariableDict  # pylint: disable=g-importing-member,g-multiple-import
 
 M = TypeVar('M', bound='nnx.Module')
@@ -55,32 +54,31 @@ def module_from_linen_variables(
       `variables` dictionary are the same as the keys in the `nnx.Module`'s
       state.
   """
-  if map_key_fn is None:
+  def _default_map_key_fn(path: tuple[str, ...]) -> tuple[str | int, ...]:
+    return path[1:] if 'params' in variables else path
 
-    def map_key_fn(path: tuple[str, ...]) -> tuple[str | int, ...]:
-      return path[1:] if 'params' in variables else path
+  def _default_assign_val_fn(
+      state: Any,
+      mapped_path: tuple[str | int, ...],
+      val: Any,
+  ) -> Any:
+    state[mapped_path].set_value(val)
+    return state
 
-  if assign_val_fn is None:
-
-    def assign_val_fn(
-        state: Any,
-        mapped_path: tuple[str | int, ...],
-        val: Any,
-    ) -> Any:
-      state[mapped_path].set_value(val)
-      return state
+  key_mapper = map_key_fn if map_key_fn is not None else _default_map_key_fn
+  val_assigner = assign_val_fn if assign_val_fn is not None else _default_assign_val_fn
 
   mdl: M = nnx.eval_shape(module_factory)
   graph_def, state = nnx.split(mdl)
   state = dict(nnx.to_flat_state(state))
-  for path, val in flax.traverse_util.flatten_dict(variables).items():
-    mapped_path = map_key_fn(path)
+  for path, val in traverse_util.flatten_dict(variables).items():
+    mapped_path = key_mapper(path)
     if mapped_path not in state:
       raise ValueError(
           f"'{mdl.__class__.__name__}.{_flatten_path(mapped_path)}' doesn't "
           f' exist (original path={path}).'
       )
-    state = assign_val_fn(state, mapped_path, val)
+    state = val_assigner(state, mapped_path, val)
   state = nnx.from_flat_state(state)
 
   return nnx.merge(graph_def, state)

@@ -17,19 +17,18 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Union
+from typing import Any, Union, TYPE_CHECKING
 
 from flax import nnx
 import jax
 import jax.numpy as jnp
 
-# Try to import jaxtyping, fallback to JAX array types
-try:
-    from jaxtyping import Array, ArrayLike
-except ImportError:
+if TYPE_CHECKING:
+    from jax import Array
+    ArrayLike = Array | jnp.ndarray | Any
+else:
     Array = jax.Array
-    ArrayLike = Union[jax.Array, jnp.ndarray, Any]
-
+    ArrayLike = Any
 
 Shape = Sequence[Union[int, Any]]
 
@@ -68,7 +67,7 @@ class RMSNorm(nnx.Module):
       rngs: nnx.Rngs,
       dtype: Any = jnp.float32,
   ):
-    self.scale = nnx.Param(scale_init(rngs.params(), dim, dtype))
+    self.scale = nnx.Param(scale_init(rngs.params(), (dim,), dtype))
 
   def __call__(self, x: Array) -> Array:
     dtype = self.scale.dtype
@@ -77,6 +76,6 @@ class RMSNorm(nnx.Module):
     # normed_inputs is a rank-K tensor, K > 1 (K is typically 2 or 3). scale is
     # a rank-1 tensor. To avoid implicit rank-promotion, reshape scale to
     # a (1, ..., 1, D) tensor, so the rank of scale matches normed_inputs.
-    scale = jnp.expand_dims(self.scale, axis=range(len(x.shape) - 1))
+    scale = jnp.expand_dims(self.scale[...], axis=range(len(x.shape) - 1))
     normed_inputs = normed_inputs * (1 + scale)
     return normed_inputs

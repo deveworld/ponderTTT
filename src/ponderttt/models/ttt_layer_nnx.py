@@ -86,12 +86,17 @@ class TTTConfig:
     @classmethod
     def for_gpt2(cls, model_size: str = "125m") -> "TTTConfig":
         """TTT config for GPT-2 models."""
-        configs = {
+        configs: dict[str, dict[str, int]] = {
             "125m": {"hidden_dim": 768, "num_heads": 12, "head_dim": 64},
             "350m": {"hidden_dim": 1024, "num_heads": 16, "head_dim": 64},
             "1b": {"hidden_dim": 1280, "num_heads": 20, "head_dim": 64},
         }
-        return cls(**configs.get(model_size, configs["125m"]))
+        config = configs.get(model_size, configs["125m"])
+        return cls(
+            hidden_dim=config["hidden_dim"],
+            num_heads=config["num_heads"],
+            head_dim=config["head_dim"],
+        )
 
     @classmethod
     def for_gemma3_4b(cls, dtype: jnp.dtype = jnp.bfloat16) -> "TTTConfig":
