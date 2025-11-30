@@ -155,7 +155,6 @@ Adaptive test-time training for code generation models. A pretrained GPT-2 (125M
 
 ### Phase 1 Deliverables (Complete)
 1. `train_hard_skip.py`: Main training script for binary gating (Gumbel-Softmax)
-2. `train_differentiable.py`: Alternative continuous gating script (soft skip)
-3. `compare_methods.py`: Comparison against baselines
-4. Trained Checkpoints: Gating networks with adaptive behavior
-5. arXiv Paper: "Learning to Ponder: Adaptive Compute Allocation via Test-Time Training"
+2. `compare_methods.py`: Comparison against baselines
+3. Trained Checkpoints: Gating networks with adaptive behavior
+4. arXiv Paper: "Learning to Ponder: Adaptive Compute Allocation via Test-Time Training"
