@@ -63,7 +63,7 @@ try:
     import wandb
     WANDB_AVAILABLE = True
 except ImportError:
-    wandb = None  # type: ignore[assignment]
+    wandb = None # type: ignore[invalid-assignment]
     WANDB_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)

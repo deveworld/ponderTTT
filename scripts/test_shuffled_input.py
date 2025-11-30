@@ -306,7 +306,7 @@ def main():
     )
     ppl_skip_shuffled = math.exp(min(loss_skip_shuffled, 20)) if not math.isnan(loss_skip_shuffled) else float('inf')
     ppl_ours_shuffled = math.exp(min(loss_ours_shuffled, 20)) if not math.isnan(loss_ours_shuffled) else float('inf')
-    improv_shuffled = (loss_skip_shuffled - loss_ours_shuffled) / loss_skip_shuffled * 100 if loss_skip_shuffled > 0 else 0
+    improv_shuffled = (loss_skip_shuffled - loss_ours_shuffled) / loss_skip_shuffled * 100 if loss_skip_shuffled > 0 else 0.0
 
     # Results
     print("\n" + "=" * 70)

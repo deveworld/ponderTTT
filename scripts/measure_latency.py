@@ -208,7 +208,7 @@ def main():
 
     # Gating overhead (excluding base forward, which is already measured in latency_skip)
     # gating_overhead = feature extraction + decision making
-    gating_overhead = max(0, latency_gating_full - latency_skip)
+    gating_overhead = max(0.0, latency_gating_full - latency_skip)
 
     # Measure Hard Skip with actual decisions
     # First, determine the decision distribution
