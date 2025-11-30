@@ -65,3 +65,8 @@ output.log
 
 # Paper (not tracked)
 paper/
+
+# Plan files (Claude Code)
+.plan
+PLAN.md
+*.plan
