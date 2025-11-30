@@ -37,7 +37,7 @@ def unwrap_state(state):
 
 # --- JIT-compiled Helpers ---
 
-@nnx.jit
+@nnx.jit(static_argnames=("vocab_size", "pad_token_id", "seq_norm"))
 def jit_base_forward_and_features(
     model: TTTTransformerLM,
     input_ids: jax.Array,
