@@ -41,6 +41,7 @@ import logging
 import math
 from pathlib import Path
 from functools import partial
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -51,6 +52,7 @@ from tqdm import tqdm
 from ..data import create_data_iterator, get_tokenizer
 from ..models import load_ttt_model
 from ..models.gemma3 import (
+    Gemma3Config,
     ShardingConfig,
     create_device_mesh,
     get_data_sharding,
@@ -61,6 +63,7 @@ try:
     import wandb
     WANDB_AVAILABLE = True
 except ImportError:
+    wandb = None  # type: ignore[assignment]
     WANDB_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
@@ -392,7 +395,7 @@ def main():
         logger.info(f"  Checkpoint: {args.checkpoint_path}")
 
     # Initialize WandB
-    if args.wandb_project and WANDB_AVAILABLE:
+    if args.wandb_project and WANDB_AVAILABLE and wandb is not None:
         wandb.init(
             project=args.wandb_project,
             config=vars(args),
@@ -428,11 +431,12 @@ def main():
 
     # Initialize first model for printing stats
     model, config = init_model(seeds[0])
+    gemma_config = cast(Gemma3Config, config)
 
     logger.info("\nModel loaded:")
-    logger.info(f"  Layers: {config.num_layers}")
-    logger.info(f"  Hidden dim: {config.embed_dim}")
-    logger.info(f"  Heads: {config.num_heads} (KV: {config.num_kv_heads})")
+    logger.info(f"  Layers: {gemma_config.num_layers}")
+    logger.info(f"  Hidden dim: {gemma_config.embed_dim}")
+    logger.info(f"  Heads: {gemma_config.num_heads} (KV: {gemma_config.num_kv_heads})")
 
     total_params = count_params(model)
     trainable_state = model.get_trainable_params()
@@ -462,22 +466,22 @@ def main():
     # JIT compile train/eval steps
     if mesh is not None:
         # With explicit sharding
-        @partial(jax.jit, static_argnames=['use_ttt'])
-        def jit_train_step(model, optimizer, batch, use_ttt):
-            return train_step_fn(model, optimizer, batch, use_ttt)
-
-        @partial(jax.jit, static_argnames=['use_ttt'])
-        def jit_eval_step(model, batch, use_ttt):
-            return eval_step_fn(model, batch, use_ttt)
+        jit_train_step = partial(jax.jit, static_argnames=['use_ttt'])(
+            lambda model, optimizer, batch, use_ttt: train_step_fn(model, optimizer, batch, use_ttt)
+        )
+        jit_eval_step = partial(jax.jit, static_argnames=['use_ttt'])(
+            lambda model, batch, use_ttt: eval_step_fn(model, batch, use_ttt)
+        )
     else:
         # Auto sharding
-        @nnx.jit(static_argnames=['use_ttt'])
-        def jit_train_step(model, optimizer, batch, use_ttt):
-            return train_step_fn(model, optimizer, batch, use_ttt)
-
-        @nnx.jit(static_argnames=['use_ttt'])
-        def jit_eval_step(model, batch, use_ttt):
-            return eval_step_fn(model, batch, use_ttt)
+        jit_train_step = nnx.jit(
+            lambda model, optimizer, batch, use_ttt: train_step_fn(model, optimizer, batch, use_ttt),
+            static_argnames=['use_ttt']
+        )
+        jit_eval_step = nnx.jit(
+            lambda model, batch, use_ttt: eval_step_fn(model, batch, use_ttt),
+            static_argnames=['use_ttt']
+        )
 
     # Training loop
     logger.info("\nStarting training...")
@@ -553,6 +557,7 @@ def main():
                     break
 
                 num_chunks_available = batch["chunks"].shape[1]
+                metrics: dict[str, jnp.ndarray] = {}
                 for chunk_idx in range(num_chunks_available):
                     if first_batch and chunk_idx < remainder_chunks:
                         continue
@@ -593,6 +598,8 @@ def main():
                             )
 
                     # Stability check
+                    if not metrics:
+                        continue
                     loss_ce = float(metrics["loss_ce"])
                     if not jnp.isfinite(loss_ce) or loss_ce > 20.0:
                         logger.warning(f"Skipping unstable chunk (loss={loss_ce:.4f})")
@@ -610,7 +617,7 @@ def main():
                     pbar.update(1)
 
                     # WandB logging
-                    if args.wandb_project and WANDB_AVAILABLE:
+                    if args.wandb_project and WANDB_AVAILABLE and wandb is not None:
                         wandb.log({
                             f"seed_{seed}/loss_total": float(metrics['loss_total']),
                             f"seed_{seed}/loss_ce": loss_ce,

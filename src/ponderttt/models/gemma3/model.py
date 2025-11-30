@@ -122,7 +122,7 @@ class Gemma3Model(nnx.Module):
             layer_name = f"layer_{i}"
             layer_cache = cache[layer_name] if cache else None
             layer_cache, x = layer(x, positions, layer_cache, attention_mask)
-            if cache is not None:
+            if new_cache is not None:
                 new_cache[layer_name] = layer_cache
 
         # Final normalization
