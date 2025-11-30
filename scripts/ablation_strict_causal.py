@@ -259,12 +259,12 @@ def main():
     print(f"  Loss: {avg_skip:.4f}")
     print(f"  PPL:  {math.exp(min(avg_skip, 20)):.2f}")
 
-    print(f"\nPonderTTT with k=0 (includes diagonal, trained setting):")
+    print("\nPonderTTT with k=0 (includes diagonal, trained setting):")
     print(f"  Loss: {avg_k0:.4f}")
     print(f"  PPL:  {math.exp(min(avg_k0, 20)):.2f}")
     print(f"  Update Rate: {update_rate:.1%}")
 
-    print(f"\nPonderTTT with k=-1 (strict causal, excludes diagonal):")
+    print("\nPonderTTT with k=-1 (strict causal, excludes diagonal):")
     print(f"  Loss: {avg_k_neg1:.4f}")
     print(f"  PPL:  {math.exp(min(avg_k_neg1, 20)):.2f}")
 

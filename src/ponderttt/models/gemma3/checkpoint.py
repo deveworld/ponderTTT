@@ -7,7 +7,6 @@ Supports loading weights from:
 
 from __future__ import annotations
 
-import functools
 from collections.abc import Mapping
 from typing import Any
 
@@ -178,9 +177,6 @@ def load_gemma3_from_huggingface(
         torch_dtype=torch.bfloat16,
         device_map=device,
     )
-
-    # Get model state
-    state = nnx.state(model)
 
     # Map HuggingFace weights to NNX model
     hf_state_dict = hf_model.state_dict()

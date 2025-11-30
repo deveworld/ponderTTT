@@ -6,7 +6,7 @@ Supports both GPT-2 and Gemma 3 (4B, 12B) as base models.
 """
 
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -15,6 +15,9 @@ from flax import nnx
 from ponderttt.models.gpt2_nnx import GPT2Config
 from ponderttt.models.ttt_layer_nnx import TTTLayer, TTTConfig
 from ponderttt.models.lora_layer_nnx import LoRALayer, LoRAConfig
+
+if TYPE_CHECKING:
+    from ponderttt.models.gemma3 import Gemma3Config, Gemma3TTTModel
 
 
 @dataclass

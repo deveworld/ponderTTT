@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -41,7 +41,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
 if TYPE_CHECKING:
-    from .config import Gemma3Config
+    pass
 
 
 @dataclasses.dataclass(frozen=True)

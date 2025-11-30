@@ -246,7 +246,7 @@ def main():
     ]
 
     df = pd.DataFrame(results)
-    print(f"\n=== Latency Results (ms per chunk) ===")
+    print("\n=== Latency Results (ms per chunk) ===")
     print(df.to_string(index=False))
 
     speedup = latency_update / latency_hard_skip
@@ -255,7 +255,7 @@ def main():
     # Cost model verification
     theoretical_cost = 1.0 + 2.0 * update_rate  # 1 + 2λ
     actual_cost = latency_hard_skip / latency_skip
-    print(f"\nCost Model Verification:")
+    print("\nCost Model Verification:")
     print(f"  Skip Rate: {skip_rate:.1%}")
     print(f"  Update Rate: {update_rate:.1%}")
     print(f"  Theoretical Cost (1 + 2λ): {theoretical_cost:.2f}x")

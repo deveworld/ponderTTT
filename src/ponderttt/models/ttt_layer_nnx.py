@@ -5,9 +5,9 @@ Migrated from Linen to NNX while preserving TTT algorithm exactly.
 Based on official TTT-LM-JAX implementation.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp

@@ -46,14 +46,11 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
-from jax.sharding import NamedSharding, PartitionSpec as P
 from tqdm import tqdm
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import load_ttt_model
 from ..models.gemma3 import (
-    Gemma3Config,
-    MeshRules,
     ShardingConfig,
     create_device_mesh,
     get_data_sharding,
@@ -386,7 +383,7 @@ def main():
     cost_multiplier = action_to_cost(args.action)
     use_ttt = num_ttt_steps > 0
 
-    logger.info(f"\nConfiguration:")
+    logger.info("\nConfiguration:")
     logger.info(f"  Model: {model_name}")
     logger.info(f"  TTT steps: {num_ttt_steps}")
     logger.info(f"  Cost multiplier: {cost_multiplier}x")
@@ -432,7 +429,7 @@ def main():
     # Initialize first model for printing stats
     model, config = init_model(seeds[0])
 
-    logger.info(f"\nModel loaded:")
+    logger.info("\nModel loaded:")
     logger.info(f"  Layers: {config.num_layers}")
     logger.info(f"  Hidden dim: {config.embed_dim}")
     logger.info(f"  Heads: {config.num_heads} (KV: {config.num_kv_heads})")
@@ -646,7 +643,6 @@ def main():
         if chunks_processed > 0:
             denom = chunks_processed - start_chunk + 1e-6
             final_avg_ce_loss = total_loss_ce / denom
-            final_avg_total_loss = total_loss_total / denom
             final_avg_ppl = math.exp(final_avg_ce_loss)
 
             seed_results.append({

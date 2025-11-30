@@ -6,7 +6,7 @@ for adaptive compute allocation during inference.
 
 from __future__ import annotations
 
-from typing import Any, Optional, Union
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -20,7 +20,7 @@ except ImportError:
 
 from .config import Gemma3Config
 from .layers import RMSNorm
-from .modules import Attention, AttentionType, Block, Embedder, FeedForward
+from .modules import Block, Embedder
 from .sow_lib import SowConfig
 from ..ttt_layer_nnx import TTTLayer, TTTConfig
 
