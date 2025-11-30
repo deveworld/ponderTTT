@@ -14,9 +14,7 @@ from flax import nnx
 
 from ponderttt.data import get_tokenizer
 from ponderttt.models import (
-    PolicyNetwork,
     TTTLayer,
-    PolicyConfig,
     TTTConfig,
     load_ttt_model,
 )
@@ -36,10 +34,10 @@ except Exception:
 # Track test results
 tests_passed = 0
 tests_failed = 0
-total_tests = 6  # Added sanity check
+total_tests = 5
 
 # Test 0: Sanity Check (Minimal NNX)
-print("\n[0/6] Testing Minimal NNX (Sanity Check)...")
+print("\n[0/5] Testing Minimal NNX (Sanity Check)...")
 try:
     rngs = nnx.Rngs(0)
     layer = nnx.Linear(32, 32, rngs=rngs)
@@ -53,7 +51,7 @@ except Exception as e:
     tests_failed += 1
 
 # Test 1: Tokenizer
-print("\n[1/6] Testing tokenizer...")
+print("\n[1/5] Testing tokenizer...")
 tokenizer = None
 vocab_size = 50257  # Default GPT-2 vocab size
 try:
@@ -67,7 +65,7 @@ except Exception as e:
     tests_failed += 1
 
 # Test 2: TTT Transformer Model (NNX)
-print("\n[2/6] Testing TTT transformer model...")
+print("\n[2/5] Testing TTT transformer model...")
 try:
     # Create model without loading pretrained weights (faster)
     model, config = load_ttt_model(
@@ -96,7 +94,7 @@ except Exception as e:
     tests_failed += 1
 
 # Test 3: TTT Layer
-print("\n[3/6] Testing TTT layer...")
+print("\n[3/5] Testing TTT layer...")
 try:
     ttt_config = TTTConfig(
         hidden_dim=768,
@@ -122,31 +120,8 @@ except Exception as e:
     traceback.print_exc()
     tests_failed += 1
 
-# Test 4: Policy Network (NNX)
-print("\n[4/6] Testing policy network...")
-try:
-    policy_config = PolicyConfig(feature_dim=32, num_actions=4)
-    rngs = nnx.Rngs(2)
-    policy = PolicyNetwork(policy_config, rngs)
-
-    test_features = jnp.ones((4, 32))
-    policy.train()  # Set to training mode
-
-    # Run EAGERLY
-    policy_outputs = policy(test_features, deterministic=True)
-
-    print("OK Policy network works")
-    print(f"  Actions: {policy_outputs['action']}")
-    print(f"  Mean value: {jnp.mean(policy_outputs['value']):.4f}")
-    tests_passed += 1
-
-except Exception as e:
-    print(f"[FAIL] Policy network test failed: {e}")
-    traceback.print_exc()
-    tests_failed += 1
-
-# Test 5: Feature Extraction
-print("\n[5/6] Testing feature extraction...")
+# Test 4: Feature Extraction
+print("\n[4/5] Testing feature extraction...")
 try:
     assert tokenizer is not None, "Tokenizer not initialized"
     vocab_size = tokenizer.get_vocab_size()

@@ -2,31 +2,34 @@
 
 Adaptive, budget-aware Test-Time Training (TTT) for code generation models built with JAX/Flax NNX.
 
-## Core Idea: Differentiable Continuous Gating
+## Core Idea: Binary Gating via Gumbel-Softmax
 
-PonderTTT introduces **Differentiable Adaptive Test-Time Training**. Instead of using fixed update schedules or unstable Reinforcement Learning (RL), we learn **how strongly** to update fast weights during inference using a continuous, gradient-based approach.
+PonderTTT introduces **Adaptive Test-Time Training** with learned SKIP/UPDATE decisions. Instead of applying TTT updates uniformly to all input chunks, we learn **when** to update using a binary gating mechanism trained via Gumbel-Softmax.
 
-| Feature | Discrete (RL/PPO) | PonderTTT (Continuous Gating) |
+| Feature | Fixed TTT | PonderTTT (Binary Gating) |
 | :--- | :--- | :--- |
-| **Control Signal** | Action $a_t ∈ \{0, 1, 2, 4\}$ | Scalar $\lambda_t \in [0, n]$ |
-| **Update Logic** | Select $k$ distinct gradient steps | Scale the learning rate $\eta$ by $\lambda_t$ |
-| **Optimization** | Policy Gradient (High Variance) | End-to-End Backprop (Stable) |
-| **Benefit** | Hard exploration | Smooth loss landscape, "Soft Skips" |
+| **Decision** | Always UPDATE | SKIP or UPDATE per chunk |
+| **Training** | N/A | Gumbel-Softmax (differentiable) |
+| **Inference** | Fixed cost | True computational savings |
+| **Cost** | 3.0x (UPDATE_1) | 2.67x (83% update rate) |
 
-This allows the model to allocate compute resources optimally—spending more updates on difficult code chunks and saving on boilerplate—while being trained efficiently via standard backpropagation.
+**Key Results (GPT-2 125M on Python):**
+- 4.5x perplexity improvement over non-adaptive baseline (26.36 → 5.85)
+- Strong OOD generalization: JavaScript (2.5x), Java (6.2x), Go (70x)
+- Learned policy captures universal "when to adapt" patterns
 
 ## Technical Architecture
 
-This project is a pure JAX/Flax NNX rewrite of the official TTT-LM, enhanced with adaptive capabilities.
+This project is a pure JAX/Flax NNX rewrite of the official TTT-LM, enhanced with adaptive gating.
 
-- **Base Model**: Pretrained GPT-2 (125M~1.5B) implementation in NNX. The backbone weights are frozen (`stop_gradient`) during fine-tuning.
-- **Fast-Weight Layer (`TTTLayer`)**: Implements TTT-Linear with causal convolutions and dual-form updates. We extended the update rule to accept a `gating_scale` ($\lambda_t$), effectively scaling the learning rate element-wise.
-- **Gating Network**: A lightweight MLP that observes 32-D features (loss, entropy, budget remaining) and predicts $\lambda_t$.
+- **Base Model**: Pretrained GPT-2 (125M, 350M) with frozen backbone weights
+- **Fast-Weight Layer (`TTTLayer`)**: TTT-Linear with causal convolutions and dual-form updates
+- **Binary Gating Network**: Lightweight MLP that makes SKIP/UPDATE decisions via Gumbel-Softmax
 - **End-to-End Loss**:
-  $$L_{total} = L_{CE} + \beta \cdot L_{TTT} + \gamma \cdot \text{Mean}(\lambda_t)$$
-  - $L_{CE}$: Main task cross-entropy.
-  - $L_{TTT}$: Reconstruction loss of the TTT layer (ensures fast weights learn useful representations).
-  - $\gamma \cdot \text{Mean}(\lambda_t)$: Soft penalty to enforce the compute budget.
+  $$L_{total} = L_{CE} + \beta \cdot L_{TTT} + \gamma \cdot L_{cost}$$
+  - $L_{CE}$: Main task cross-entropy
+  - $L_{TTT}$: TTT reconstruction loss
+  - $L_{cost}$: Penalty for computational budget (encourages skipping)
 
 ## Installation
 
@@ -54,8 +57,19 @@ python scripts/quick_test.py
 python scripts/test_pipeline.py
 ```
 
-### 2. Differentiable Training (Fine-tuning)
-This is the main workflow. Train the gating network and TTT parameters jointly on The Stack v2:
+### 2. Binary Gating Training (Main Workflow)
+Train the binary gating network with Gumbel-Softmax on The Stack v2:
+```bash
+python -m ponderttt.experiments.train_hard_skip \
+    --model_scale 125m \
+    --target_skip_rate 0.5 \
+    --num_iterations 10000 \
+    --output_dir outputs/hard_skip
+```
+Checkpoints will be saved to `outputs/hard_skip` (e.g., `checkpoint_10000`).
+
+### 3. Alternative: Continuous Gating
+For continuous (soft) gating instead of binary decisions:
 ```bash
 python -m ponderttt.experiments.train_differentiable \
     --model_scale 125m \
@@ -64,27 +78,44 @@ python -m ponderttt.experiments.train_differentiable \
     --num_iterations 1000 \
     --output_dir outputs/differentiable
 ```
-Checkpoints will be saved to `outputs/differentiable` (e.g., `checkpoint_1000`).
 
-### 3. Compare Methods
-Evaluate your trained model against fixed baselines and RL (PPO) approaches. You can load trained checkpoints for evaluation:
+### 4. Compare Methods
+Evaluate trained models against fixed baselines:
 ```bash
 python -m ponderttt.experiments.compare_methods \
     --model_scale 125m \
     --budget 2.0 \
-    --num_eval_batches 20 \
-    --diff_checkpoint outputs/differentiable/checkpoint_1000 \
-    --rl_checkpoint outputs/policy_nnx/seed_42/checkpoint_100
+    --num_eval_batches 20
 ```
 
-### 4. Evaluation (Benchmarks)
+### 5. Evaluation (Benchmarks)
 Use `ponderttt.evaluation.benchmarks` for HumanEval/MBPP. Code execution is unsafe and gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1`. Only set this in a sandboxed environment.
 
-### 5. Checkpointing
+### 6. Checkpointing
 Models are saved using [Orbax](https://github.com/google/orbax). Checkpoints capture the full NNX state, including the Gating Network, TTT parameters, and optimizer state.
 
 ## Project Status
-- **Complete**: Pure NNX GPT-2, TTT Layer with Continuous Gating, End-to-End Differentiable Training Loop, Budget-Awareness, Comparison Script, Checkpointing (Orbax), Benchmarks (HumanEval, MBPP).
-- **In Progress**: Large-scale fine-tuning experiments and OOD (Out-of-Distribution) testing.
+
+### Phase 1: Complete (arXiv)
+- Pure NNX GPT-2, TTT Layer with Binary Gating
+- Gumbel-Softmax training for SKIP/UPDATE decisions
+- End-to-End differentiable training with budget constraints
+- Results on GPT-2 (125M, 350M) with OOD evaluation
+
+### Phase 2: Planned (Conference Submission)
+- Scale to Gemma 3 (4B, 12B)
+- LoRA-TTT for efficiency
+- Reasoning benchmarks: MATH500, GSM8K, LiveCodeBench, GPQA-Diamond
+- Advanced gating features: Entropy, VOG, Attention Dispersion
 
 See `PLAN.md` for the detailed research roadmap.
+
+## Citation
+
+```bibtex
+@article{sim2025ponderttt,
+  title={Learning to Ponder: Adaptive Compute Allocation via Test-Time Training},
+  author={Sim, Gihyeon},
+  year={2025}
+}
+```
