@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from ..data import get_tokenizer
 from ..evaluation.benchmarks import BenchmarkSuite, _check_solution
-from ..models import TTTTransformerLM, load_ttt_model, TTTConfig
+from ..models import TTTTransformerLM, TTTModel, load_ttt_model, TTTConfig
 from ..models.gating_nnx import GatingConfig, GatingNetwork, BinaryGatingNetwork
 from ..utils import FeatureExtractor, extract_features
 from ..utils.checkpointing import load_checkpoint
@@ -62,7 +62,7 @@ class SimpleGenerator:
 
     def __init__(
         self,
-        model: TTTTransformerLM,
+        model: TTTModel,
         tokenizer,
         gating_net=None,
         rng_key: jax.Array | None = None,

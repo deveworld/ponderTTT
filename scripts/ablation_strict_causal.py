@@ -15,9 +15,11 @@ import jax.numpy as jnp
 from flax import nnx
 from tqdm import tqdm
 import math
+from typing import cast
 
 from ponderttt.data import create_data_iterator, get_tokenizer
-from ponderttt.models import load_ttt_model
+from ponderttt.models import load_ttt_model, TTTTransformerLM
+from ponderttt.models.ttt_layer_nnx import TTTConfig
 from ponderttt.models.gating_nnx import BinaryGatingConfig, BinaryGatingNetwork
 from ponderttt.utils import FeatureExtractor, cross_entropy_loss
 from ponderttt.utils.checkpointing import load_checkpoint
@@ -106,17 +108,20 @@ def main():
         out = model(input_ids, use_ttt=False, gating_scale=None)
         return out["logits"]
 
+    # Get TTT config with proper type (this script uses TTT fast weights only)
+    ttt_config = cast(TTTConfig, model.fast_layer.config)
+
     @nnx.jit
     def forward_update_k0(input_ids):
         """Forward pass with TTT (k=0, standard)."""
-        model.fast_layer.config.causal_k = 0
+        ttt_config.causal_k = 0
         out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
         return out["logits"]
 
     @nnx.jit
     def forward_update_k_neg1(input_ids):
         """Forward pass with TTT (k=-1, strict causal)."""
-        model.fast_layer.config.causal_k = -1
+        ttt_config.causal_k = -1
         out = model(input_ids, use_ttt=True, gating_scale=jnp.array([[1.0]]))
         return out["logits"]
 

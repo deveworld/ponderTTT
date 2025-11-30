@@ -20,8 +20,11 @@ import optax
 from flax import nnx
 from tqdm import tqdm
 
+from typing import cast
+
 from ..data import create_data_iterator, get_tokenizer
-from ..models import load_ttt_model
+from ..models import load_ttt_model, TTTTransformerLM
+from ..models.gpt2_nnx import GPT2Config
 from ..utils.checkpointing import save_checkpoint, wait_for_checkpoints, load_checkpoint
 from .training_utils import run_chunk_step
 import wandb
@@ -241,7 +244,7 @@ def main():
                 dropout_rate=0.1,
             )
             print(f"  LoRA rank: {args.lora_rank}")
-            mdl, cfg = load_ttt_model(
+            mdl_raw, cfg_raw = load_ttt_model(
                 model_name=model_name,
                 fast_weight_type="lora",
                 lora_config=lora_config,
@@ -249,14 +252,19 @@ def main():
                 load_pretrained=args.load_pretrained,
                 vocab_size=tok_vocab_size,
             )
+            mdl = cast(TTTTransformerLM, mdl_raw)
+            cfg = cast(GPT2Config, cfg_raw)
         else:
-            mdl, cfg = load_ttt_model(
+            mdl_raw, cfg_raw = load_ttt_model(
                 model_name=model_name,
                 fast_weight_type="ttt",
                 seed=seed,
                 load_pretrained=args.load_pretrained,
                 vocab_size=tok_vocab_size,
             )
+            # Cast to GPT-2 types (this script is GPT-2 only)
+            mdl = cast(TTTTransformerLM, mdl_raw)
+            cfg = cast(GPT2Config, cfg_raw)
         print(f"  Model config vocab_size: {cfg.vocab_size}")
         print(f"  Model embedding shape: {mdl.base_model.wte.embedding[...].shape}")
         return mdl, cfg

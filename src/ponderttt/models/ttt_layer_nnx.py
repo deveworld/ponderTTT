@@ -21,14 +21,14 @@ from jax.tree_util import tree_map
 def maybe_with_partitioning(
     fn: Callable,
     axis_rules: Optional[Callable] = None,
-    axis_rules_args: Tuple[str, ...] = (),
+    axis_rules_args: Tuple[Optional[str], ...] = (),
 ) -> Callable:
     """Apply sharding partitioning to initializer if axis_rules provided.
 
     Args:
         fn: Initializer function
         axis_rules: Callable that maps logical axes to PartitionSpec
-        axis_rules_args: Arguments to pass to axis_rules
+        axis_rules_args: Arguments to pass to axis_rules (None = replicate on that axis)
 
     Returns:
         Partitioned initializer or original if no axis_rules

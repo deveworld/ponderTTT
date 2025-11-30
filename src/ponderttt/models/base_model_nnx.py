@@ -6,7 +6,7 @@ Supports both GPT-2 and Gemma 3 (4B, 12B) as base models.
 """
 
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple, Union, TYPE_CHECKING
+from typing import Any, Optional, Protocol, Tuple, Union, TYPE_CHECKING, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -18,6 +18,37 @@ from ponderttt.models.lora_layer_nnx import LoRALayer, LoRAConfig
 
 if TYPE_CHECKING:
     from ponderttt.models.gemma3 import Gemma3Config, Gemma3TTTModel
+
+
+@runtime_checkable
+class TTTModelProtocol(Protocol):
+    """Protocol defining the common interface for TTT models.
+
+    Both TTTTransformerLM and Gemma3TTTModel implement this interface.
+    """
+    fast_layer: Union[TTTLayer, LoRALayer]
+
+    def __call__(
+        self,
+        input_ids: jax.Array,
+        attention_mask: Optional[jax.Array] = None,
+        position_ids: Optional[jax.Array] = None,
+        use_ttt: bool = True,
+        gating_scale: Optional[jax.Array] = None,
+    ) -> dict: ...
+
+    def get_trainable_params(self) -> nnx.State: ...
+
+    def train(self, **attributes: Any) -> None: ...
+
+    def eval(self, **attributes: Any) -> None: ...
+
+
+# Type alias for any TTT model (GPT-2 based or Gemma 3 based)
+TTTModel = Union["TTTTransformerLM", "Gemma3TTTModel"]
+
+# Type alias for any model config
+ModelConfigType = Union[GPT2Config, "Gemma3Config"]
 
 
 @dataclass
@@ -249,7 +280,7 @@ def load_ttt_model(
     vocab_size: int | None = None,
     pad_token_id: int | None = None,
     checkpoint_path: str | None = None,
-) -> Tuple[Union[TTTTransformerLM, "Gemma3TTTModel"], Union[GPT2Config, "Gemma3Config"]]:
+) -> Tuple[TTTModel, ModelConfigType]:
     """
     Load TTT-augmented transformer model.
 

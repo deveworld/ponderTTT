@@ -8,13 +8,19 @@ Supports loading weights from:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TYPE_CHECKING, TypeVar
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
 from .params import load_params, nest_params
+
+if TYPE_CHECKING:
+    from .model import Gemma3TTTModel
+
+# Generic type for model to preserve type through loading
+T = TypeVar("T", bound=nnx.Module)
 
 
 Params = Mapping[str, Any]
@@ -81,10 +87,10 @@ def _map_linen_var_names(key: tuple[str, ...]) -> tuple[str | int, ...]:
 
 
 def load_gemma3_from_orbax(
-    model: nnx.Module,
+    model: T,
     checkpoint_path: str,
     transpose_gating_einsum: bool = True,
-) -> nnx.Module:
+) -> T:
     """Load Gemma 3 weights from Orbax checkpoint.
 
     Args:
@@ -93,7 +99,7 @@ def load_gemma3_from_orbax(
         transpose_gating_einsum: Whether to transpose gating einsum weights
 
     Returns:
-        Model with loaded weights
+        Model with loaded weights (same type as input)
     """
     params = load_and_format_params(checkpoint_path)
 
@@ -145,10 +151,10 @@ def load_gemma3_from_orbax(
 
 
 def load_gemma3_from_huggingface(
-    model: nnx.Module,
+    model: T,
     model_id: str,
     device: str = "cpu",
-) -> nnx.Module:
+) -> T:
     """Load Gemma 3 weights from HuggingFace checkpoint.
 
     Args:
@@ -157,7 +163,7 @@ def load_gemma3_from_huggingface(
         device: Device to load weights on
 
     Returns:
-        Model with loaded weights
+        Model with loaded weights (same type as input)
 
     Note:
         Requires `transformers` and `torch` packages.
@@ -178,6 +184,11 @@ def load_gemma3_from_huggingface(
         device_map=device,
     )
 
+    # Get gemma_config from model (Gemma3TTTModel has this attribute)
+    gemma_config = getattr(model, "gemma_config", None)
+    if gemma_config is None:
+        raise ValueError("Model must have a 'gemma_config' attribute")
+
     # Map HuggingFace weights to NNX model
     hf_state_dict = hf_model.state_dict()
 
@@ -195,7 +206,7 @@ def load_gemma3_from_huggingface(
     }
 
     # Layer weights
-    for i in range(model.gemma_config.num_layers):
+    for i in range(gemma_config.num_layers):
         layer_prefix = f"model.layers.{i}"
         nnx_layer = ("base_model", "layers", i)
 
@@ -215,7 +226,7 @@ def load_gemma3_from_huggingface(
         }
 
         # QK norm (Gemma 3 specific)
-        if hasattr(model.gemma_config, "use_qk_norm") and model.gemma_config.use_qk_norm:
+        if getattr(gemma_config, "use_qk_norm", False):
             layer_mapping[f"{layer_prefix}.self_attn.q_norm.weight"] = (
                 *nnx_layer, "attn", "_query_norm", "scale"
             )
@@ -224,11 +235,11 @@ def load_gemma3_from_huggingface(
             )
 
         # Post norms (Gemma 2/3 specific)
-        if hasattr(model.gemma_config, "use_post_attn_norm") and model.gemma_config.use_post_attn_norm:
+        if getattr(gemma_config, "use_post_attn_norm", False):
             layer_mapping[f"{layer_prefix}.post_attention_norm.weight"] = (
                 *nnx_layer, "post_attention_norm", "scale"
             )
-        if hasattr(model.gemma_config, "use_post_ffw_norm") and model.gemma_config.use_post_ffw_norm:
+        if getattr(gemma_config, "use_post_ffw_norm", False):
             layer_mapping[f"{layer_prefix}.post_ffw_norm.weight"] = (
                 *nnx_layer, "post_ffw_norm", "scale"
             )

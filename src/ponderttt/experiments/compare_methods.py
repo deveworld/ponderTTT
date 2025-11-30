@@ -18,7 +18,7 @@ from tqdm import tqdm
 from typing import Optional, cast
 
 from ..data import create_data_iterator, get_tokenizer
-from ..models import load_ttt_model, TTTTransformerLM
+from ..models import load_ttt_model, TTTTransformerLM, TTTModel
 from ..models.gating_nnx import GatingConfig, GatingNetwork, BinaryGatingConfig, BinaryGatingNetwork
 from ..utils import FeatureExtractor, cross_entropy_loss
 from ..utils.checkpointing import load_checkpoint
@@ -155,7 +155,7 @@ def evaluate_model(
     batch_size: int,
     seed: int,
     gating_net: Optional[GatingNetwork | BinaryGatingNetwork] = None,
-    model: Optional[TTTTransformerLM] = None,
+    model: Optional[TTTModel] = None,
     language: str = "Python",
     split: str = "test",
     skip_examples: int = 0,
@@ -239,6 +239,7 @@ def evaluate_model(
             # Budget Feature
             budget_rem = (total_budget - current_spend) / total_budget if total_budget > 0 else 0.0
 
+            assert isinstance(ttt_model, TTTTransformerLM)
             # 1. Extract Features (using JIT)
             logits_base, features = jit_base_forward_and_features(
                 ttt_model,

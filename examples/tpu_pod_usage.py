@@ -12,7 +12,7 @@ import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 
 from ponderttt.data import get_tokenizer
-from ponderttt.models import load_ttt_model
+from ponderttt.models import GPT2Config, load_ttt_model
 from ponderttt.utils import create_mesh, initialize_jax_distributed
 
 # Step 1: Initialize JAX for multi-host distributed training
@@ -41,6 +41,8 @@ model, config = load_ttt_model(
     vocab_size=tokenizer.get_vocab_size(),
 )
 model.train()
+
+assert isinstance(config, GPT2Config)
 
 print(f"Model loaded: {config.n_layer} layers, hidden {config.n_embd}")
 

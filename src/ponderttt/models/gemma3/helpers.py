@@ -41,15 +41,8 @@ def _flatten_path(path: tuple[str | int, ...]) -> str:
 def module_from_linen_variables(
     module_factory: Callable[[], M],
     variables: VariableDict,
-    map_key_fn: None | (
-        Callable[[tuple[str, ...]], tuple[str | int, ...]]
-    ) = None,
-    assign_val_fn: None | (
-        Callable[
-            [dict[tuple[str, ...], Any], tuple[str | int, ...], VariableDict],
-            dict[tuple[str, ...], Any],
-        ]
-    ) = None,
+    map_key_fn: Callable[[tuple[str, ...]], tuple[str | int, ...]] | None = None,
+    assign_val_fn: Callable[[Any, tuple[str | int, ...], Any], Any] | None = None,
 ) -> M:
   """Returns an `nnx.Module` initialized with the `variables` of a linen module.
 
@@ -70,10 +63,10 @@ def module_from_linen_variables(
   if assign_val_fn is None:
 
     def assign_val_fn(
-        state: dict[tuple[str, ...], Any],
+        state: Any,
         mapped_path: tuple[str | int, ...],
         val: Any,
-    ) -> dict[tuple[str, ...], Any]:
+    ) -> Any:
       state[mapped_path].set_value(val)
       return state
 

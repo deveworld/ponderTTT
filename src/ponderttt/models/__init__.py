@@ -7,6 +7,9 @@ All models now use Flax NNX instead of Linen.
 # NNX implementations (primary)
 from .base_model_nnx import (
     ModelConfig,
+    ModelConfigType,
+    TTTModel,
+    TTTModelProtocol,
     TTTTransformerLM,
     count_parameters,
     count_trainable_parameters,
@@ -24,7 +27,10 @@ from .gating_nnx import GatingConfig, GatingNetwork
 __all__ = [
     # NNX models (use these)
     "TTTTransformerLM",
+    "TTTModel",
+    "TTTModelProtocol",
     "ModelConfig",
+    "ModelConfigType",
     "load_ttt_model",
     "count_parameters",
     "count_trainable_parameters",

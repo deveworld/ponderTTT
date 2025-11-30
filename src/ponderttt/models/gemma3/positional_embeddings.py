@@ -51,7 +51,7 @@ def apply_rope(
 ) -> jax.Array:
   """Applies RoPE."""
   fraction = 2 * jnp.arange(0, head_dim // 2) / head_dim
-  timescale = max_wavelength**fraction
+  timescale: jax.Array = jnp.power(max_wavelength, fraction)
 
   sinusoid_inp = (
       positions[..., jnp.newaxis] / timescale[jnp.newaxis, jnp.newaxis, :]
