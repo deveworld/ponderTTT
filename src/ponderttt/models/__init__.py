@@ -14,7 +14,6 @@ from .base_model_nnx import (
 )
 from .gpt2_nnx import GPT2Config, GPT2LMHeadModel, GPT2Model, load_gpt2_model
 from .lora_layer_nnx import LoRAConfig, LoRALayer, count_lora_parameters
-from .policy_nnx import PolicyConfig, PolicyNetwork, action_to_cost, action_to_name
 from .ttt_layer_nnx import TTTConfig, TTTLayer
 from .gating_nnx import GatingConfig, GatingNetwork
 
@@ -34,10 +33,6 @@ __all__ = [
     "LoRALayer",
     "LoRAConfig",
     "count_lora_parameters",
-    "PolicyNetwork",
-    "PolicyConfig",
-    "action_to_name",
-    "action_to_cost",
     "GPT2Model",
     "GPT2LMHeadModel",
     "GPT2Config",

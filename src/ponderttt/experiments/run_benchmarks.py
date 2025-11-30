@@ -29,11 +29,6 @@ def _model_forward_jit(model, input_ids, use_ttt, gating_scale):
     return model(input_ids, use_ttt=use_ttt, gating_scale=gating_scale)
 
 
-@nnx.jit(static_argnames=("deterministic",))
-def _policy_forward_jit(net, x, deterministic):
-    return net(x, deterministic=deterministic)
-
-
 @nnx.jit(static_argnames=("train",))
 def _gating_forward_jit(net, x, train):
     return net(x, train=train)
@@ -226,19 +221,7 @@ class SimpleGenerator:
                     attention_mask=attention_mask
                 )
 
-                if hasattr(self.gating_net, "evaluate_actions"):
-                    # RL policy: discrete actions
-                    policy_out = _policy_forward_jit(self.gating_net, features, deterministic=True)
-                    action = int(policy_out["action"][0])
-                    step_map = [0, 1, 2, 4]
-                    scale = float(step_map[action])
-                    # RL uses discrete skip (action=0), so Hard Skip is automatic
-                    if action == 0:
-                        outputs = out_base  # Skip TTT
-                    else:
-                        gating_scale = jnp.array([[scale]])
-                        outputs = self._call_model(padded_input, use_ttt=True, gating_scale=gating_scale)
-                elif isinstance(self.gating_net, BinaryGatingNetwork):
+                if isinstance(self.gating_net, BinaryGatingNetwork):
                     # Binary Gating (Hard Skip with Gumbel-Softmax training)
                     hard_scale, decision = self.gating_net.get_decision(features)
                     decision_val = int(decision[0])
@@ -363,20 +346,7 @@ class SimpleGenerator:
                     attention_mask=mask_tensor
                 )
 
-                if hasattr(self.gating_net, "evaluate_actions"):
-                    # RL policy: discrete actions
-                    policy_out = _policy_forward_jit(self.gating_net, features, deterministic=True)
-                    actions = policy_out["action"]
-                    step_map = jnp.array([0.0, 1.0, 2.0, 4.0])
-                    scales = step_map[actions.astype(int)]
-
-                    # Hard Skip for RL: check if all actions are SKIP (action=0)
-                    if jnp.all(actions == 0):
-                        outputs = out_base
-                    else:
-                        gating_scale = scales[:, None]
-                        outputs = self._call_model(input_tensor, use_ttt=True, gating_scale=gating_scale)
-                elif isinstance(self.gating_net, BinaryGatingNetwork):
+                if isinstance(self.gating_net, BinaryGatingNetwork):
                     # Binary Gating (Hard Skip with Gumbel-Softmax training)
                     hard_scales, decisions = self.gating_net.get_decision(features)
 
@@ -564,40 +534,24 @@ def main():
         else:
             raise ValueError("Baseline checkpoint does not contain 'state.model'")
 
-    # Load Gating/Policy Checkpoint if provided
+    # Load Gating Checkpoint if provided
     if args.gating_checkpoint:
         print(f"Loading gating checkpoint from {args.gating_checkpoint}...")
-        # Try PolicyNetwork first
         try:
-            from ..models import PolicyConfig, PolicyNetwork
-            # Assume default config or infer? hard to infer. using default for now.
-            p_config = PolicyConfig(feature_dim=32, hidden_dim=128, num_actions=4)
-            p_net = PolicyNetwork(p_config, nnx.Rngs(0))
+            g_config = GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0)
+            g_net = GatingNetwork(g_config, nnx.Rngs(0))
+            # GatingNetwork is part of the differentiable model, so use model format
             # Load without target
             ckpt = load_checkpoint(args.gating_checkpoint, target=None)
-            if "state" in ckpt and "policy" in ckpt["state"]:
-                nnx.update(p_net, ckpt["state"]["policy"])
-                gating_net = p_net
-                print("Loaded PolicyNetwork")
+            if "state" in ckpt and "model" in ckpt["state"]:
+                nnx.update(g_net, ckpt["state"]["model"])
+                gating_net = g_net
+                print("Loaded GatingNetwork")
             else:
-                raise ValueError("Checkpoint does not contain 'state.policy'")
-        except Exception as e_policy:
-             # Try GatingNetwork (part of differentiable training checkpoint)
-             try:
-                 g_config = GatingConfig(feature_dim=32, hidden_dim=64, scale_output=4.0)
-                 g_net = GatingNetwork(g_config, nnx.Rngs(0))
-                 # GatingNetwork is part of the differentiable model, so use model format
-                 # Load without target
-                 ckpt = load_checkpoint(args.gating_checkpoint, target=None)
-                 if "state" in ckpt and "model" in ckpt["state"]:
-                     nnx.update(g_net, ckpt["state"]["model"])
-                     gating_net = g_net
-                     print("Loaded GatingNetwork")
-                 else:
-                     raise ValueError("Checkpoint does not contain 'state.model'")
-             except Exception as e:
-                 print(f"Failed to load gating checkpoint as PolicyNetwork ({e_policy}) or GatingNetwork ({e})")
-                 raise
+                raise ValueError("Checkpoint does not contain 'state.model'")
+        except Exception as e:
+            print(f"Failed to load gating checkpoint: {e}")
+            raise
     
     # Initialize Generator
     generator = SimpleGenerator(

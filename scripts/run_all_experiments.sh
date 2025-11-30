@@ -313,36 +313,6 @@ phase5_ablation() {
 }
 
 # ============================================================
-# Phase 6: RL Comparison (Optional)
-# ============================================================
-phase6_rl() {
-    log_phase "Phase 6: Training and Evaluating RL (PPO)"
-
-    run_experiment "RL Training" \
-        python -m ponderttt.experiments.train_policy \
-            --model_scale 125m \
-            --num_iterations 1000 \
-            --budget_limit 2.0 \
-            --output_dir outputs/rl/125m_budget2.0 \
-            --wandb_project ponderttt-rl
-
-    local rl_ckpt=$(get_latest_checkpoint "outputs/rl/125m_budget2.0")
-    if [ -z "$rl_ckpt" ]; then
-        log_error "No checkpoint found for RL policy"
-    else
-        log_info "Using RL checkpoint: $rl_ckpt"
-        run_experiment "RL Evaluation" \
-            python -m ponderttt.experiments.compare_methods \
-                --model_scale 125m \
-                --rl_checkpoint "$rl_ckpt" \
-                --num_eval_batches $NUM_EVAL_BATCHES_OOD \
-                --output_dir outputs/eval/125m_rl
-    fi
-
-    log_info "Phase 6 Complete!"
-}
-
-# ============================================================
 # Print Summary
 # ============================================================
 print_summary() {
@@ -378,7 +348,6 @@ run_all() {
     phase3_eval_id
     phase4_eval_ood
     phase5_ablation
-    phase6_rl
     print_summary
 }
 
@@ -403,16 +372,13 @@ else
             phase5|ablation)
                 phase5_ablation
                 ;;
-            phase6|rl)
-                phase6_rl
-                ;;
             all)
                 run_all
                 exit $?
                 ;;
             *)
                 log_error "Unknown phase: $phase"
-                echo "Available phases: phase1, phase2, phase3, phase4, phase5, phase6, all"
+                echo "Available phases: phase1, phase2, phase3, phase4, phase5, all"
                 exit 1
                 ;;
         esac
