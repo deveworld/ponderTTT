@@ -68,18 +68,7 @@ python -m ponderttt.experiments.train_hard_skip \
 ```
 Checkpoints will be saved to `outputs/hard_skip` (e.g., `checkpoint_10000`).
 
-### 3. Alternative: Continuous Gating
-For continuous (soft) gating instead of binary decisions:
-```bash
-python -m ponderttt.experiments.train_differentiable \
-    --model_scale 125m \
-    --max_steps 4.0 \
-    --budget_limit 2.0 \
-    --num_iterations 1000 \
-    --output_dir outputs/differentiable
-```
-
-### 4. Compare Methods
+### 3. Compare Methods
 Evaluate trained models against fixed baselines:
 ```bash
 python -m ponderttt.experiments.compare_methods \
@@ -88,10 +77,10 @@ python -m ponderttt.experiments.compare_methods \
     --num_eval_batches 20
 ```
 
-### 5. Evaluation (Benchmarks)
+### 4. Evaluation (Benchmarks)
 Use `ponderttt.evaluation.benchmarks` for HumanEval/MBPP. Code execution is unsafe and gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1`. Only set this in a sandboxed environment.
 
-### 6. Checkpointing
+### 5. Checkpointing
 Models are saved using [Orbax](https://github.com/google/orbax). Checkpoints capture the full NNX state, including the Gating Network, TTT parameters, and optimizer state.
 
 ## Project Status
