@@ -6,6 +6,6 @@ JAX/Flax implementation for TPU optimization.
 
 __version__ = "0.3.0"
 
-from . import data, models, training, utils
+from . import data, models, utils
 
-__all__ = ["data", "models", "training", "utils"]
+__all__ = ["data", "models", "utils"]
