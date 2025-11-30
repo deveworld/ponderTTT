@@ -63,5 +63,4 @@ dmypy.json
 *.json
 output.log
 
-# paper
-paper/
+# paper (now tracked for held-out results update)
