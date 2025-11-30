@@ -85,7 +85,7 @@ Models are saved using [Orbax](https://github.com/google/orbax). Checkpoints cap
 
 ## Project Status
 
-### Phase 1: Complete (arXiv)
+### Phase 1: Complete (Preprint, arXiv TBD)
 - Pure NNX GPT-2, TTT Layer with Binary Gating
 - Gumbel-Softmax training for SKIP/UPDATE decisions
 - End-to-End differentiable training with budget constraints
