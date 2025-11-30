@@ -1,5 +1,7 @@
 # PonderTTT
 
+[[Preprint]](./PonderTTT_preprint.pdf)
+
 Adaptive, budget-aware Test-Time Training (TTT) for code generation models built with JAX/Flax NNX.
 
 ## Core Idea: Binary Gating via Gumbel-Softmax
