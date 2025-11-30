@@ -47,6 +47,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--language", type=str, default="Python", help="Programming language for OOD testing")
     parser.add_argument("--split", type=str, default="train", help="Dataset split (train/validation/test). Note: The Stack v2 only has 'train'.")
+    parser.add_argument("--skip_examples", type=int, default=0, help="Number of examples to skip (for held-out evaluation). Use same value as max_examples in training to evaluate on unseen data.")
     parser.add_argument("--num_workers", type=int, default=32, help="Number of parallel workers for data downloading")
     parser.add_argument("--rl_learning_rate", type=float, default=5e-5, help="Learning rate for RL TTT updates during evaluation")
     parser.add_argument("--rl_max_grad_norm", type=float, default=1.0, help="Gradient norm clip for RL evaluation updates")
@@ -68,6 +69,7 @@ def evaluate_model(
     model: Optional[TTTTransformerLM] = None,  # Accept pre-loaded model
     language: str = "Python",
     split: str = "test",
+    skip_examples: int = 0,
     num_workers: int = 32,
     rl_learning_rate: float = 5e-5,
     rl_max_grad_norm: float = 1.0,
@@ -77,7 +79,8 @@ def evaluate_model(
     if gating_net is not None:
         assert batch_size == 1, "Batch size must be 1 for dynamic gating evaluation (mixed SKIP/TTT strategies)."
 
-    print(f"\nEvaluating {method_name} on {language} ({split})...")
+    skip_info = f", skip={skip_examples}" if skip_examples > 0 else ""
+    print(f"\nEvaluating {method_name} on {language} ({split}{skip_info})...")
     
     model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
     tokenizer = get_tokenizer(model_name)
@@ -143,6 +146,7 @@ def evaluate_model(
         seq_length=1024,
         chunk_size=512,
         max_examples=batch_size * num_batches * 2,
+        skip_examples=skip_examples,
         num_workers=num_workers,
     )
     
@@ -478,16 +482,17 @@ def main():
     # 2. Evaluate Baselines (SKIP)
     # Use fresh model for baseline
     df_skip = evaluate_model(
-        "SKIP (Baseline)", 
-        args.model_scale, 
-        0.0, 
-        args.num_eval_batches, 
-        args.batch_size, 
-        args.seed, 
+        "SKIP (Baseline)",
+        args.model_scale,
+        0.0,
+        args.num_eval_batches,
+        args.batch_size,
+        args.seed,
         None,
         is_rl=False,
         language=args.language,
         split=args.split,
+        skip_examples=args.skip_examples,
         num_workers=args.num_workers,
     )
     all_results.append(df_skip)
@@ -504,9 +509,10 @@ def main():
             args.seed,
             diff_net,
             is_rl=False,
-            model=diff_ttt_model, # Pass the loaded model
+            model=diff_ttt_model,  # Pass the loaded model
             language=args.language,
             split=args.split,
+            skip_examples=args.skip_examples,
             num_workers=args.num_workers,
             hard_skip_threshold=args.hard_skip_threshold,
         )
@@ -516,16 +522,17 @@ def main():
     # RL uses standard model (policy chooses actions)
     if rl_net is not None:
         df_rl = evaluate_model(
-            "RL (PPO)", 
-            args.model_scale, 
-            args.budget, 
-            args.num_eval_batches, 
-            args.batch_size, 
-            args.seed, 
-            rl_net, 
+            "RL (PPO)",
+            args.model_scale,
+            args.budget,
+            args.num_eval_batches,
+            args.batch_size,
+            args.seed,
+            rl_net,
             is_rl=True,
             language=args.language,
             split=args.split,
+            skip_examples=args.skip_examples,
             num_workers=args.num_workers,
             rl_learning_rate=args.rl_learning_rate,
             rl_max_grad_norm=args.rl_max_grad_norm,
@@ -547,6 +554,7 @@ def main():
             model=binary_ttt_model,
             language=args.language,
             split=args.split,
+            skip_examples=args.skip_examples,
             num_workers=args.num_workers,
         )
         all_results.append(df_binary)

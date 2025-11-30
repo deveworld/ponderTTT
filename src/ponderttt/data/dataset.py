@@ -301,6 +301,7 @@ def create_data_iterator(
     seq_length: int = 8192,
     chunk_size: int = 4096,
     max_examples: int | None = None,
+    skip_examples: int = 0,
     cache_data: bool = True,
     num_workers: int = 8,
     cache_dir: str = ".cache/ponderttt",
@@ -316,7 +317,8 @@ def create_data_iterator(
         batch_size: Batch size
         seq_length: Sequence length
         chunk_size: Chunk size for TTT
-        max_examples: Maximum number of examples to load
+        max_examples: Maximum number of examples to load (after skipping)
+        skip_examples: Number of examples to skip before loading (for train/eval split)
         cache_data: If True, download all data before training (recommended for GPU)
         num_workers: Number of parallel workers for downloading (default: 8)
         cache_dir: Directory to cache downloaded data (default: .cache/ponderttt)
@@ -327,6 +329,13 @@ def create_data_iterator(
             - input_ids: [batch, seq_len]
             - attention_mask: [batch, seq_len]
             - chunks: [batch, num_chunks, chunk_size]
+
+    Example:
+        # For training: use first 10000 examples
+        train_iter = create_data_iterator(..., max_examples=10000, skip_examples=0)
+
+        # For evaluation: skip first 10000, use next 2000
+        eval_iter = create_data_iterator(..., max_examples=2000, skip_examples=10000)
     """
     dataset = CodeDataset(
         tokenizer=tokenizer,
@@ -397,7 +406,7 @@ def create_data_iterator(
 
         cache_key = hashlib.md5(
             f"{split}_{batch_size}_{seq_length}_{chunk_size}_{max_examples}_"
-            f"{language}_vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}_{tokenizer_id_str}_"
+            f"skip{skip_examples}_{language}_vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}_{tokenizer_id_str}_"
             f"exclude{exclude_benchmarks}".encode()
         ).hexdigest()
         cache_path = Path(cache_dir) / f"{cache_key}.pkl"
@@ -416,16 +425,21 @@ def create_data_iterator(
 
         # Collect and process in parallel
         total_examples = max_examples if max_examples else batch_size * 100
+        total_to_scan = total_examples + skip_examples
         processed_examples = []
-        
-        print(f"Scanning and downloading {total_examples} examples in parallel...")
+
+        if skip_examples > 0:
+            print(f"Skipping first {skip_examples} examples, then loading {total_examples} examples...")
+        else:
+            print(f"Scanning and downloading {total_examples} examples in parallel...")
         from threading import Lock
         pbar_lock = Lock()
-        
+
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = []
-            
-            with tqdm(total=total_examples, desc="Downloading") as pbar:
+            skipped_count = 0
+
+            with tqdm(total=total_to_scan, desc="Scanning" if skip_examples > 0 else "Downloading") as pbar:
                 def update_pbar(f):
                     with pbar_lock:
                         pbar.update(1)
@@ -434,10 +448,16 @@ def create_data_iterator(
                     if isinstance(repo, dict) and "files" in repo:
                         for file_info in repo["files"]:
                             if file_info.get("language") == dataset.language:
+                                # Skip examples first
+                                if skipped_count < skip_examples:
+                                    skipped_count += 1
+                                    pbar.update(1)
+                                    continue
+
                                 future = executor.submit(dataset._process_example, file_info)
                                 future.add_done_callback(update_pbar)
                                 futures.append(future)
-                                
+
                                 if len(futures) >= total_examples:
                                     break
                     if len(futures) >= total_examples:
