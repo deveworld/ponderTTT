@@ -35,7 +35,7 @@ class FeatureExtractor:
         self.vocab_size = vocab_size
         self.ema_alpha = ema_alpha
         self.pad_token_id = pad_token_id
-        self.seq_length_norm = float(seq_length_norm) if seq_length_norm is not None else 4096.0
+        self.seq_length_norm = seq_length_norm if seq_length_norm is not None else 4096.0
 
         # History tracking (difficulty mean/variance + cost)
         self.difficulty_ema = 0.0
