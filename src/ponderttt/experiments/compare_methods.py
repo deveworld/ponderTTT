@@ -35,6 +35,110 @@ def unwrap_state(state):
     return state
 
 
+# --- JIT-compiled Helpers ---
+
+@nnx.jit
+def jit_base_forward_and_features(
+    model: TTTTransformerLM,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+    position_ids: jax.Array,
+    budget_remaining: float,
+    diff_ema: float,
+    diff_sq_ema: float,
+    cost_ema: float,
+    vocab_size: int,
+    pad_token_id: int,
+    seq_norm: float,
+):
+    """Run base model forward and extract features (JIT compiled)."""
+    # 1. Base Forward (No TTT)
+    out_base = model(
+        input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_ttt=False,
+    )
+    logits = out_base["logits"]
+
+    # 2. Feature Extraction
+    # Reconstruct extractor with stateless config and injected history
+    extractor = FeatureExtractor(
+        vocab_size=vocab_size,
+        pad_token_id=pad_token_id,
+        seq_length_norm=seq_norm,
+    )
+    # Inject history stats manually
+    extractor.difficulty_ema = diff_ema
+    extractor.difficulty_sq_ema = diff_sq_ema
+    extractor.cost_ema = cost_ema
+
+    features = extractor.extract(
+        input_ids=input_ids,
+        logits=logits,
+        attention_mask=attention_mask,
+        budget_remaining=budget_remaining,
+    )
+    
+    return logits, features
+
+
+@nnx.jit
+def jit_policy_action(gating_net: PolicyNetwork, features: jax.Array):
+    """Get policy action (JIT compiled)."""
+    return gating_net(features, deterministic=True)
+
+
+@nnx.jit
+def jit_binary_decision(gating_net: BinaryGatingNetwork, features: jax.Array):
+    """Get binary gating decision (JIT compiled)."""
+    return gating_net.get_decision(features)
+
+
+@nnx.jit
+def jit_continuous_scale(gating_net: GatingNetwork, features: jax.Array):
+    """Get continuous gating scale (JIT compiled)."""
+    return gating_net(features, train=False)
+
+
+@nnx.jit
+def jit_eval_with_scale(
+    model: TTTTransformerLM,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+    position_ids: jax.Array,
+    gating_scale: jax.Array,
+):
+    """Run model with specific gating scale and compute loss (JIT compiled)."""
+    out = model(
+        input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_ttt=True,
+        gating_scale=gating_scale,
+    )
+    loss = cross_entropy_loss(
+        out["logits"][:, :-1],
+        input_ids[:, 1:],
+        attention_mask[:, 1:],
+    )
+    return loss
+
+
+@nnx.jit
+def jit_loss_from_logits(
+    logits: jax.Array,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+):
+    """Compute loss from existing logits (JIT compiled)."""
+    return cross_entropy_loss(
+        logits[:, :-1],
+        input_ids[:, 1:],
+        attention_mask[:, 1:],
+    )
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare optimization methods")
     parser.add_argument("--model_scale", type=str, default="125m", choices=["125m", "350m", "1b"])
@@ -97,9 +201,14 @@ def evaluate_model(
     else:
         ttt_model = model
     
+    # Initialize feature extractor (for tracking history state)
+    pad_id = tokenizer.token_to_id("<|pad|>")
+    if pad_id is None:
+        pad_id = -1 # Handle missing pad token gracefully
+        
     feature_extractor = FeatureExtractor(
         vocab_size=tokenizer.get_vocab_size(),
-        pad_token_id=tokenizer.token_to_id("<|pad|>"),
+        pad_token_id=pad_id,
         seq_length_norm=512,
     )
 
@@ -198,18 +307,19 @@ def evaluate_model(
             # Budget Feature
             budget_rem = (total_budget - current_spend) / total_budget if total_budget > 0 else 0.0
             
-            # Extract Features (using base forward)
-            out_base = ttt_model(
+            # 1. Extract Features (using JIT)
+            logits_base, features = jit_base_forward_and_features(
+                ttt_model,
                 chunk_batch["input_ids"],
-                attention_mask=chunk_batch["attention_mask"],
-                position_ids=chunk_batch_with_pos["position_ids"],
-                use_ttt=False,
-            )
-            features = feature_extractor.extract(
-                input_ids=chunk_batch["input_ids"],
-                logits=out_base["logits"],
-                attention_mask=chunk_batch["attention_mask"],
+                chunk_batch["attention_mask"],
+                position_ids,
                 budget_remaining=budget_rem,
+                diff_ema=feature_extractor.difficulty_ema,
+                diff_sq_ema=feature_extractor.difficulty_sq_ema,
+                cost_ema=feature_extractor.cost_ema,
+                vocab_size=feature_extractor.vocab_size,
+                pad_token_id=feature_extractor.pad_token_id if feature_extractor.pad_token_id is not None else -1,
+                seq_norm=feature_extractor.seq_length_norm,
             )
             
             # Decision
@@ -220,37 +330,30 @@ def evaluate_model(
             if gating_net is None:
                 # Fixed Baseline (e.g. Skip)
                 cost = 1.0
-                loss = float(
-                    cross_entropy_loss(
-                        out_base["logits"][:, :-1],
-                        chunk_batch["input_ids"][:, 1:],
-                        chunk_batch["attention_mask"][:, 1:],
-                    )
-                )
+                # Use JIT loss calculation
+                loss = float(jit_loss_from_logits(
+                    logits_base,
+                    chunk_batch["input_ids"],
+                    chunk_batch["attention_mask"]
+                ))
 
             elif is_rl and isinstance(gating_net, PolicyNetwork):
                 if rl_optimizer is None:
                     raise RuntimeError("RL optimizer was not initialized")
 
-                policy_out = gating_net(features, deterministic=True)
+                # Use JIT policy action
+                policy_out = jit_policy_action(gating_net, features)
                 action = int(policy_out["action"][0])
                 steps = step_map[action]
                 cost = costs_map[action]
 
                 if steps == 0:
-                    out_ttt = ttt_model(
+                    # Use pre-computed base logits
+                    loss = float(jit_loss_from_logits(
+                        logits_base,
                         chunk_batch["input_ids"],
-                        attention_mask=chunk_batch["attention_mask"],
-                        position_ids=chunk_batch_with_pos["position_ids"],
-                        use_ttt=False,
-                    )
-                    loss = float(
-                        cross_entropy_loss(
-                            out_ttt["logits"][:, :-1],
-                            chunk_batch["input_ids"][:, 1:],
-                            chunk_batch["attention_mask"][:, 1:],
-                        )
-                    )
+                        chunk_batch["attention_mask"]
+                    ))
                 else:
                     for _ in range(steps):
                         run_chunk_step(
@@ -272,75 +375,53 @@ def evaluate_model(
                     loss = float(eval_metrics["loss_ce"])
 
             elif isinstance(gating_net, BinaryGatingNetwork):
-                # Binary Gating (Hard Skip) - trained with Gumbel-Softmax
-                hard_scale, decision = gating_net.get_decision(features)
+                # Use JIT binary decision
+                hard_scale, decision = jit_binary_decision(gating_net, features)
                 decision_val = int(decision[0])
 
                 if decision_val == 0:
-                    # SKIP: use base forward output
+                    # SKIP
                     cost = 1.0
-                    loss = float(
-                        cross_entropy_loss(
-                            out_base["logits"][:, :-1],
-                            chunk_batch["input_ids"][:, 1:],
-                            chunk_batch["attention_mask"][:, 1:],
-                        )
-                    )
-                else:
-                    # UPDATE: run TTT
-                    gating_scale = jnp.array([[1.0]], dtype=jnp.float32)  # Full TTT
-                    out_ttt = ttt_model(
+                    loss = float(jit_loss_from_logits(
+                        logits_base,
                         chunk_batch["input_ids"],
-                        attention_mask=chunk_batch["attention_mask"],
-                        position_ids=chunk_batch_with_pos["position_ids"],
-                        use_ttt=True,
-                        gating_scale=gating_scale,
-                    )
+                        chunk_batch["attention_mask"]
+                    ))
+                else:
+                    # UPDATE: run TTT with scale (JIT)
+                    gating_scale = jnp.array([[1.0]], dtype=jnp.float32)  # Full TTT
+                    loss = float(jit_eval_with_scale(
+                        ttt_model,
+                        chunk_batch["input_ids"],
+                        chunk_batch["attention_mask"],
+                        position_ids,
+                        gating_scale
+                    ))
                     cost = 3.0
-                    loss = float(
-                        cross_entropy_loss(
-                            out_ttt["logits"][:, :-1],
-                            chunk_batch["input_ids"][:, 1:],
-                            chunk_batch["attention_mask"][:, 1:],
-                        )
-                    )
 
             elif isinstance(gating_net, GatingNetwork):
-                # Continuous Gating with Hard Skip threshold
-                scale = float(gating_net(features, train=False)[0, 0])
+                # Use JIT continuous scale
+                scale = float(jit_continuous_scale(gating_net, features)[0, 0])
                 scale = max(0.0, scale)
 
-                # Hard Skip: if scale < threshold, skip TTT entirely (cost=1.0)
+                # Hard Skip check
                 if scale < hard_skip_threshold:
-                    # Use base forward output (no TTT)
                     cost = 1.0
-                    loss = float(
-                        cross_entropy_loss(
-                            out_base["logits"][:, :-1],
-                            chunk_batch["input_ids"][:, 1:],
-                            chunk_batch["attention_mask"][:, 1:],
-                        )
-                    )
-                else:
-                    # Run TTT with full gating scale
-                    gating_scale = jnp.array([[scale]], dtype=jnp.float32)
-                    out_ttt = ttt_model(
+                    loss = float(jit_loss_from_logits(
+                        logits_base,
                         chunk_batch["input_ids"],
-                        attention_mask=chunk_batch["attention_mask"],
-                        position_ids=chunk_batch_with_pos["position_ids"],
-                        use_ttt=True,
-                        gating_scale=gating_scale,
-                    )
-                    # Cost: 1 (base forward already done) + 2 (TTT forward + backward)
-                    # When TTT runs, cost is always 3.0 (like UPDATE_1)
+                        chunk_batch["attention_mask"]
+                    ))
+                else:
+                    gating_scale = jnp.array([[scale]], dtype=jnp.float32)
+                    loss = float(jit_eval_with_scale(
+                        ttt_model,
+                        chunk_batch["input_ids"],
+                        chunk_batch["attention_mask"],
+                        position_ids,
+                        gating_scale
+                    ))
                     cost = 3.0
-                    loss = float(
-                        cross_entropy_loss(
-                            out_ttt["logits"][:, :-1],
-                            chunk_batch["input_ids"][:, 1:],
-                            chunk_batch["attention_mask"][:, 1:],
-                        )
-                    )
             
             results["loss"].append(loss)
             results["cost"].append(cost)
