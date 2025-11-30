@@ -74,8 +74,10 @@ def module_from_linen_variables(
   for path, val in traverse_util.flatten_dict(variables).items():
     mapped_path = key_mapper(path)
     if mapped_path not in state:
+      # pyre-fixme[16]: Attribute access on generic type
+      class_name = mdl.__class__.__name__
       raise ValueError(
-          f"'{mdl.__class__.__name__}.{_flatten_path(mapped_path)}' doesn't "
+          f"'{class_name}.{_flatten_path(mapped_path)}' doesn't "
           f' exist (original path={path}).'
       )
     state = val_assigner(state, mapped_path, val)

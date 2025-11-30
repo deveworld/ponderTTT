@@ -382,6 +382,10 @@ class FeedForward(nnx.Module):
 class Block(nnx.Module):
   """Transformer block."""
 
+  # Optional norms (may be None if use_post_*_norm is False)
+  post_attention_norm: layers.RMSNorm | None
+  post_ffw_norm: layers.RMSNorm | None
+
   def __init__(
       self,
       config,  # TransformerConfig

@@ -53,3 +53,7 @@ tpu = ["jax[tpu]"]
 [tool.pyright]
 exclude = [".venv/**", "dist/**"]
 include = ["src/**"]
+
+[tool.pyrefly]
+# Exclude scripts from strict checking (they have minor type issues)
+project_excludes = ["scripts"]
