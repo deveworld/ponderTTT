@@ -395,9 +395,11 @@ def main():
             ce_loss_skip = cross_entropy_loss(logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:])
             ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:])
 
-            # Soft blending of losses (more stable than blending logits)
+            # Decoupled gradient flow: gating network receives gradients ONLY from cost penalty
+            # Stop gradient on update_prob for CE/TTT loss to prevent gating from always choosing UPDATE
             update_prob_scalar = jnp.mean(update_prob)
-            ce_loss_blended = (1 - update_prob_scalar) * ce_loss_skip + update_prob_scalar * ce_loss_update
+            update_prob_no_grad = jax.lax.stop_gradient(update_prob_scalar)
+            ce_loss_blended = (1 - update_prob_no_grad) * ce_loss_skip + update_prob_no_grad * ce_loss_update
 
             # For logging, use the blended loss
             ce_loss = ce_loss_blended
@@ -410,10 +412,10 @@ def main():
             else:
                 l_ttt = jnp.array(0.0)
 
-            # Weighted TTT loss based on update probability
-            l_ttt_weighted = l_ttt * update_prob_scalar
+            # Weighted TTT loss - also stop gradient to gating network
+            l_ttt_weighted = l_ttt * update_prob_no_grad
 
-            # 6. Cost penalty - ONLY on real code chunks (exclude padding)
+            # 6. Cost penalty - the ONLY gradient signal to gating network
             update_prob_flat = update_prob[:, 0]  # [B]
 
             # Compute average update probability only on real code chunks
@@ -423,8 +425,7 @@ def main():
             # Also compute overall for logging
             avg_update_prob = jnp.mean(update_prob_flat)
 
-            # Cost penalty: L_cost = |d̄ - r_target| (from paper Eq. 7)
-            # where d̄ = mean update rate, r_target = target update rate
+            # Cost penalty: L_cost = |d̄ - r_target| * γ (Eq. 7)
             target_update_rate = 1.0 - args.target_skip_rate
             cost_penalty = jnp.abs(avg_update_prob_real - target_update_rate) * cost_weight
 
