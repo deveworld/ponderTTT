@@ -482,18 +482,21 @@ def main():
             # Skip rate on real code only
             skip_on_real = jnp.sum((decision_hard == 0).astype(jnp.float32) * is_real_code.astype(jnp.float32)) / num_real_code
 
-            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_quality_loss)
+            # Debug: log the soft update probability from Gumbel-Softmax
+            soft_update_prob = jnp.mean(decision_probs[:, 1])  # Soft probability of UPDATE
+
+            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_quality_loss, soft_update_prob)
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
         (loss, aux), grads = grad_fn(trainable_sys, rng_key)
-        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_loss = aux
+        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_loss, soft_update_prob = aux
 
         optimizer.update(trainable_sys, grads)
 
         # Compute skip rate from hard decisions (overall)
         skip_rate = jnp.mean(decision_hard == 0)
 
-        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code, advantage, gating_loss
+        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code, advantage, gating_loss, soft_update_prob
 
     # JIT compile training step
     train_step_jit = nnx.jit(
@@ -545,6 +548,7 @@ def main():
         total_real_code_chunks = 0.0
         total_advantage = 0.0
         total_gating_loss = 0.0
+        total_soft_prob = 0.0
         valid_chunks = 0
 
         feature_extractor.reset_history()
@@ -568,7 +572,7 @@ def main():
             # Get new random key
             rng_key, subkey = jax.random.split(rng_key)
 
-            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real, adv, gate_loss = train_step_jit(
+            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real, adv, gate_loss, soft_prob = train_step_jit(
                 trainable_system,
                 optimizer,
                 cast(GPT2Model, ttt_model.base_model),  # train_hard_skip is GPT2-specific
@@ -598,6 +602,7 @@ def main():
             total_real_code_chunks += float(num_real)
             total_advantage += float(adv)
             total_gating_loss += float(gate_loss)
+            total_soft_prob += float(soft_prob)
             valid_chunks += 1
 
             feature_extractor.update_history(float(ce), float(hard_cost))
@@ -616,6 +621,7 @@ def main():
         avg_skip_on_real = total_skip_on_real / max(total_real_code_chunks, 1.0)
         avg_advantage = total_advantage / valid_chunks
         avg_gating_loss = total_gating_loss / valid_chunks
+        avg_soft_prob = total_soft_prob / valid_chunks
         perplexity = math.exp(min(avg_ce_loss, 10.0))  # Cap to avoid overflow
 
         warmup_status = " [WARMUP]" if is_warmup else ""
@@ -623,7 +629,7 @@ def main():
             f"Iter {iter_count+1}{warmup_status}: Loss={avg_loss:.4f}, "
             f"CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
             f"SkipRate={avg_skip_rate:.2%} (real:{avg_skip_on_real:.2%}), Cost={avg_hard_cost:.2f}x, "
-            f"Adv={avg_advantage:.4f}, GateLoss={avg_gating_loss:.4f}, Temp={temperature:.3f}"
+            f"Adv={avg_advantage:.4f}, GateLoss={avg_gating_loss:.4f}, SoftProb={avg_soft_prob:.4f}, Temp={temperature:.3f}"
         )
 
         # WandB Logging
