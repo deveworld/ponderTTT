@@ -1,3 +1,6 @@
 [submodule "paper"]
 	path = paper
 	url = https://github.com/deveworld/ponderTTT-tex.git
+[submodule "docs"]
+	path = docs
+	url = https://github.com/deveworld/ponderTTT-web.git
