@@ -419,16 +419,32 @@ def main():
             advantage = jax.lax.stop_gradient(ce_loss_skip - ce_loss_update)
             update_prob_scalar = jnp.mean(update_prob)
 
-            # Normalize advantage to prevent scale issues
-            # Typical CE loss is 2-4, so advantage is typically 0.1-1.0
-            advantage_normalized = advantage / jnp.maximum(jnp.abs(advantage), 0.01)
+            # Gating loss with bidirectional penalties:
+            # - UPDATE when advantage is SMALL → penalty (wasted computation)
+            # - SKIP when advantage is LARGE → penalty (missed improvement)
+            #
+            # We use a threshold to define "worthwhile" updates.
+            # advantage_threshold: if advantage < threshold, UPDATE is wasteful
+            #
+            # L_gate = d * max(threshold - A, 0) * γ   (penalty for unnecessary UPDATE)
+            #        + (1-d) * max(A - threshold, 0)   (penalty for skipping beneficial UPDATE)
+            #
+            # Higher cost_weight (γ) = stronger penalty for unnecessary UPDATE = more SKIP
 
-            # Gating loss: balance UPDATE reward vs SKIP penalty
-            # - UPDATE gets reward: -update_prob * advantage
-            # - SKIP gets penalty: (1-update_prob) * advantage / cost_weight
-            # Higher cost_weight = SKIP penalty is smaller = more likely to SKIP
-            gating_quality_loss = -update_prob_scalar * advantage_normalized + \
-                                  (1 - update_prob_scalar) * advantage_normalized / jnp.maximum(cost_weight, 0.1)
+            # Threshold: UPDATE is "worth it" if advantage > threshold
+            # Typical advantage is 0.1 ~ 1.0, so threshold ~0.3 means
+            # "only UPDATE if it improves loss by at least 0.3"
+            advantage_threshold = 0.3
+
+            # Penalty for UPDATE when advantage is small (wasteful computation)
+            update_penalty = jnp.maximum(advantage_threshold - advantage, 0.0) * cost_weight
+
+            # Penalty for SKIP when advantage is large (missed improvement)
+            skip_penalty = jnp.maximum(advantage - advantage_threshold, 0.0)
+
+            # Combined gating loss
+            gating_quality_loss = update_prob_scalar * update_penalty + \
+                                  (1 - update_prob_scalar) * skip_penalty
 
             # CE loss for TTT parameters (stop gradient to gating)
             update_prob_no_grad = jax.lax.stop_gradient(update_prob_scalar)
