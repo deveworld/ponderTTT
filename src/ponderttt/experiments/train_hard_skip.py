@@ -395,24 +395,40 @@ def main():
             ce_loss_skip = cross_entropy_loss(logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:])
             ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:])
 
-            # === ADVANTAGE-BASED GATING (Section 3.2) ===
-            # The gating network needs TWO signals:
-            # 1. Quality signal: How much does UPDATE help? (advantage)
-            # 2. Cost signal: Stay close to target skip rate
+            # === REWARD/PENALTY GATING (Section 3.2) ===
+            # Key insight: Gating should learn to SKIP when UPDATE provides little benefit.
             #
-            # Without quality signal, gating learns to always SKIP (minimizes cost).
-            # Without cost signal, gating learns to always UPDATE (maximizes quality).
+            # advantage = ce_loss_skip - ce_loss_update (how much UPDATE helps)
+            # - Large advantage: UPDATE is very beneficial → should UPDATE
+            # - Small advantage: UPDATE barely helps → can SKIP to save cost
             #
-            # Advantage = ce_loss_skip - ce_loss_update (positive means UPDATE is better)
-            # We use stop_gradient on advantage to prevent CE loss from directly training gating.
-            # Instead, advantage acts as a "reward" signal for the gating decision.
+            # Gating loss design:
+            # - When UPDATE (d=1): reward proportional to advantage (good decision if advantage is high)
+            # - When SKIP (d=0): penalty proportional to advantage (bad decision if advantage was high)
+            #
+            # L_gate = d * (-advantage) + (1-d) * advantage * cost_scale
+            #        = d * (-advantage) + (1-d) * advantage * cost_scale
+            #
+            # Simplified: L_gate = (1 - 2*d) * advantage * scale
+            # - d=1 (UPDATE): L_gate = -advantage (reward for high advantage)
+            # - d=0 (SKIP): L_gate = +advantage (penalty for skipping high advantage)
+            #
+            # The cost_weight scales how much we penalize skipping vs reward updating.
+            # Higher cost_weight = more willing to skip (penalty for skipping is relatively smaller)
 
             advantage = jax.lax.stop_gradient(ce_loss_skip - ce_loss_update)
             update_prob_scalar = jnp.mean(update_prob)
 
-            # Gating loss: encourage UPDATE when advantage > 0, SKIP when advantage < 0
-            # L_gating = -update_prob * advantage (minimize this = maximize update_prob when advantage > 0)
-            gating_quality_loss = -update_prob_scalar * advantage
+            # Normalize advantage to prevent scale issues
+            # Typical CE loss is 2-4, so advantage is typically 0.1-1.0
+            advantage_normalized = advantage / jnp.maximum(jnp.abs(advantage), 0.01)
+
+            # Gating loss: balance UPDATE reward vs SKIP penalty
+            # - UPDATE gets reward: -update_prob * advantage
+            # - SKIP gets penalty: (1-update_prob) * advantage / cost_weight
+            # Higher cost_weight = SKIP penalty is smaller = more likely to SKIP
+            gating_quality_loss = -update_prob_scalar * advantage_normalized + \
+                                  (1 - update_prob_scalar) * advantage_normalized / jnp.maximum(cost_weight, 0.1)
 
             # CE loss for TTT parameters (stop gradient to gating)
             update_prob_no_grad = jax.lax.stop_gradient(update_prob_scalar)
@@ -432,7 +448,7 @@ def main():
             # Weighted TTT loss - stop gradient to gating network
             l_ttt_weighted = l_ttt * update_prob_no_grad
 
-            # 6. Cost penalty for target skip rate
+            # 6. Cost penalty for target skip rate (softer regularization)
             update_prob_flat = update_prob[:, 0]  # [B]
 
             # Compute average update probability only on real code chunks
@@ -442,11 +458,12 @@ def main():
             # Also compute overall for logging
             avg_update_prob = jnp.mean(update_prob_flat)
 
-            # Cost penalty: L_cost = |d̄ - r_target| * γ (Eq. 7)
+            # Cost penalty: L_cost = |d̄ - r_target| (Eq. 7)
+            # This is a soft regularizer to guide toward target rate
             target_update_rate = 1.0 - args.target_skip_rate
-            cost_penalty = jnp.abs(avg_update_prob_real - target_update_rate) * cost_weight
+            cost_penalty = jnp.abs(avg_update_prob_real - target_update_rate) * 0.1  # Fixed small weight
 
-            # Apply warmup (disable cost penalty during warmup to let quality signal dominate initially)
+            # Apply warmup (disable cost penalty during warmup)
             cost_penalty = jnp.where(is_warmup, 0.0, cost_penalty)
 
             # Total loss: CE (for TTT) + TTT aux + Gating quality + Cost penalty
