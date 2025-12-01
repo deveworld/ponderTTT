@@ -423,26 +423,29 @@ def main():
             )
             update_prob_scalar = jnp.mean(update_prob)
 
-            # === DIRECT SKIP RATE ENFORCEMENT ===
-            # Problem: TTT is almost always beneficial (advantage ~0.95), so advantage-based
-            # gating never learns to SKIP. We need to directly enforce the target skip rate.
+            # === BIDIRECTIONAL SKIP RATE ENFORCEMENT ===
+            # Push gating toward target update rate from BOTH directions:
+            # - Too much UPDATE (d̄ > target): penalty scaled by cost_weight
+            # - Too much SKIP (d̄ < target): penalty scaled by advantage (quality loss)
             #
-            # Solution: Penalize UPDATE probability that exceeds the target update rate.
-            # L_gate = max(d̄ - r_target, 0) * γ * (1 + A)
+            # L_gate = max(d̄ - r_target, 0) * γ + max(r_target - d̄, 0) * A
             #
-            # - If update_rate > target: penalty proportional to excess, scaled by advantage
-            # - The (1 + A) factor means: when advantage is high, we're more reluctant to skip,
-            #   so the penalty needs to be stronger to overcome the quality benefit.
-            #
-            # This directly pushes the gating network toward the target skip rate,
-            # while still allowing it to preferentially skip low-advantage chunks.
+            # This ensures:
+            # - If skipping too much: quality penalty pushes toward more UPDATE
+            # - If updating too much: cost penalty pushes toward more SKIP
 
             target_update_rate = 1.0 - args.target_skip_rate
 
-            # Penalty for exceeding target update rate
-            # Scale by (1 + advantage) to account for quality trade-off
+            # Penalty for exceeding target update rate (too much UPDATE)
             excess_update = jnp.maximum(update_prob_scalar - target_update_rate, 0.0)
-            gating_quality_loss = excess_update * cost_weight * (1.0 + advantage)
+            update_penalty = excess_update * cost_weight
+
+            # Penalty for falling below target update rate (too much SKIP)
+            # Scale by advantage: if advantage is high, skipping is more costly
+            deficit_update = jnp.maximum(target_update_rate - update_prob_scalar, 0.0)
+            skip_penalty = deficit_update * advantage * cost_weight
+
+            gating_quality_loss = update_penalty + skip_penalty
 
             # CE loss for TTT parameters: ALWAYS use ce_loss_update
             # The gating decision affects inference cost, not training.
