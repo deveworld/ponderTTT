@@ -227,12 +227,13 @@ class BinaryGatingNetwork(nnx.Module):
         if train and rng_key is not None:
             # Training: Gumbel-Softmax with straight-through estimator
             decision_probs = gumbel_softmax(logits, temp, hard=True, rng_key=rng_key)
+            # Hard decision from Gumbel-Softmax (includes noise)
+            decision_hard = jnp.argmax(decision_probs, axis=-1)  # [batch]
         else:
             # Evaluation: deterministic softmax (or hard argmax)
             decision_probs = jax.nn.softmax(logits / temp, axis=-1)
-
-        # Hard decision (for logging and actual skip logic)
-        decision_hard = jnp.argmax(logits, axis=-1)  # [batch]
+            # Hard decision from raw logits (deterministic)
+            decision_hard = jnp.argmax(logits, axis=-1)  # [batch]
 
         # Gating scale: 0 for SKIP, scale_when_update for UPDATE
         # Use soft probabilities for differentiable training
