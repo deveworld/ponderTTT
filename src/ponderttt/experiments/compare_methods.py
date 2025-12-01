@@ -137,6 +137,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size (must be 1 for dynamic gating evaluation)")
     parser.add_argument("--diff_checkpoint", type=str, help="Path to differentiable gating checkpoint (optional)")
     parser.add_argument("--binary_gating_checkpoint", type=str, help="Path to Binary Gating (Hard Skip) checkpoint (optional)")
+    parser.add_argument("--update1_checkpoint", type=str, help="Path to UPDATE_1 baseline checkpoint (optional)")
     parser.add_argument("--output_dir", type=str, default="outputs/comparison")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--language", type=str, default="Python", help="Programming language for OOD testing")
@@ -156,6 +157,7 @@ def evaluate_model(
     seed: int,
     gating_net: Optional[GatingNetwork | BinaryGatingNetwork] = None,
     model: Optional[TTTModel] = None,
+    fixed_action: str = "SKIP",
     language: str = "Python",
     split: str = "test",
     skip_examples: int = 0,
@@ -209,7 +211,9 @@ def evaluate_model(
     results = {
         "loss": [],
         "cost": [],
-        "method": []
+        "method": [],
+        "decision": [],
+        "text": []
     }
 
     # Evaluation Loop
@@ -230,6 +234,12 @@ def evaluate_model(
                 "input_ids": chunks[:, c_idx],
                 "attention_mask": masks[:, c_idx]
             }
+            
+            # Decode text for qualitative analysis
+            try:
+                text = tokenizer.decode(chunk_batch["input_ids"][0], skip_special_tokens=False)
+            except Exception:
+                text = "[Decode Error]"
 
             chunk_len = chunk_batch["input_ids"].shape[-1]
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
@@ -258,15 +268,32 @@ def evaluate_model(
             # Decision
             cost = 1.0
             loss = 0.0
+            decision_str = ""
 
             if gating_net is None:
-                # Fixed Baseline (e.g. Skip)
-                cost = 1.0
-                loss = float(jit_loss_from_logits(
-                    logits_base,
-                    chunk_batch["input_ids"],
-                    chunk_batch["attention_mask"]
-                ))
+                if fixed_action == "SKIP":
+                    # Fixed Baseline: SKIP
+                    cost = 1.0
+                    loss = float(jit_loss_from_logits(
+                        logits_base,
+                        chunk_batch["input_ids"],
+                        chunk_batch["attention_mask"]
+                    ))
+                    decision_str = "SKIP"
+                elif fixed_action == "UPDATE_1":
+                    # Fixed Baseline: UPDATE_1
+                    gating_scale = jnp.array([[1.0]], dtype=jnp.float32)
+                    loss = float(jit_eval_with_scale(
+                        ttt_model,
+                        chunk_batch["input_ids"],
+                        chunk_batch["attention_mask"],
+                        position_ids,
+                        gating_scale
+                    ))
+                    cost = 3.0
+                    decision_str = "UPDATE"
+                else:
+                    raise ValueError(f"Unknown fixed_action: {fixed_action}")
 
             elif isinstance(gating_net, BinaryGatingNetwork):
                 # Binary decision
@@ -281,6 +308,7 @@ def evaluate_model(
                         chunk_batch["input_ids"],
                         chunk_batch["attention_mask"]
                     ))
+                    decision_str = "SKIP"
                 else:
                     # UPDATE: run TTT with scale (JIT)
                     gating_scale = jnp.array([[1.0]], dtype=jnp.float32)
@@ -292,6 +320,7 @@ def evaluate_model(
                         gating_scale
                     ))
                     cost = 3.0
+                    decision_str = "UPDATE"
 
             elif isinstance(gating_net, GatingNetwork):
                 # Continuous scale
@@ -306,6 +335,7 @@ def evaluate_model(
                         chunk_batch["input_ids"],
                         chunk_batch["attention_mask"]
                     ))
+                    decision_str = "SKIP"
                 else:
                     gating_scale = jnp.array([[scale]], dtype=jnp.float32)
                     loss = float(jit_eval_with_scale(
@@ -316,10 +346,13 @@ def evaluate_model(
                         gating_scale
                     ))
                     cost = 3.0
+                    decision_str = "UPDATE"
 
             results["loss"].append(loss)
             results["cost"].append(cost)
             results["method"].append(method_name)
+            results["decision"].append(decision_str)
+            results["text"].append(text)
 
             current_spend += cost
             feature_extractor.update_history(loss, cost)
@@ -423,6 +456,24 @@ def main():
     else:
         print("No Binary Gating checkpoint supplied; skipping binary gating evaluation.")
 
+    # UPDATE_1 Model (Fixed)
+    update1_ttt_model = None
+    if args.update1_checkpoint:
+        print(f"Loading UPDATE_1 checkpoint from {args.update1_checkpoint}...")
+        update1_ttt_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=args.seed,
+            load_pretrained=True,
+            vocab_size=vocab_size,
+        )
+        ckpt = load_checkpoint(args.update1_checkpoint, target=None)
+        if "state" in ckpt and "model" in ckpt["state"]:
+            nnx.update(update1_ttt_model, unwrap_state(ckpt["state"]["model"]))
+            print("UPDATE_1 weights loaded.")
+        else:
+            print("Warning: Could not find 'state.model' in UPDATE_1 checkpoint.")
+
     all_results = []
 
     # 2. Evaluate Baselines (SKIP)
@@ -434,6 +485,7 @@ def main():
         args.batch_size,
         args.seed,
         None,
+        fixed_action="SKIP",
         language=args.language,
         split=args.split,
         skip_examples=args.skip_examples,
@@ -441,7 +493,26 @@ def main():
     )
     all_results.append(df_skip)
 
-    # 3. Evaluate Differentiable (with Hard Skip)
+    # 3. Evaluate UPDATE_1 (Fixed)
+    if update1_ttt_model is not None:
+        df_update1 = evaluate_model(
+            "UPDATE_1 (Fixed)",
+            args.model_scale,
+            0.0,
+            args.num_eval_batches,
+            args.batch_size,
+            args.seed,
+            None,
+            model=update1_ttt_model,
+            fixed_action="UPDATE_1",
+            language=args.language,
+            split=args.split,
+            skip_examples=args.skip_examples,
+            num_workers=args.num_workers,
+        )
+        all_results.append(df_update1)
+
+    # 4. Evaluate Differentiable (with Hard Skip)
     if diff_net is not None:
         df_diff = evaluate_model(
             "Differentiable (Hard Skip)",
@@ -460,7 +531,7 @@ def main():
         )
         all_results.append(df_diff)
 
-    # 4. Evaluate Binary Gating (Hard Skip with Gumbel-Softmax)
+    # 5. Evaluate Binary Gating (Hard Skip with Gumbel-Softmax)
     if binary_net is not None:
         df_binary = evaluate_model(
             "Binary Gating (Hard Skip)",
@@ -478,7 +549,7 @@ def main():
         )
         all_results.append(df_binary)
 
-    # 5. Visualize & Report
+    # 6. Visualize & Report
     full_df = pd.concat(all_results)
 
     print("\n=== Final Results ===")
