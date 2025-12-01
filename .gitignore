@@ -63,8 +63,16 @@ dmypy.json
 *.json
 output.log
 
-# Paper (not tracked)
-paper/
+# Paper auxiliary files (keep main.tex)
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.synctex.gz
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.pdf
 
 # Plan files (Claude Code)
 .plan
