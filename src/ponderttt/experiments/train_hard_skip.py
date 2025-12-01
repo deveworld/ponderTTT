@@ -417,38 +417,32 @@ def main():
             # Higher cost_weight = more willing to skip (penalty for skipping is relatively smaller)
 
             # Compute relative advantage (percentage improvement)
-            # advantage_raw = ce_loss_skip - ce_loss_update
-            # advantage = advantage_raw / ce_loss_skip = 1 - (ce_loss_update / ce_loss_skip)
-            # This gives a value in [0, 1] representing "fraction of loss reduced by UPDATE"
             advantage_raw = ce_loss_skip - ce_loss_update
             advantage = jax.lax.stop_gradient(
                 advantage_raw / jnp.maximum(ce_loss_skip, 0.1)
             )
             update_prob_scalar = jnp.mean(update_prob)
 
-            # Gating loss with bidirectional penalties:
-            # - UPDATE when advantage is SMALL → penalty (wasted computation)
-            # - SKIP when advantage is LARGE → penalty (missed improvement)
+            # === DIRECT SKIP RATE ENFORCEMENT ===
+            # Problem: TTT is almost always beneficial (advantage ~0.95), so advantage-based
+            # gating never learns to SKIP. We need to directly enforce the target skip rate.
             #
-            # advantage is now in [0, 1]: 0 = no improvement, 1 = 100% improvement
-            # threshold = 0.5 means "UPDATE is worth it if it reduces loss by 50%+"
+            # Solution: Penalize UPDATE probability that exceeds the target update rate.
+            # L_gate = max(d̄ - r_target, 0) * γ * (1 + A)
             #
-            # L_gate = d * max(threshold - A, 0) * γ   (penalty for unnecessary UPDATE)
-            #        + (1-d) * max(A - threshold, 0)   (penalty for skipping beneficial UPDATE)
+            # - If update_rate > target: penalty proportional to excess, scaled by advantage
+            # - The (1 + A) factor means: when advantage is high, we're more reluctant to skip,
+            #   so the penalty needs to be stronger to overcome the quality benefit.
+            #
+            # This directly pushes the gating network toward the target skip rate,
+            # while still allowing it to preferentially skip low-advantage chunks.
 
-            # Threshold: UPDATE is "worth it" if advantage > threshold
-            # 0.5 = only UPDATE if it reduces loss by at least 50%
-            advantage_threshold = 0.5
+            target_update_rate = 1.0 - args.target_skip_rate
 
-            # Penalty for UPDATE when advantage is small (wasteful computation)
-            update_penalty = jnp.maximum(advantage_threshold - advantage, 0.0) * cost_weight
-
-            # Penalty for SKIP when advantage is large (missed improvement)
-            skip_penalty = jnp.maximum(advantage - advantage_threshold, 0.0)
-
-            # Combined gating loss
-            gating_quality_loss = update_prob_scalar * update_penalty + \
-                                  (1 - update_prob_scalar) * skip_penalty
+            # Penalty for exceeding target update rate
+            # Scale by (1 + advantage) to account for quality trade-off
+            excess_update = jnp.maximum(update_prob_scalar - target_update_rate, 0.0)
+            gating_quality_loss = excess_update * cost_weight * (1.0 + advantage)
 
             # CE loss for TTT parameters (stop gradient to gating)
             update_prob_no_grad = jax.lax.stop_gradient(update_prob_scalar)
@@ -468,26 +462,20 @@ def main():
             # Weighted TTT loss - stop gradient to gating network
             l_ttt_weighted = l_ttt * update_prob_no_grad
 
-            # 6. Cost penalty for target skip rate (softer regularization)
+            # For logging: compute stats on real code chunks
             update_prob_flat = update_prob[:, 0]  # [B]
-
-            # Compute average update probability only on real code chunks
             num_real_code = jnp.maximum(jnp.sum(is_real_code.astype(jnp.float32)), 1.0)
             avg_update_prob_real = jnp.sum(update_prob_flat * is_real_code.astype(jnp.float32)) / num_real_code
-
-            # Also compute overall for logging
             avg_update_prob = jnp.mean(update_prob_flat)
 
-            # Cost penalty: L_cost = |d̄ - r_target| (Eq. 7)
-            # This is a soft regularizer to guide toward target rate
-            target_update_rate = 1.0 - args.target_skip_rate
-            cost_penalty = jnp.abs(avg_update_prob_real - target_update_rate) * 0.1  # Fixed small weight
+            # Apply warmup (disable gating loss during warmup to let TTT stabilize first)
+            gating_quality_loss = jnp.where(is_warmup, 0.0, gating_quality_loss)
 
-            # Apply warmup (disable cost penalty during warmup)
-            cost_penalty = jnp.where(is_warmup, 0.0, cost_penalty)
+            # Cost penalty for logging (already included in gating_quality_loss)
+            cost_penalty = gating_quality_loss
 
-            # Total loss: CE (for TTT) + TTT aux + Gating quality + Cost penalty
-            total_loss = ce_loss + beta_ttt * l_ttt_weighted + gating_quality_loss + cost_penalty
+            # Total loss: CE (for TTT) + TTT aux + Gating loss
+            total_loss = ce_loss + beta_ttt * l_ttt_weighted + gating_quality_loss
 
             # Compute actual cost for logging
             # Hard decision cost: SKIP=1.0, UPDATE=3.0
