@@ -416,25 +416,29 @@ def main():
             # The cost_weight scales how much we penalize skipping vs reward updating.
             # Higher cost_weight = more willing to skip (penalty for skipping is relatively smaller)
 
-            advantage = jax.lax.stop_gradient(ce_loss_skip - ce_loss_update)
+            # Compute relative advantage (percentage improvement)
+            # advantage_raw = ce_loss_skip - ce_loss_update
+            # advantage = advantage_raw / ce_loss_skip = 1 - (ce_loss_update / ce_loss_skip)
+            # This gives a value in [0, 1] representing "fraction of loss reduced by UPDATE"
+            advantage_raw = ce_loss_skip - ce_loss_update
+            advantage = jax.lax.stop_gradient(
+                advantage_raw / jnp.maximum(ce_loss_skip, 0.1)
+            )
             update_prob_scalar = jnp.mean(update_prob)
 
             # Gating loss with bidirectional penalties:
             # - UPDATE when advantage is SMALL → penalty (wasted computation)
             # - SKIP when advantage is LARGE → penalty (missed improvement)
             #
-            # We use a threshold to define "worthwhile" updates.
-            # advantage_threshold: if advantage < threshold, UPDATE is wasteful
+            # advantage is now in [0, 1]: 0 = no improvement, 1 = 100% improvement
+            # threshold = 0.5 means "UPDATE is worth it if it reduces loss by 50%+"
             #
             # L_gate = d * max(threshold - A, 0) * γ   (penalty for unnecessary UPDATE)
             #        + (1-d) * max(A - threshold, 0)   (penalty for skipping beneficial UPDATE)
-            #
-            # Higher cost_weight (γ) = stronger penalty for unnecessary UPDATE = more SKIP
 
             # Threshold: UPDATE is "worth it" if advantage > threshold
-            # Typical advantage is 0.1 ~ 1.0, so threshold ~0.3 means
-            # "only UPDATE if it improves loss by at least 0.3"
-            advantage_threshold = 0.3
+            # 0.5 = only UPDATE if it reduces loss by at least 50%
+            advantage_threshold = 0.5
 
             # Penalty for UPDATE when advantage is small (wasteful computation)
             update_penalty = jnp.maximum(advantage_threshold - advantage, 0.0) * cost_weight
