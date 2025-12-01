@@ -444,23 +444,18 @@ def main():
             excess_update = jnp.maximum(update_prob_scalar - target_update_rate, 0.0)
             gating_quality_loss = excess_update * cost_weight * (1.0 + advantage)
 
-            # CE loss for TTT parameters (stop gradient to gating)
-            update_prob_no_grad = jax.lax.stop_gradient(update_prob_scalar)
-            ce_loss_blended = (1 - update_prob_no_grad) * ce_loss_skip + update_prob_no_grad * ce_loss_update
+            # CE loss for TTT parameters: ALWAYS use ce_loss_update
+            # The gating decision affects inference cost, not training.
+            # TTT should always learn to improve predictions.
+            ce_loss = ce_loss_update
 
-            # For logging
-            ce_loss = ce_loss_blended
-
-            # TTT auxiliary loss (only when updating)
+            # TTT auxiliary loss
             if fast_stats is not None and "ttt_loss_step_1" in fast_stats:
                 l_ttt = jnp.mean(fast_stats["ttt_loss_step_1"])
                 if l_ttt is None:
                     l_ttt = jnp.array(0.0)
             else:
                 l_ttt = jnp.array(0.0)
-
-            # Weighted TTT loss - stop gradient to gating network
-            l_ttt_weighted = l_ttt * update_prob_no_grad
 
             # For logging: compute stats on real code chunks
             update_prob_flat = update_prob[:, 0]  # [B]
@@ -471,11 +466,11 @@ def main():
             # Apply warmup (disable gating loss during warmup to let TTT stabilize first)
             gating_quality_loss = jnp.where(is_warmup, 0.0, gating_quality_loss)
 
-            # Cost penalty for logging (already included in gating_quality_loss)
+            # Cost penalty for logging
             cost_penalty = gating_quality_loss
 
             # Total loss: CE (for TTT) + TTT aux + Gating loss
-            total_loss = ce_loss + beta_ttt * l_ttt_weighted + gating_quality_loss
+            total_loss = ce_loss + beta_ttt * l_ttt + gating_quality_loss
 
             # Compute actual cost for logging
             # Hard decision cost: SKIP=1.0, UPDATE=3.0
