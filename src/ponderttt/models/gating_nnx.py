@@ -175,15 +175,15 @@ class BinaryGatingNetwork(nnx.Module):
         self.fc2 = nnx.Linear(config.hidden_dim, config.hidden_dim, rngs=rngs)
 
         # Binary output: 2 logits for SKIP (0) and UPDATE (1)
-        # Initialize with slight bias toward SKIP to encourage efficiency
+        # Initialize with NEUTRAL bias - let the gating loss determine the balance
         self.head = nnx.Linear(
             config.hidden_dim,
             2,  # [SKIP, UPDATE]
             bias_init=nnx.initializers.constant(0.0),
             rngs=rngs
         )
-        # Manually set bias to encourage SKIP initially
-        self.head.bias = nnx.Param(jnp.array([1.0, -1.0]))  # SKIP bias=1, UPDATE bias=-1
+        # Neutral initialization: 50/50 probability initially
+        self.head.bias = nnx.Param(jnp.array([0.0, 0.0]))
 
     def __call__(
         self,
