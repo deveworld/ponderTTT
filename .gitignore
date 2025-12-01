@@ -63,8 +63,8 @@ dmypy.json
 *.json
 output.log
 
-# Paper (not tracked)
-paper/
+# Paper (submodule)
+# paper/
 
 # Plan files (Claude Code)
 .plan
