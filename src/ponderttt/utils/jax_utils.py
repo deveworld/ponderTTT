@@ -285,6 +285,7 @@ def cross_entropy_loss(
     logits: jnp.ndarray,
     labels: jnp.ndarray,
     mask: jnp.ndarray | None = None,
+    reduction: str = "mean",
 ) -> jnp.ndarray:
     """
     Compute cross-entropy loss.
@@ -293,9 +294,10 @@ def cross_entropy_loss(
         logits: Shape (batch, seq_len, vocab_size)
         labels: Shape (batch, seq_len)
         mask: Optional mask, shape (batch, seq_len)
+        reduction: "mean" for scalar, "none" for per-token loss
 
     Returns:
-        Scalar loss
+        Scalar loss if reduction="mean", per-token loss [batch, seq_len] if reduction="none"
     """
     if mask is None:
         mask = jnp.ones(labels.shape[:2])
@@ -315,11 +317,16 @@ def cross_entropy_loss(
         log_probs, jnp.expand_dims(labels, -1), axis=-1
     ).squeeze(-1)
 
-    # Mask and average
+    # Mask invalid positions
     token_log_probs = jnp.where(mask > 0, token_log_probs, 0.0)
-    loss = -jnp.mean(jnp.sum(token_log_probs, axis=-1) / valid_length)
 
-    return loss
+    if reduction == "none":
+        # Return per-token loss (negative log prob)
+        return -token_log_probs
+    else:
+        # Mean reduction
+        loss = -jnp.mean(jnp.sum(token_log_probs, axis=-1) / valid_length)
+        return loss
 
 
 def print_on_main(message: str) -> None:
