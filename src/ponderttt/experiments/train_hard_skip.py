@@ -395,15 +395,6 @@ def main():
             logits_blended = (1 - update_prob_expanded) * logits_skip + update_prob_expanded * logits_update
 
             # 5. Compute losses
-            # Compute per-sample CE loss for skip and update separately
-            ce_loss_skip = cross_entropy_loss(logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:], reduction="none")
-            ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:], reduction="none")
-
-            # Per-sample losses (mean over sequence)
-            ce_skip_per_sample = jnp.mean(ce_loss_skip, axis=-1)  # [B]
-            ce_update_per_sample = jnp.mean(ce_loss_update, axis=-1)  # [B]
-
-            # Blended loss for training
             ce_loss = cross_entropy_loss(logits_blended[:, :-1], labels[:, 1:], attention_mask[:, 1:])
 
             # TTT auxiliary loss (only when updating)
@@ -418,6 +409,7 @@ def main():
             l_ttt_weighted = l_ttt * jnp.mean(update_prob)
 
             # 6. Cost penalty - ONLY on real code chunks (exclude padding)
+            # Padding chunks should always be skipped, so we don't penalize decisions on them
             update_prob_flat = update_prob[:, 0]  # [B]
 
             # Compute average update probability only on real code chunks
@@ -427,27 +419,9 @@ def main():
             # Also compute overall for logging
             avg_update_prob = jnp.mean(update_prob_flat)
 
-            # Advantage: how much does UPDATE improve over SKIP?
-            # advantage > 0 means UPDATE is better
-            advantage = ce_skip_per_sample - ce_update_per_sample  # [B]
-
-            # Adaptive cost penalty based on advantage
-            # If advantage is small (UPDATE doesn't help much), encourage SKIP
-            # If advantage is large (UPDATE helps a lot), don't penalize UPDATE
-            # Scale: when advantage < threshold, add penalty for updating
-            advantage_threshold = 0.1  # If UPDATE improves loss by less than 0.1, prefer SKIP
-            low_advantage_mask = (advantage < advantage_threshold) & is_real_code  # [B]
-
-            # Penalize updates on low-advantage real code chunks
+            # Cost penalty only on real code chunks
             target_update_rate = 1.0 - args.target_skip_rate
-            excess_updates = jnp.maximum(avg_update_prob_real - target_update_rate, 0.0)
-
-            # Additional penalty for updating when advantage is low
-            low_adv_update_penalty = jnp.sum(
-                update_prob_flat * low_advantage_mask.astype(jnp.float32)
-            ) / jnp.maximum(jnp.sum(low_advantage_mask.astype(jnp.float32)), 1.0)
-
-            cost_penalty = (excess_updates + 0.5 * low_adv_update_penalty) * cost_weight
+            cost_penalty = jnp.abs(avg_update_prob_real - target_update_rate) * cost_weight
 
             # Apply warmup
             cost_penalty = jnp.where(is_warmup, 0.0, cost_penalty)
@@ -461,22 +435,18 @@ def main():
             # Skip rate on real code only
             skip_on_real = jnp.sum((decision_hard == 0).astype(jnp.float32) * is_real_code.astype(jnp.float32)) / num_real_code
 
-            # Average advantage on real code (for logging)
-            avg_advantage = jnp.sum(advantage * is_real_code.astype(jnp.float32)) / num_real_code
-            num_low_adv = jnp.sum(low_advantage_mask.astype(jnp.float32))
-
-            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, avg_advantage, num_low_adv)
+            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code)
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
         (loss, aux), grads = grad_fn(trainable_sys, rng_key)
-        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, avg_advantage, num_low_adv = aux
+        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code = aux
 
         optimizer.update(trainable_sys, grads)
 
         # Compute skip rate from hard decisions (overall)
         skip_rate = jnp.mean(decision_hard == 0)
 
-        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code, avg_advantage, num_low_adv
+        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code
 
     # JIT compile training step
     train_step_jit = nnx.jit(
@@ -526,8 +496,6 @@ def main():
         total_skip_rate = 0.0
         total_skip_on_real = 0.0
         total_real_code_chunks = 0.0
-        total_advantage = 0.0
-        total_low_adv = 0.0
         valid_chunks = 0
 
         feature_extractor.reset_history()
@@ -551,7 +519,7 @@ def main():
             # Get new random key
             rng_key, subkey = jax.random.split(rng_key)
 
-            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real, avg_adv, num_low_adv = train_step_jit(
+            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real = train_step_jit(
                 trainable_system,
                 optimizer,
                 cast(GPT2Model, ttt_model.base_model),  # train_hard_skip is GPT2-specific
@@ -579,8 +547,6 @@ def main():
             total_skip_rate += float(skip_rate)
             total_skip_on_real += float(skip_on_real) * float(num_real)
             total_real_code_chunks += float(num_real)
-            total_advantage += float(avg_adv) * float(num_real)
-            total_low_adv += float(num_low_adv)
             valid_chunks += 1
 
             feature_extractor.update_history(float(ce), float(hard_cost))
@@ -597,8 +563,6 @@ def main():
         avg_hard_cost = total_hard_cost / valid_chunks
         avg_skip_rate = total_skip_rate / valid_chunks
         avg_skip_on_real = total_skip_on_real / max(total_real_code_chunks, 1.0)
-        avg_advantage = total_advantage / max(total_real_code_chunks, 1.0)
-        avg_low_adv_ratio = total_low_adv / max(total_real_code_chunks, 1.0)
         perplexity = math.exp(min(avg_ce_loss, 10.0))  # Cap to avoid overflow
 
         warmup_status = " [WARMUP]" if is_warmup else ""
@@ -606,7 +570,7 @@ def main():
             f"Iter {iter_count+1}{warmup_status}: Loss={avg_loss:.4f}, "
             f"CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
             f"SkipRate={avg_skip_rate:.2%} (real:{avg_skip_on_real:.2%}), Cost={avg_hard_cost:.2f}x, "
-            f"Adv={avg_advantage:.3f}, LowAdv={avg_low_adv_ratio:.2%}, Temp={temperature:.3f}"
+            f"Temp={temperature:.3f}"
         )
 
         # WandB Logging
@@ -624,8 +588,6 @@ def main():
                 "is_warmup": float(is_warmup),
                 "iteration": iter_count + 1,
                 "real_code_chunks": total_real_code_chunks,
-                "avg_advantage": avg_advantage,
-                "low_advantage_ratio": avg_low_adv_ratio,
             })
 
         history.append({
@@ -639,8 +601,6 @@ def main():
             "skip_rate_real_code": avg_skip_on_real,
             "hard_cost": avg_hard_cost,
             "temperature": temperature,
-            "avg_advantage": avg_advantage,
-            "low_advantage_ratio": avg_low_adv_ratio,
             "is_warmup": is_warmup,
         })
 
