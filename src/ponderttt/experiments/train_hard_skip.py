@@ -395,13 +395,30 @@ def main():
             ce_loss_skip = cross_entropy_loss(logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:])
             ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:])
 
-            # Decoupled gradient flow: gating network receives gradients ONLY from cost penalty
-            # Stop gradient on update_prob for CE/TTT loss to prevent gating from always choosing UPDATE
+            # === ADVANTAGE-BASED GATING (Section 3.2) ===
+            # The gating network needs TWO signals:
+            # 1. Quality signal: How much does UPDATE help? (advantage)
+            # 2. Cost signal: Stay close to target skip rate
+            #
+            # Without quality signal, gating learns to always SKIP (minimizes cost).
+            # Without cost signal, gating learns to always UPDATE (maximizes quality).
+            #
+            # Advantage = ce_loss_skip - ce_loss_update (positive means UPDATE is better)
+            # We use stop_gradient on advantage to prevent CE loss from directly training gating.
+            # Instead, advantage acts as a "reward" signal for the gating decision.
+
+            advantage = jax.lax.stop_gradient(ce_loss_skip - ce_loss_update)
             update_prob_scalar = jnp.mean(update_prob)
+
+            # Gating loss: encourage UPDATE when advantage > 0, SKIP when advantage < 0
+            # L_gating = -update_prob * advantage (minimize this = maximize update_prob when advantage > 0)
+            gating_quality_loss = -update_prob_scalar * advantage
+
+            # CE loss for TTT parameters (stop gradient to gating)
             update_prob_no_grad = jax.lax.stop_gradient(update_prob_scalar)
             ce_loss_blended = (1 - update_prob_no_grad) * ce_loss_skip + update_prob_no_grad * ce_loss_update
 
-            # For logging, use the blended loss
+            # For logging
             ce_loss = ce_loss_blended
 
             # TTT auxiliary loss (only when updating)
@@ -412,10 +429,10 @@ def main():
             else:
                 l_ttt = jnp.array(0.0)
 
-            # Weighted TTT loss - also stop gradient to gating network
+            # Weighted TTT loss - stop gradient to gating network
             l_ttt_weighted = l_ttt * update_prob_no_grad
 
-            # 6. Cost penalty - the ONLY gradient signal to gating network
+            # 6. Cost penalty for target skip rate
             update_prob_flat = update_prob[:, 0]  # [B]
 
             # Compute average update probability only on real code chunks
@@ -429,10 +446,11 @@ def main():
             target_update_rate = 1.0 - args.target_skip_rate
             cost_penalty = jnp.abs(avg_update_prob_real - target_update_rate) * cost_weight
 
-            # Apply warmup
+            # Apply warmup (disable cost penalty during warmup to let quality signal dominate initially)
             cost_penalty = jnp.where(is_warmup, 0.0, cost_penalty)
 
-            total_loss = ce_loss + beta_ttt * l_ttt_weighted + cost_penalty
+            # Total loss: CE (for TTT) + TTT aux + Gating quality + Cost penalty
+            total_loss = ce_loss + beta_ttt * l_ttt_weighted + gating_quality_loss + cost_penalty
 
             # Compute actual cost for logging
             # Hard decision cost: SKIP=1.0, UPDATE=3.0
