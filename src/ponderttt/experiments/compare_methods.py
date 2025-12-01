@@ -213,7 +213,8 @@ def evaluate_model(
         "cost": [],
         "method": [],
         "decision": [],
-        "text": []
+        "text": [],
+        "is_real_code": [],  # True if chunk has >10% valid tokens
     }
 
     # Evaluation Loop
@@ -348,11 +349,16 @@ def evaluate_model(
                     cost = 3.0
                     decision_str = "UPDATE"
 
+            # Determine if this is a real code chunk (>10% valid tokens)
+            valid_ratio = float(jnp.sum(chunk_batch["attention_mask"])) / chunk_len
+            is_real_code = valid_ratio > 0.1
+
             results["loss"].append(loss)
             results["cost"].append(cost)
             results["method"].append(method_name)
             results["decision"].append(decision_str)
             results["text"].append(text)
+            results["is_real_code"].append(is_real_code)
 
             current_spend += cost
             feature_extractor.update_history(loss, cost)
@@ -552,14 +558,28 @@ def main():
     # 6. Visualize & Report
     full_df = pd.concat(all_results)
 
-    print("\n=== Final Results ===")
+    print("\n=== Final Results (All Chunks) ===")
     summary = cast(pd.DataFrame, full_df.groupby("method").agg({"loss": "mean", "cost": "mean"})).sort_values(by="loss")
     print(summary)
+
+    # Real code only analysis
+    real_code_df = full_df[full_df["is_real_code"] == True]
+    print("\n=== Final Results (Real Code Only, excluding padding) ===")
+    summary_real = cast(pd.DataFrame, real_code_df.groupby("method").agg({"loss": "mean", "cost": "mean"})).sort_values(by="loss")
+    print(summary_real)
+
+    # Skip rate on real code for Binary Gating
+    if "Binary Gating (Hard Skip)" in full_df["method"].values:
+        binary_real = real_code_df[real_code_df["method"] == "Binary Gating (Hard Skip)"]
+        if len(binary_real) > 0:
+            skip_rate_real = (binary_real["decision"] == "SKIP").mean()
+            print(f"\n=== Binary Gating Skip Rate on Real Code: {skip_rate_real:.2%} ===")
 
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     summary.to_csv(output_path / "summary.csv")
+    summary_real.to_csv(output_path / "summary_real_code.csv")
     full_df.to_csv(output_path / "detailed_results.csv")
 
     # Plot

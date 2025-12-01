@@ -298,14 +298,28 @@ def main():
         beta_ttt: float = 0.1,
         cost_weight: float = 0.1,
         tie_word_embeddings: bool = True,
+        padding_threshold: float = 0.1,
     ):
         """
         Training step with Hard Skip (binary gating).
+
+        Args:
+            padding_threshold: Minimum fraction of valid tokens to consider a chunk as real code.
+                              Chunks with fewer valid tokens are excluded from cost penalty.
         """
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         position_ids = batch.get("position_ids")
         labels = input_ids
+
+        # Compute valid token ratio to identify padding-only chunks
+        # valid_ratio: [B] - fraction of non-padding tokens per sample
+        valid_tokens_per_sample = jnp.sum(attention_mask, axis=-1)  # [B]
+        seq_len = attention_mask.shape[-1]
+        valid_ratio = valid_tokens_per_sample / seq_len  # [B]
+
+        # Mask for real code chunks (not padding-dominated)
+        is_real_code = valid_ratio > padding_threshold  # [B]
 
         # 1. Base Model Forward (Frozen) - Always needed for features
         hidden_states = jax.lax.stop_gradient(base_model(
@@ -394,15 +408,20 @@ def main():
             # Weighted TTT loss based on update probability
             l_ttt_weighted = l_ttt * jnp.mean(update_prob)
 
-            # 6. Cost penalty
-            # Cost = 1 (base) + 2 * p_update (TTT when updating)
-            # We want to encourage SKIP, so penalize high update probability
-            avg_update_prob = jnp.mean(update_prob)
+            # 6. Cost penalty - ONLY on real code chunks (exclude padding)
+            # Padding chunks should always be skipped, so we don't penalize decisions on them
+            update_prob_flat = update_prob[:, 0]  # [B]
 
-            # Simple cost penalty: penalize deviation from target skip rate
-            # target_skip_rate = 0.5 means we want 50% SKIP, 50% UPDATE
+            # Compute average update probability only on real code chunks
+            num_real_code = jnp.maximum(jnp.sum(is_real_code.astype(jnp.float32)), 1.0)
+            avg_update_prob_real = jnp.sum(update_prob_flat * is_real_code.astype(jnp.float32)) / num_real_code
+
+            # Also compute overall for logging
+            avg_update_prob = jnp.mean(update_prob_flat)
+
+            # Cost penalty only on real code chunks
             target_update_rate = 1.0 - args.target_skip_rate
-            cost_penalty = jnp.abs(avg_update_prob - target_update_rate) * cost_weight
+            cost_penalty = jnp.abs(avg_update_prob_real - target_update_rate) * cost_weight
 
             # Apply warmup
             cost_penalty = jnp.where(is_warmup, 0.0, cost_penalty)
@@ -413,23 +432,26 @@ def main():
             # Hard decision cost: SKIP=1.0, UPDATE=3.0
             hard_cost = jnp.mean(jnp.where(decision_hard == 1, 3.0, 1.0))
 
-            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard)
+            # Skip rate on real code only
+            skip_on_real = jnp.sum((decision_hard == 0).astype(jnp.float32) * is_real_code.astype(jnp.float32)) / num_real_code
+
+            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code)
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
         (loss, aux), grads = grad_fn(trainable_sys, rng_key)
-        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard = aux
+        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code = aux
 
         optimizer.update(trainable_sys, grads)
 
-        # Compute skip rate from hard decisions
+        # Compute skip rate from hard decisions (overall)
         skip_rate = jnp.mean(decision_hard == 0)
 
-        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate
+        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code
 
     # JIT compile training step
     train_step_jit = nnx.jit(
         train_step,
-        static_argnames=("beta_ttt", "cost_weight", "tie_word_embeddings"),
+        static_argnames=("beta_ttt", "cost_weight", "tie_word_embeddings", "padding_threshold"),
     )
 
     # History tracking
@@ -472,6 +494,8 @@ def main():
         total_update_prob = 0.0
         total_hard_cost = 0.0
         total_skip_rate = 0.0
+        total_skip_on_real = 0.0
+        total_real_code_chunks = 0.0
         valid_chunks = 0
 
         feature_extractor.reset_history()
@@ -495,7 +519,7 @@ def main():
             # Get new random key
             rng_key, subkey = jax.random.split(rng_key)
 
-            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate = train_step_jit(
+            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real = train_step_jit(
                 trainable_system,
                 optimizer,
                 cast(GPT2Model, ttt_model.base_model),  # train_hard_skip is GPT2-specific
@@ -506,6 +530,7 @@ def main():
                 beta_ttt=args.beta_ttt,
                 cost_weight=args.cost_weight,
                 tie_word_embeddings=ttt_model.tie_word_embeddings,
+                padding_threshold=0.1,
             )
 
             # Stability check
@@ -520,6 +545,8 @@ def main():
             total_update_prob += float(update_prob)
             total_hard_cost += float(hard_cost)
             total_skip_rate += float(skip_rate)
+            total_skip_on_real += float(skip_on_real) * float(num_real)
+            total_real_code_chunks += float(num_real)
             valid_chunks += 1
 
             feature_extractor.update_history(float(ce), float(hard_cost))
@@ -535,13 +562,14 @@ def main():
         avg_update_prob = total_update_prob / valid_chunks
         avg_hard_cost = total_hard_cost / valid_chunks
         avg_skip_rate = total_skip_rate / valid_chunks
+        avg_skip_on_real = total_skip_on_real / max(total_real_code_chunks, 1.0)
         perplexity = math.exp(min(avg_ce_loss, 10.0))  # Cap to avoid overflow
 
         warmup_status = " [WARMUP]" if is_warmup else ""
         print(
             f"Iter {iter_count+1}{warmup_status}: Loss={avg_loss:.4f}, "
             f"CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
-            f"SkipRate={avg_skip_rate:.2%}, Cost={avg_hard_cost:.2f}x, "
+            f"SkipRate={avg_skip_rate:.2%} (real:{avg_skip_on_real:.2%}), Cost={avg_hard_cost:.2f}x, "
             f"Temp={temperature:.3f}"
         )
 
@@ -554,10 +582,12 @@ def main():
                 "l_ttt": avg_l_ttt,
                 "update_prob": avg_update_prob,
                 "skip_rate": avg_skip_rate,
+                "skip_rate_real_code": avg_skip_on_real,
                 "hard_cost": avg_hard_cost,
                 "temperature": temperature,
                 "is_warmup": float(is_warmup),
                 "iteration": iter_count + 1,
+                "real_code_chunks": total_real_code_chunks,
             })
 
         history.append({
@@ -568,6 +598,7 @@ def main():
             "l_ttt": avg_l_ttt,
             "update_prob": avg_update_prob,
             "skip_rate": avg_skip_rate,
+            "skip_rate_real_code": avg_skip_on_real,
             "hard_cost": avg_hard_cost,
             "temperature": temperature,
             "is_warmup": is_warmup,
