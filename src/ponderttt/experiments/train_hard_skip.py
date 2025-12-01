@@ -391,11 +391,16 @@ def main():
             # Expand for broadcasting: [B, 1, 1] for [B, T, V] logits
             update_prob_expanded = update_prob[:, :, None]
 
-            # Soft blending: logits = (1 - p_update) * logits_skip + p_update * logits_update
-            logits_blended = (1 - update_prob_expanded) * logits_skip + update_prob_expanded * logits_update
+            # 5. Compute losses separately for skip and update
+            ce_loss_skip = cross_entropy_loss(logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:])
+            ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:])
 
-            # 5. Compute losses
-            ce_loss = cross_entropy_loss(logits_blended[:, :-1], labels[:, 1:], attention_mask[:, 1:])
+            # Soft blending of losses (more stable than blending logits)
+            update_prob_scalar = jnp.mean(update_prob)
+            ce_loss_blended = (1 - update_prob_scalar) * ce_loss_skip + update_prob_scalar * ce_loss_update
+
+            # For logging, use the blended loss
+            ce_loss = ce_loss_blended
 
             # TTT auxiliary loss (only when updating)
             if fast_stats is not None and "ttt_loss_step_1" in fast_stats:
@@ -406,10 +411,9 @@ def main():
                 l_ttt = jnp.array(0.0)
 
             # Weighted TTT loss based on update probability
-            l_ttt_weighted = l_ttt * jnp.mean(update_prob)
+            l_ttt_weighted = l_ttt * update_prob_scalar
 
             # 6. Cost penalty - ONLY on real code chunks (exclude padding)
-            # Padding chunks should always be skipped, so we don't penalize decisions on them
             update_prob_flat = update_prob[:, 0]  # [B]
 
             # Compute average update probability only on real code chunks
@@ -419,9 +423,15 @@ def main():
             # Also compute overall for logging
             avg_update_prob = jnp.mean(update_prob_flat)
 
-            # Cost penalty only on real code chunks
+            # Cost penalty: penalize updates directly
+            # Each update costs 2x more compute than skip, so penalize proportionally
+            # cost_penalty = update_prob * cost_weight (linear with update rate)
             target_update_rate = 1.0 - args.target_skip_rate
-            cost_penalty = jnp.abs(avg_update_prob_real - target_update_rate) * cost_weight
+
+            # Direct cost: penalize the update probability itself
+            # This makes the gradient of cost_penalty w.r.t. update_prob = cost_weight
+            # Higher cost_weight = stronger incentive to skip
+            cost_penalty = avg_update_prob_real * cost_weight
 
             # Apply warmup
             cost_penalty = jnp.where(is_warmup, 0.0, cost_penalty)
