@@ -165,15 +165,15 @@ class CodeDataset:
             # logging.warning("Failed to download blob %s: %s", blob_id, exc)
             return ""
 
-    def _process_example(self, example: dict) -> dict[str, np.ndarray] | None:
+    def _download_and_tokenize(self, example: dict) -> tuple[np.ndarray, np.ndarray] | None:
         """
-        Process a single example: download and tokenize.
+        Download and tokenize a single file.
 
         Args:
             example: Dataset example with blob_id and src_encoding
 
         Returns:
-            Processed example dict or None if failed
+            Tuple of (input_ids, attention_mask) arrays or None if failed
         """
         # Download actual content from S3
         text = self._download_content(example["blob_id"], example["src_encoding"])
@@ -184,35 +184,36 @@ class CodeDataset:
 
         # Contamination check
         if self.exclude_benchmarks and self.forbidden_strings:
-            # Check if any forbidden string (benchmark solution) is in the text
-            # This is a simple substring check. For strict decontamination, more complex logic might be needed.
             for forbidden in self.forbidden_strings:
                 if forbidden in text:
                     return None
 
-        # Tokenize using tokenizers library (returns encoding with attention mask)
+        # Tokenize using tokenizers library
         encoded = self.tokenizer.encode(text)
 
         input_ids = np.array(encoded.ids, dtype=np.int32)
         attention_mask = np.array(encoded.attention_mask, dtype=bool)
 
-        # Truncate or pad to seq_length while keeping attention mask aligned
-        if len(input_ids) > self.seq_length:
-            input_ids = input_ids[: self.seq_length]
-            attention_mask = attention_mask[: self.seq_length]
-        elif len(input_ids) < self.seq_length:
-            pad_length = self.seq_length - len(input_ids)
-            pad_ids = np.full(pad_length, self.pad_token_id, dtype=np.int32)
-            pad_mask = np.zeros(pad_length, dtype=bool)
-            input_ids = np.concatenate([input_ids, pad_ids])
-            attention_mask = np.concatenate([attention_mask, pad_mask])
+        return input_ids, attention_mask
+
+    def _create_sequence_from_buffer(
+        self, token_buffer: np.ndarray, mask_buffer: np.ndarray
+    ) -> dict[str, np.ndarray]:
+        """
+        Create a training sequence from the token buffer.
+
+        Args:
+            token_buffer: Buffer of token IDs (at least seq_length tokens)
+            mask_buffer: Buffer of attention masks
+
+        Returns:
+            Processed example dict with chunks
+        """
+        input_ids = token_buffer[: self.seq_length]
+        attention_mask = mask_buffer[: self.seq_length]
 
         # Create chunks + per-chunk attention masks
         num_chunks = self.seq_length // self.chunk_size
-        seq_len = num_chunks * self.chunk_size
-        input_ids = input_ids[:seq_len]
-        attention_mask = attention_mask[:seq_len]
-
         chunks = input_ids.reshape(num_chunks, self.chunk_size)
         chunk_attention = attention_mask.reshape(num_chunks, self.chunk_size)
 
@@ -222,6 +223,37 @@ class CodeDataset:
             "chunks": chunks,
             "chunk_attention_mask": chunk_attention,
         }
+
+    def _process_example(self, example: dict) -> dict[str, np.ndarray] | None:
+        """
+        Process a single example (legacy method for compatibility).
+        Now uses concatenation internally but still processes one file at a time.
+
+        Args:
+            example: Dataset example with blob_id and src_encoding
+
+        Returns:
+            Processed example dict or None if failed
+        """
+        result = self._download_and_tokenize(example)
+        if result is None:
+            return None
+
+        input_ids, attention_mask = result
+
+        # Truncate if longer than seq_length
+        if len(input_ids) > self.seq_length:
+            input_ids = input_ids[: self.seq_length]
+            attention_mask = attention_mask[: self.seq_length]
+        elif len(input_ids) < self.seq_length:
+            # Pad if shorter (this will be avoided in concatenated mode)
+            pad_length = self.seq_length - len(input_ids)
+            pad_ids = np.full(pad_length, self.pad_token_id, dtype=np.int32)
+            pad_mask = np.zeros(pad_length, dtype=bool)
+            input_ids = np.concatenate([input_ids, pad_ids])
+            attention_mask = np.concatenate([attention_mask, pad_mask])
+
+        return self._create_sequence_from_buffer(input_ids, attention_mask)
 
     def __iter__(self) -> Iterator[dict[str, np.ndarray]]:
         """
@@ -306,6 +338,7 @@ def create_data_iterator(
     num_workers: int = 8,
     cache_dir: str = ".cache/ponderttt",
     exclude_benchmarks: bool = True,
+    concatenate_documents: bool = True,
 ) -> Iterator[dict[str, jnp.ndarray]]:
     """
     Create batched data iterator that yields JAX arrays.
@@ -323,6 +356,9 @@ def create_data_iterator(
         num_workers: Number of parallel workers for downloading (default: 8)
         cache_dir: Directory to cache downloaded data (default: .cache/ponderttt)
         exclude_benchmarks: If True, filter out examples containing HumanEval solutions
+        concatenate_documents: If True, concatenate multiple files to fill seq_length
+                              without padding (standard LM pretraining approach).
+                              Files are separated by <|endoftext|> token.
 
     Yields:
         Dictionary with batched JAX arrays:
@@ -407,7 +443,7 @@ def create_data_iterator(
         cache_key = hashlib.md5(
             f"{split}_{batch_size}_{seq_length}_{chunk_size}_{max_examples}_"
             f"skip{skip_examples}_{language}_vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}_{tokenizer_id_str}_"
-            f"exclude{exclude_benchmarks}".encode()
+            f"exclude{exclude_benchmarks}_concat{concatenate_documents}".encode()
         ).hexdigest()
         cache_path = Path(cache_dir) / f"{cache_key}.pkl"
 
@@ -421,19 +457,29 @@ def create_data_iterator(
 
         # Download and cache if not exists
         print(f"Cache not found. Downloading with {num_workers} parallel workers...")
+        if concatenate_documents:
+            print("Using document concatenation (no padding)")
         from tqdm import tqdm
 
         # Collect and process in parallel
         total_examples = max_examples if max_examples else batch_size * 100
-        total_to_scan = total_examples + skip_examples
-        processed_examples = []
+        # For concatenation mode, we need more raw files to fill the buffer
+        files_to_download = total_examples * 3 if concatenate_documents else total_examples
+        total_to_scan = files_to_download + skip_examples
 
         if skip_examples > 0:
-            print(f"Skipping first {skip_examples} examples, then loading {total_examples} examples...")
+            print(f"Skipping first {skip_examples} files, then downloading ~{files_to_download} files...")
         else:
-            print(f"Scanning and downloading {total_examples} examples in parallel...")
+            print(f"Downloading ~{files_to_download} files in parallel...")
         from threading import Lock
         pbar_lock = Lock()
+
+        # Get separator token for concatenation
+        eos_token_id = tokenizer.token_to_id("<|endoftext|>")
+        if eos_token_id is None:
+            eos_token_id = tokenizer.token_to_id("</s>")
+        if eos_token_id is None:
+            eos_token_id = dataset.pad_token_id  # fallback
 
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = []
@@ -454,23 +500,86 @@ def create_data_iterator(
                                     pbar.update(1)
                                     continue
 
-                                future = executor.submit(dataset._process_example, file_info)
+                                # Use _download_and_tokenize for concatenation mode
+                                if concatenate_documents:
+                                    future = executor.submit(dataset._download_and_tokenize, file_info)
+                                else:
+                                    future = executor.submit(dataset._process_example, file_info)
                                 future.add_done_callback(update_pbar)
                                 futures.append(future)
 
-                                if len(futures) >= total_examples:
+                                if len(futures) >= files_to_download:
                                     break
-                    if len(futures) >= total_examples:
+                    if len(futures) >= files_to_download:
                         break
-            
+
             # Collect results
             print("Waiting for remaining downloads...")
+            raw_tokens = []
             for f in futures:
                 res = f.result()
                 if res is not None:
-                    processed_examples.append(res)
+                    raw_tokens.append(res)
 
-        print(f"Successfully processed {len(processed_examples)} examples")
+        print(f"Successfully downloaded {len(raw_tokens)} files")
+
+        # Process into examples
+        if concatenate_documents:
+            # Concatenate all tokens with separator
+            print("Concatenating documents...")
+            token_buffer = []
+            mask_buffer = []
+
+            for item in raw_tokens:
+                if item is None:
+                    continue
+                input_ids, attention_mask = item
+
+                # Add separator between documents
+                if token_buffer:
+                    token_buffer.append(np.array([eos_token_id], dtype=np.int32))
+                    mask_buffer.append(np.array([True], dtype=bool))
+
+                token_buffer.append(input_ids)
+                mask_buffer.append(attention_mask)
+
+            # Concatenate all buffers
+            if token_buffer:
+                all_tokens = np.concatenate(token_buffer)
+                all_masks = np.concatenate(mask_buffer)
+            else:
+                all_tokens = np.array([], dtype=np.int32)
+                all_masks = np.array([], dtype=bool)
+
+            print(f"Total tokens after concatenation: {len(all_tokens)}")
+
+            # Create sequences from concatenated buffer
+            processed_examples = []
+            num_chunks_per_seq = seq_length // chunk_size
+
+            for start_idx in range(0, len(all_tokens) - seq_length + 1, seq_length):
+                input_ids = all_tokens[start_idx : start_idx + seq_length]
+                attention_mask = all_masks[start_idx : start_idx + seq_length]
+
+                chunks = input_ids.reshape(num_chunks_per_seq, chunk_size)
+                chunk_attention = attention_mask.reshape(num_chunks_per_seq, chunk_size)
+
+                processed_examples.append({
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "chunks": chunks,
+                    "chunk_attention_mask": chunk_attention,
+                })
+
+                if max_examples and len(processed_examples) >= max_examples:
+                    break
+
+            print(f"Created {len(processed_examples)} sequences (no padding)")
+        else:
+            # Legacy mode: each file is a separate example (may have padding)
+            processed_examples = [r for r in raw_tokens if r is not None]
+
+        print(f"Total sequences: {len(processed_examples)}")
 
         # Create batches from processed examples
         cached_batches = []
