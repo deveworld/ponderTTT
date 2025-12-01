@@ -423,15 +423,10 @@ def main():
             # Also compute overall for logging
             avg_update_prob = jnp.mean(update_prob_flat)
 
-            # Cost penalty: penalize updates directly
-            # Each update costs 2x more compute than skip, so penalize proportionally
-            # cost_penalty = update_prob * cost_weight (linear with update rate)
+            # Cost penalty: L_cost = |d̄ - r_target| (from paper Eq. 7)
+            # where d̄ = mean update rate, r_target = target update rate
             target_update_rate = 1.0 - args.target_skip_rate
-
-            # Direct cost: penalize the update probability itself
-            # This makes the gradient of cost_penalty w.r.t. update_prob = cost_weight
-            # Higher cost_weight = stronger incentive to skip
-            cost_penalty = avg_update_prob_real * cost_weight
+            cost_penalty = jnp.abs(avg_update_prob_real - target_update_rate) * cost_weight
 
             # Apply warmup
             cost_penalty = jnp.where(is_warmup, 0.0, cost_penalty)
