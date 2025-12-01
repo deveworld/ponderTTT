@@ -151,14 +151,14 @@ phase2_hard_skip() {
     # 125M Scale
     run_experiment "125M Hard Skip (skip=0.8)" \
         python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 125m --target_skip_rate 0.8 --cost_weight 0.1 \
+            --model_scale 125m --target_skip_rate 0.8 --cost_weight 1.0 \
             --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
             --output_dir outputs/hard_skip/125m_skip0.8 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-125m
 
     run_experiment "125M Hard Skip (skip=0.5)" \
         python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 125m --target_skip_rate 0.5 --cost_weight 0.1 \
+            --model_scale 125m --target_skip_rate 0.5 --cost_weight 1.0 \
             --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
             --output_dir outputs/hard_skip/125m_skip0.5 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-125m
@@ -166,14 +166,14 @@ phase2_hard_skip() {
     # 350M Scale
     run_experiment "350M Hard Skip (skip=0.8)" \
         python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 350m --target_skip_rate 0.8 --cost_weight 0.1 \
+            --model_scale 350m --target_skip_rate 0.8 --cost_weight 1.0 \
             --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
             --output_dir outputs/hard_skip/350m_skip0.8 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-350m
 
     run_experiment "350M Hard Skip (skip=0.5)" \
         python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 350m --target_skip_rate 0.5 --cost_weight 0.1 \
+            --model_scale 350m --target_skip_rate 0.5 --cost_weight 1.0 \
             --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
             --output_dir outputs/hard_skip/350m_skip0.5 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-350m
@@ -187,33 +187,45 @@ phase2_hard_skip() {
 phase3_eval_id() {
     log_phase "Phase 3: Evaluating In-Distribution (Python)"
 
+    # Number of examples to skip for held-out evaluation
+    # Training uses ~160K examples, so skip those for fair evaluation
+    local SKIP_EXAMPLES=160000
+
     # 125M
     local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_skip0.8")
+    local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1")
     if [ -z "$ckpt_125m" ]; then
         log_error "No checkpoint found for 125M Hard Skip"
     else
-        log_info "Using checkpoint: $ckpt_125m"
+        log_info "Using Hard Skip checkpoint: $ckpt_125m"
+        log_info "Using UPDATE_1 checkpoint: $ckpt_125m_update1"
         run_experiment "Eval 125M Python" \
             python -m ponderttt.experiments.compare_methods \
                 --model_scale 125m \
                 --binary_gating_checkpoint "$ckpt_125m" \
+                --update1_checkpoint "$ckpt_125m_update1" \
                 --num_eval_batches $NUM_EVAL_BATCHES \
                 --language Python \
+                --skip_examples $SKIP_EXAMPLES \
                 --output_dir outputs/eval/125m_hard_skip_python
     fi
 
     # 350M
     local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_skip0.8")
+    local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1")
     if [ -z "$ckpt_350m" ]; then
         log_error "No checkpoint found for 350M Hard Skip"
     else
-        log_info "Using checkpoint: $ckpt_350m"
+        log_info "Using Hard Skip checkpoint: $ckpt_350m"
+        log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
         run_experiment "Eval 350M Python" \
             python -m ponderttt.experiments.compare_methods \
                 --model_scale 350m \
                 --binary_gating_checkpoint "$ckpt_350m" \
+                --update1_checkpoint "$ckpt_350m_update1" \
                 --num_eval_batches $NUM_EVAL_BATCHES \
                 --language Python \
+                --skip_examples $SKIP_EXAMPLES \
                 --output_dir outputs/eval/350m_hard_skip_python
     fi
 
@@ -232,17 +244,23 @@ phase4_eval_ood() {
     local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_skip0.8")
     local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_skip0.8")
 
+    # Get UPDATE_1 checkpoints for baselines
+    local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1")
+    local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1")
+
     # 125M OOD
     if [ -z "$ckpt_125m" ]; then
         log_error "No checkpoint found for 125M Hard Skip"
     else
-        log_info "Using 125M checkpoint: $ckpt_125m"
+        log_info "Using 125M Hard Skip checkpoint: $ckpt_125m"
+        log_info "Using 125M UPDATE_1 checkpoint: $ckpt_125m_update1"
         for lang in "${languages[@]}"; do
             local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
             run_experiment "Eval 125M $lang" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 125m \
                     --binary_gating_checkpoint "$ckpt_125m" \
+                    --update1_checkpoint "$ckpt_125m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_OOD \
                     --language "$lang" \
                     --output_dir "outputs/eval/125m_hard_skip_${lang_lower}"
@@ -253,13 +271,15 @@ phase4_eval_ood() {
     if [ -z "$ckpt_350m" ]; then
         log_error "No checkpoint found for 350M Hard Skip"
     else
-        log_info "Using 350M checkpoint: $ckpt_350m"
+        log_info "Using 350M Hard Skip checkpoint: $ckpt_350m"
+        log_info "Using 350M UPDATE_1 checkpoint: $ckpt_350m_update1"
         for lang in "${languages[@]}"; do
             local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
             run_experiment "Eval 350M $lang" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 350m \
                     --binary_gating_checkpoint "$ckpt_350m" \
+                    --update1_checkpoint "$ckpt_350m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_OOD \
                     --language "$lang" \
                     --output_dir "outputs/eval/350m_hard_skip_${lang_lower}"
@@ -280,6 +300,7 @@ phase5_ablation() {
         python -m ponderttt.experiments.train_hard_skip \
             --model_scale 125m \
             --initial_temperature 2.0 --min_temperature 0.1 \
+            --cost_weight 1.0 \
             --num_iterations $NUM_ITERATIONS \
             --output_dir outputs/ablation/temp_2.0_to_0.1 \
             --wandb_project ponderttt-ablation
@@ -288,25 +309,26 @@ phase5_ablation() {
         python -m ponderttt.experiments.train_hard_skip \
             --model_scale 125m \
             --initial_temperature 1.0 --min_temperature 0.5 \
+            --cost_weight 1.0 \
             --num_iterations $NUM_ITERATIONS \
             --output_dir outputs/ablation/temp_1.0_to_0.5 \
             --wandb_project ponderttt-ablation
 
     # Cost weight ablation
-    run_experiment "Ablation: Cost 0.01" \
-        python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 125m \
-            --cost_weight 0.01 \
-            --num_iterations $NUM_ITERATIONS \
-            --output_dir outputs/ablation/cost_0.01 \
-            --wandb_project ponderttt-ablation
-
     run_experiment "Ablation: Cost 0.5" \
         python -m ponderttt.experiments.train_hard_skip \
             --model_scale 125m \
             --cost_weight 0.5 \
             --num_iterations $NUM_ITERATIONS \
             --output_dir outputs/ablation/cost_0.5 \
+            --wandb_project ponderttt-ablation
+
+    run_experiment "Ablation: Cost 2.0" \
+        python -m ponderttt.experiments.train_hard_skip \
+            --model_scale 125m \
+            --cost_weight 2.0 \
+            --num_iterations $NUM_ITERATIONS \
+            --output_dir outputs/ablation/cost_2.0 \
             --wandb_project ponderttt-ablation
 
     log_info "Phase 5 Complete!"
