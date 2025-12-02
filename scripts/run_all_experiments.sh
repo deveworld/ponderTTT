@@ -47,6 +47,12 @@ MAX_CHUNKS_350M=100000
 NUM_EVAL_BATCHES_350M=1000
 NUM_EVAL_BATCHES_OOD_350M=500
 
+# Save frequency (auto-calculated: save once at midpoint)
+SAVE_EVERY_BASELINE_125M=$((MAX_CHUNKS_125M / 2))
+SAVE_EVERY_BASELINE_350M=$((MAX_CHUNKS_350M / 2))
+SAVE_EVERY_HARDSKIP_125M=$((NUM_ITERATIONS_125M / 2))
+SAVE_EVERY_HARDSKIP_350M=$((NUM_ITERATIONS_350M / 2))
+
 # Track failures
 declare -a FAILED_EXPERIMENTS=()
 TOTAL_EXPERIMENTS=0
@@ -133,21 +139,21 @@ phase1_baselines() {
                 --model_scale 125m --action UPDATE_1 --max_chunks $MAX_CHUNKS_125M \
                 --output_dir outputs/baselines/125m_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_125M \
-                --wandb_project ponderttt-125m
+                --wandb_project ponderttt-125m --save_every $SAVE_EVERY_BASELINE_125M
 
         run_experiment "125M UPDATE_2" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale 125m --action UPDATE_2 --max_chunks $MAX_CHUNKS_125M \
                 --output_dir outputs/baselines/125m_update2 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_125M \
-                --wandb_project ponderttt-125m
+                --wandb_project ponderttt-125m --save_every $SAVE_EVERY_BASELINE_125M
 
         run_experiment "125M UPDATE_4" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale 125m --action UPDATE_4 --max_chunks $MAX_CHUNKS_125M \
                 --output_dir outputs/baselines/125m_update4 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_125M \
-                --wandb_project ponderttt-125m
+                --wandb_project ponderttt-125m --save_every $SAVE_EVERY_BASELINE_125M
     fi
 
     # 350M Baselines
@@ -157,21 +163,21 @@ phase1_baselines() {
                 --model_scale 350m --action UPDATE_1 --max_chunks $MAX_CHUNKS_350M \
                 --output_dir outputs/baselines/350m_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_350M \
-                --wandb_project ponderttt-350m
+                --wandb_project ponderttt-350m --save_every $SAVE_EVERY_BASELINE_350M
 
         run_experiment "350M UPDATE_2" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale 350m --action UPDATE_2 --max_chunks $MAX_CHUNKS_350M \
                 --output_dir outputs/baselines/350m_update2 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_350M \
-                --wandb_project ponderttt-350m
+                --wandb_project ponderttt-350m --save_every $SAVE_EVERY_BASELINE_350M
 
         run_experiment "350M UPDATE_4" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale 350m --action UPDATE_4 --max_chunks $MAX_CHUNKS_350M \
                 --output_dir outputs/baselines/350m_update4 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_350M \
-                --wandb_project ponderttt-350m
+                --wandb_project ponderttt-350m --save_every $SAVE_EVERY_BASELINE_350M
     fi
 
     log_info "Phase 1 Complete!"
@@ -194,7 +200,8 @@ phase2_hard_skip() {
                 --model_scale 125m --target_update_rate 0.5 \
                 --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
                 --output_dir outputs/hard_skip/125m_update0.5 \
-                --num_workers $NUM_WORKERS --wandb_project ponderttt-125m
+                --num_workers $NUM_WORKERS --wandb_project ponderttt-125m \
+                --save_every $SAVE_EVERY_HARDSKIP_125M
 
         # Paper "Target Skip 0.8" = 80% skip target = 20% update target
         run_experiment "125M Hard Skip (target_update=0.2)" \
@@ -202,7 +209,8 @@ phase2_hard_skip() {
                 --model_scale 125m --target_update_rate 0.2 \
                 --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
                 --output_dir outputs/hard_skip/125m_update0.2 \
-                --num_workers $NUM_WORKERS --wandb_project ponderttt-125m
+                --num_workers $NUM_WORKERS --wandb_project ponderttt-125m \
+                --save_every $SAVE_EVERY_HARDSKIP_125M
     fi
 
     # 350M Scale
@@ -212,14 +220,16 @@ phase2_hard_skip() {
                 --model_scale 350m --target_update_rate 0.5 \
                 --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
                 --output_dir outputs/hard_skip/350m_update0.5 \
-                --num_workers $NUM_WORKERS --wandb_project ponderttt-350m
+                --num_workers $NUM_WORKERS --wandb_project ponderttt-350m \
+                --save_every $SAVE_EVERY_HARDSKIP_350M
 
         run_experiment "350M Hard Skip (target_update=0.2)" \
             python -m ponderttt.experiments.train_hard_skip \
                 --model_scale 350m --target_update_rate 0.2 \
                 --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
                 --output_dir outputs/hard_skip/350m_update0.2 \
-                --num_workers $NUM_WORKERS --wandb_project ponderttt-350m
+                --num_workers $NUM_WORKERS --wandb_project ponderttt-350m \
+                --save_every $SAVE_EVERY_HARDSKIP_350M
     fi
 
     log_info "Phase 2 Complete!"
