@@ -301,7 +301,7 @@ def main():
         wandb.init(
             project=args.wandb_project,
             config=vars(args),
-            name=f"hard_skip_{args.model_scale}_skip{args.target_skip_rate}",
+            name=f"hard_skip_{args.model_scale}_update{args.target_update_rate}",
         )
 
     # Optimizer

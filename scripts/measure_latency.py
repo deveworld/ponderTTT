@@ -25,11 +25,16 @@ from ponderttt.utils.checkpointing import load_checkpoint
 
 
 def unwrap_state(state):
-    """Recursively unwrap Orbax-serialized NNX state dicts (remove 'value' wrappers)."""
+    """Recursively unwrap Orbax-serialized NNX state dicts (remove 'value' wrappers).
+
+    Also converts integer keys to strings to ensure consistent key types,
+    which is required for NNX state sorting during optimizer creation.
+    """
     if isinstance(state, dict):
         if "value" in state and len(state) == 1:
             return state["value"]
-        return {k: unwrap_state(v) for k, v in state.items()}
+        # Convert integer keys to strings for consistency (nnx.List indices)
+        return {str(k) if isinstance(k, int) else k: unwrap_state(v) for k, v in state.items()}
     return state
 
 MODEL_SCALES = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}

@@ -64,7 +64,7 @@ Train the binary gating network with Gumbel-Softmax on The Stack v2:
 ```bash
 python -m ponderttt.experiments.train_hard_skip \
     --model_scale 125m \
-    --target_skip_rate 0.5 \
+    --target_update_rate 0.5 \
     --num_iterations 10000 \
     --output_dir outputs/hard_skip
 ```

@@ -1,11 +1,21 @@
 #!/bin/bash
 # PonderTTT Full Experiment Pipeline
-# Run all experiments from scratch with Hard Skip implementation
+# Runs ALL experiments from paper/main.tex
 #
 # Usage:
 #   ./scripts/run_all_experiments.sh           # Run all phases
 #   ./scripts/run_all_experiments.sh phase1    # Run specific phase
 #   ./scripts/run_all_experiments.sh phase1 phase2  # Run multiple phases
+#
+# Paper Tables Covered:
+#   - Table 1 (Main Results): Phase 3
+#   - Table 2 (OOD): Phase 4
+#   - Table 3 (Latency): Phase 5
+#   - Appendix Training Dynamics: Phase 2 outputs
+#   - Appendix Baseline Results: Phase 1 outputs
+#   - Appendix OOD Full: Phase 4
+#   - Table 8 (Shuffled Input): Phase 6
+#   - Table 9 (Causal Mask Ablation): Phase 7
 
 # NOTE: No 'set -e' - we want to continue even if individual experiments fail
 
@@ -90,10 +100,11 @@ run_experiment() {
 
 # ============================================================
 # Phase 1: Baseline Training (UPDATE_1, UPDATE_2, UPDATE_4)
+# Paper: Appendix Table (Baseline Results on Training Data)
 # SKIP doesn't need training - no learnable parameters
 # ============================================================
 phase1_baselines() {
-    log_phase "Phase 1: Training Baselines"
+    log_phase "Phase 1: Training Baselines (Appendix Baseline Table)"
 
     # 125M Baselines
     run_experiment "125M UPDATE_1" \
@@ -144,38 +155,43 @@ phase1_baselines() {
 
 # ============================================================
 # Phase 2: Hard Skip (Binary Gating) Training
+# Paper: Table 1 (Main Results), Appendix Training Dynamics
+# Note: target_update_rate=0.5 corresponds to "Target Skip 0.5" in paper
+#       target_update_rate=0.2 corresponds to "Target Skip 0.8" in paper
 # ============================================================
 phase2_hard_skip() {
-    log_phase "Phase 2: Training Hard Skip (Binary Gating)"
+    log_phase "Phase 2: Training Hard Skip (Table 1, Appendix Training Dynamics)"
 
     # 125M Scale
-    run_experiment "125M Hard Skip (skip=0.8)" \
+    # Paper "Target Skip 0.5" = 50% skip target = 50% update target
+    run_experiment "125M Hard Skip (target_update=0.5)" \
         python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 125m --target_skip_rate 0.8 --cost_weight 1.0 \
+            --model_scale 125m --target_update_rate 0.5 \
             --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
-            --output_dir outputs/hard_skip/125m_skip0.8 \
+            --output_dir outputs/hard_skip/125m_update0.5 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-125m
 
-    run_experiment "125M Hard Skip (skip=0.5)" \
+    # Paper "Target Skip 0.8" = 80% skip target = 20% update target
+    run_experiment "125M Hard Skip (target_update=0.2)" \
         python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 125m --target_skip_rate 0.5 --cost_weight 1.0 \
+            --model_scale 125m --target_update_rate 0.2 \
             --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
-            --output_dir outputs/hard_skip/125m_skip0.5 \
+            --output_dir outputs/hard_skip/125m_update0.2 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-125m
 
     # 350M Scale
-    run_experiment "350M Hard Skip (skip=0.8)" \
+    run_experiment "350M Hard Skip (target_update=0.5)" \
         python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 350m --target_skip_rate 0.8 --cost_weight 1.0 \
+            --model_scale 350m --target_update_rate 0.5 \
             --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
-            --output_dir outputs/hard_skip/350m_skip0.8 \
+            --output_dir outputs/hard_skip/350m_update0.5 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-350m
 
-    run_experiment "350M Hard Skip (skip=0.5)" \
+    run_experiment "350M Hard Skip (target_update=0.2)" \
         python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 350m --target_skip_rate 0.5 --cost_weight 1.0 \
+            --model_scale 350m --target_update_rate 0.2 \
             --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
-            --output_dir outputs/hard_skip/350m_skip0.5 \
+            --output_dir outputs/hard_skip/350m_update0.2 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-350m
 
     log_info "Phase 2 Complete!"
@@ -183,23 +199,24 @@ phase2_hard_skip() {
 
 # ============================================================
 # Phase 3: Evaluation - In-Distribution (Python)
+# Paper: Table 1 (Main Results)
 # ============================================================
 phase3_eval_id() {
-    log_phase "Phase 3: Evaluating In-Distribution (Python)"
+    log_phase "Phase 3: Evaluating In-Distribution Python (Table 1)"
 
     # Number of examples to skip for held-out evaluation
     # Training uses ~160K examples, so skip those for fair evaluation
     local SKIP_EXAMPLES=160000
 
-    # 125M
-    local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_skip0.8")
+    # 125M - Use target_update=0.5 checkpoint (primary result in paper)
+    local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
     local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
     if [ -z "$ckpt_125m" ]; then
         log_error "No checkpoint found for 125M Hard Skip"
     else
         log_info "Using Hard Skip checkpoint: $ckpt_125m"
         log_info "Using UPDATE_1 checkpoint: $ckpt_125m_update1"
-        run_experiment "Eval 125M Python" \
+        run_experiment "Eval 125M Python (Table 1)" \
             python -m ponderttt.experiments.compare_methods \
                 --model_scale 125m \
                 --binary_gating_checkpoint "$ckpt_125m" \
@@ -207,18 +224,18 @@ phase3_eval_id() {
                 --num_eval_batches $NUM_EVAL_BATCHES \
                 --language Python \
                 --skip_examples $SKIP_EXAMPLES \
-                --output_dir outputs/eval/125m_hard_skip_python
+                --output_dir outputs/eval/125m_python
     fi
 
     # 350M
-    local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_skip0.8")
+    local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_update0.5")
     local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
     if [ -z "$ckpt_350m" ]; then
         log_error "No checkpoint found for 350M Hard Skip"
     else
         log_info "Using Hard Skip checkpoint: $ckpt_350m"
         log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
-        run_experiment "Eval 350M Python" \
+        run_experiment "Eval 350M Python (Table 1)" \
             python -m ponderttt.experiments.compare_methods \
                 --model_scale 350m \
                 --binary_gating_checkpoint "$ckpt_350m" \
@@ -226,7 +243,7 @@ phase3_eval_id() {
                 --num_eval_batches $NUM_EVAL_BATCHES \
                 --language Python \
                 --skip_examples $SKIP_EXAMPLES \
-                --output_dir outputs/eval/350m_hard_skip_python
+                --output_dir outputs/eval/350m_python
     fi
 
     log_info "Phase 3 Complete!"
@@ -234,55 +251,54 @@ phase3_eval_id() {
 
 # ============================================================
 # Phase 4: Evaluation - Out-of-Distribution (JS, Java, Go)
+# Paper: Table 2 (OOD), Appendix OOD Full
 # ============================================================
 phase4_eval_ood() {
-    log_phase "Phase 4: Evaluating Out-of-Distribution"
+    log_phase "Phase 4: Evaluating Out-of-Distribution (Table 2, Appendix OOD)"
 
     local languages=("JavaScript" "Java" "Go")
 
     # Get checkpoints
-    local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_skip0.8")
-    local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_skip0.8")
+    local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
+    local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_update0.5")
 
     # Get UPDATE_1 checkpoints for baselines
     local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
     local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
 
-    # 125M OOD
+    # 125M OOD (Table 2)
     if [ -z "$ckpt_125m" ]; then
         log_error "No checkpoint found for 125M Hard Skip"
     else
         log_info "Using 125M Hard Skip checkpoint: $ckpt_125m"
-        log_info "Using 125M UPDATE_1 checkpoint: $ckpt_125m_update1"
         for lang in "${languages[@]}"; do
             local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
-            run_experiment "Eval 125M $lang" \
+            run_experiment "Eval 125M $lang (Table 2)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 125m \
                     --binary_gating_checkpoint "$ckpt_125m" \
                     --update1_checkpoint "$ckpt_125m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_OOD \
                     --language "$lang" \
-                    --output_dir "outputs/eval/125m_hard_skip_${lang_lower}"
+                    --output_dir "outputs/eval/125m_${lang_lower}"
         done
     fi
 
-    # 350M OOD
+    # 350M OOD (Appendix OOD Full)
     if [ -z "$ckpt_350m" ]; then
         log_error "No checkpoint found for 350M Hard Skip"
     else
         log_info "Using 350M Hard Skip checkpoint: $ckpt_350m"
-        log_info "Using 350M UPDATE_1 checkpoint: $ckpt_350m_update1"
         for lang in "${languages[@]}"; do
             local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
-            run_experiment "Eval 350M $lang" \
+            run_experiment "Eval 350M $lang (Appendix OOD)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 350m \
                     --binary_gating_checkpoint "$ckpt_350m" \
                     --update1_checkpoint "$ckpt_350m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_OOD \
                     --language "$lang" \
-                    --output_dir "outputs/eval/350m_hard_skip_${lang_lower}"
+                    --output_dir "outputs/eval/350m_${lang_lower}"
         done
     fi
 
@@ -290,48 +306,72 @@ phase4_eval_ood() {
 }
 
 # ============================================================
-# Phase 5: Ablation Studies
+# Phase 5: Latency Measurement
+# Paper: Table 3 (Latency Analysis)
 # ============================================================
-phase5_ablation() {
-    log_phase "Phase 5: Running Ablation Studies"
+phase5_latency() {
+    log_phase "Phase 5: Measuring Latency (Table 3)"
 
-    # Temperature annealing ablation
-    run_experiment "Ablation: Temp 2.0->0.1" \
-        python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 125m \
-            --initial_temperature 2.0 --min_temperature 0.1 \
-            --cost_weight 1.0 \
-            --num_iterations $NUM_ITERATIONS \
-            --output_dir outputs/ablation/temp_2.0_to_0.1 \
-            --wandb_project ponderttt-ablation
+    local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
 
-    run_experiment "Ablation: Temp 1.0->0.5" \
-        python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 125m \
-            --initial_temperature 1.0 --min_temperature 0.5 \
-            --cost_weight 1.0 \
-            --num_iterations $NUM_ITERATIONS \
-            --output_dir outputs/ablation/temp_1.0_to_0.5 \
-            --wandb_project ponderttt-ablation
-
-    # Cost weight ablation
-    run_experiment "Ablation: Cost 0.5" \
-        python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 125m \
-            --cost_weight 0.5 \
-            --num_iterations $NUM_ITERATIONS \
-            --output_dir outputs/ablation/cost_0.5 \
-            --wandb_project ponderttt-ablation
-
-    run_experiment "Ablation: Cost 2.0" \
-        python -m ponderttt.experiments.train_hard_skip \
-            --model_scale 125m \
-            --cost_weight 2.0 \
-            --num_iterations $NUM_ITERATIONS \
-            --output_dir outputs/ablation/cost_2.0 \
-            --wandb_project ponderttt-ablation
+    if [ -z "$ckpt_125m" ]; then
+        log_error "No checkpoint found for 125M Hard Skip"
+    else
+        run_experiment "Latency Measurement (Table 3)" \
+            python scripts/measure_latency.py \
+                --checkpoint "$ckpt_125m" \
+                --model_scale 125m \
+                --num_iterations 100 \
+                --warmup_iterations 10
+    fi
 
     log_info "Phase 5 Complete!"
+}
+
+# ============================================================
+# Phase 6: Shuffled Input Sanity Check
+# Paper: Table 8 (Shuffled Input Test)
+# ============================================================
+phase6_shuffled() {
+    log_phase "Phase 6: Shuffled Input Test (Table 8)"
+
+    local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
+
+    if [ -z "$ckpt_125m" ]; then
+        log_error "No checkpoint found for 125M Hard Skip"
+    else
+        run_experiment "Shuffled Input Test (Table 8)" \
+            python scripts/test_shuffled_input.py \
+                --checkpoint "$ckpt_125m" \
+                --model_scale 125m \
+                --num_batches 100 \
+                --batch_size 4
+    fi
+
+    log_info "Phase 6 Complete!"
+}
+
+# ============================================================
+# Phase 7: Causal Mask Diagonal Ablation
+# Paper: Table 9 (Causal Mask Diagonal Ablation)
+# ============================================================
+phase7_causal_ablation() {
+    log_phase "Phase 7: Causal Mask Ablation (Table 9)"
+
+    local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
+
+    if [ -z "$ckpt_125m" ]; then
+        log_error "No checkpoint found for 125M Hard Skip"
+    else
+        run_experiment "Causal Mask Ablation k=0 vs k=-1 (Table 9)" \
+            python scripts/ablation_strict_causal.py \
+                --checkpoint "$ckpt_125m" \
+                --model_scale 125m \
+                --num_batches 100 \
+                --batch_size 4
+    fi
+
+    log_info "Phase 7 Complete!"
 }
 
 # ============================================================
@@ -365,11 +405,24 @@ print_summary() {
 # ============================================================
 run_all() {
     log_info "Running ALL experiment phases..."
+    log_info "This will reproduce all tables from paper/main.tex"
+    echo ""
+    echo "Phase 1: Baseline Training      -> Appendix Baseline Table"
+    echo "Phase 2: Hard Skip Training     -> Table 1, Appendix Training Dynamics"
+    echo "Phase 3: Eval Python (ID)       -> Table 1"
+    echo "Phase 4: Eval OOD               -> Table 2, Appendix OOD Full"
+    echo "Phase 5: Latency                -> Table 3"
+    echo "Phase 6: Shuffled Input         -> Table 8"
+    echo "Phase 7: Causal Mask Ablation   -> Table 9"
+    echo ""
+
     phase1_baselines
     phase2_hard_skip
     phase3_eval_id
     phase4_eval_ood
-    phase5_ablation
+    phase5_latency
+    phase6_shuffled
+    phase7_causal_ablation
     print_summary
 }
 
@@ -391,8 +444,14 @@ else
             phase4|eval_ood)
                 phase4_eval_ood
                 ;;
-            phase5|ablation)
-                phase5_ablation
+            phase5|latency)
+                phase5_latency
+                ;;
+            phase6|shuffled)
+                phase6_shuffled
+                ;;
+            phase7|causal_ablation)
+                phase7_causal_ablation
                 ;;
             all)
                 run_all
@@ -400,7 +459,15 @@ else
                 ;;
             *)
                 log_error "Unknown phase: $phase"
-                echo "Available phases: phase1, phase2, phase3, phase4, phase5, all"
+                echo "Available phases:"
+                echo "  phase1, baselines       - Train UPDATE_1/2/4 baselines"
+                echo "  phase2, hard_skip       - Train Hard Skip (PonderTTT)"
+                echo "  phase3, eval_id         - Evaluate on Python (Table 1)"
+                echo "  phase4, eval_ood        - Evaluate OOD (Table 2)"
+                echo "  phase5, latency         - Measure latency (Table 3)"
+                echo "  phase6, shuffled        - Shuffled input test (Table 8)"
+                echo "  phase7, causal_ablation - Causal mask ablation (Table 9)"
+                echo "  all                     - Run all phases"
                 exit 1
                 ;;
         esac
