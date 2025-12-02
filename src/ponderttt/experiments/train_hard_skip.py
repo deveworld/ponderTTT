@@ -404,9 +404,14 @@ def main():
             # L_gate = BCE(update_prob, sigmoid(normalized_entropy))
 
             # 1. Compute per-token entropy from base model logits (SKIP path)
+            # Use log-softmax for numerical stability
             logits_for_entropy = logits_skip[:, :-1]  # [B, T-1, V] (exclude last token)
-            probs = jax.nn.softmax(logits_for_entropy, axis=-1)
-            token_entropy = -jnp.sum(probs * jnp.log(probs + 1e-10), axis=-1)  # [B, T-1]
+            log_probs_entropy = jax.nn.log_softmax(logits_for_entropy, axis=-1)
+            probs = jnp.exp(log_probs_entropy)
+            # entropy = -sum(p * log(p)) = -sum(exp(log_p) * log_p)
+            token_entropy = -jnp.sum(probs * log_probs_entropy, axis=-1)  # [B, T-1]
+            # Clamp entropy to reasonable range (0 to log(vocab_size))
+            token_entropy = jnp.clip(token_entropy, 0.0, 15.0)
 
             # 2. Compute chunk-level entropy (weighted by attention mask)
             mask_for_entropy = attention_mask[:, 1:]  # [B, T-1]
@@ -416,8 +421,10 @@ def main():
 
             # 3. Normalize entropy within batch (z-score)
             entropy_mean = jnp.mean(chunk_entropy)
-            entropy_std = jnp.maximum(jnp.std(chunk_entropy), 0.01)
+            entropy_std = jnp.maximum(jnp.std(chunk_entropy), 0.1)  # Higher floor for stability
             entropy_normalized = (chunk_entropy - entropy_mean) / entropy_std  # [B]
+            # Clamp z-scores to prevent extreme sigmoid values
+            entropy_normalized = jnp.clip(entropy_normalized, -5.0, 5.0)
 
             # 4. Create soft supervision target
             # High entropy → target ≈ 1 (should UPDATE)
@@ -429,11 +436,15 @@ def main():
 
             # 5. Per-sample update probability from gating network
             update_prob_per_sample = update_prob[:, 0]  # [B]
+            # Clamp for numerical stability in BCE
+            eps = 1e-6
+            update_prob_clamped = jnp.clip(update_prob_per_sample, eps, 1.0 - eps)
+            target_clamped = jnp.clip(target_update_prob, eps, 1.0 - eps)
 
             # 6. BCE loss: train gating to predict entropy-based target
             bce_loss = -(
-                target_update_prob * jnp.log(update_prob_per_sample + 1e-10) +
-                (1 - target_update_prob) * jnp.log(1 - update_prob_per_sample + 1e-10)
+                target_clamped * jnp.log(update_prob_clamped) +
+                (1 - target_clamped) * jnp.log(1 - update_prob_clamped)
             )
             gating_bce_loss = jnp.mean(bce_loss)
 
