@@ -611,8 +611,13 @@ def create_data_iterator(
 
             # Calculate how many more files we need
             # For concatenation mode, we need more raw files to fill the buffer
-            tokens_per_sequence = seq_length
-            sequences_still_needed = total_needed - len(existing_tokens) // tokens_per_sequence if existing_tokens else total_needed
+            if existing_metadata:
+                # Extending existing cache - use metadata for accurate count
+                cached_sequences = existing_metadata.get("total_sequences", 0)
+                sequences_still_needed = total_needed - cached_sequences
+            else:
+                # Fresh download
+                sequences_still_needed = total_needed
             files_to_download = sequences_still_needed * 3 if concatenate_documents else sequences_still_needed
             files_to_download = max(files_to_download, 1000)  # Download at least 1000 files
 
