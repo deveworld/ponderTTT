@@ -412,13 +412,18 @@ class SimpleGenerator:
 
 
 def unwrap_state(state):
-    """Unwrap NNX state dictionary if it contains 'value' keys."""
+    """Unwrap NNX state dictionary if it contains 'value' keys.
+
+    Also converts integer keys to strings to ensure consistent key types,
+    which is required for NNX state sorting during optimizer creation.
+    """
     if isinstance(state, dict):
         # Check if this dict represents a Variable (has 'value' key)
         # Note: NNX variables serialized by Orbax might appear as {'value': array}
         if "value" in state and len(state) == 1:
             return state["value"]
-        return {k: unwrap_state(v) for k, v in state.items()}
+        # Convert integer keys to strings for consistency (nnx.List indices)
+        return {str(k) if isinstance(k, int) else k: unwrap_state(v) for k, v in state.items()}
     return state
 
 
