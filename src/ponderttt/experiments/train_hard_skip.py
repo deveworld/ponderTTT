@@ -391,53 +391,68 @@ def main():
             # 5. Compute CE loss for TTT training (always use update path)
             ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:])
 
-            # === POLICY GRADIENT GATING ===
+            # === ENTROPY-SUPERVISED GATING ===
             #
-            # Frame gating as a contextual bandit problem:
-            # - State: chunk features
-            # - Action: d ∈ {0=SKIP, 1=UPDATE}
-            # - Reward: R(d,x) = -Loss(d,x) - γ·Cost(d)
+            # Key insight: Base model's uncertainty (entropy) is a proxy for TTT benefit.
+            # - High entropy: model is uncertain → TTT helps more → should UPDATE
+            # - Low entropy: model is confident → TTT helps less → can SKIP
             #
-            # Optimal policy: UPDATE if advantage > λ (cost threshold)
-            # where advantage = L_skip - L_update
+            # Unlike advantage (which is uniformly high ~0.97 for all chunks),
+            # entropy varies across chunks (boilerplate vs complex logic).
             #
-            # Policy Gradient Loss:
-            # L_gate = -E[update_prob * (advantage - λ)]
-            #        = E[update_prob * (λ - advantage)]
-            #
-            # - When advantage > λ: encourages higher update_prob (reward UPDATE)
-            # - When advantage < λ: encourages lower update_prob (penalize UPDATE)
+            # Training: Use entropy as soft supervision signal
+            # L_gate = BCE(update_prob, sigmoid(normalized_entropy))
 
-            # Per-sample advantages (stop gradient - these are "rewards", not differentiable targets)
-            ce_per_sample_skip = per_sample_cross_entropy_loss(
-                logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:]
-            )  # [B]
-            ce_per_sample_update = per_sample_cross_entropy_loss(
-                logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:]
-            )  # [B]
-            advantage_per_sample = jax.lax.stop_gradient(
-                ce_per_sample_skip - ce_per_sample_update
+            # 1. Compute per-token entropy from base model logits (SKIP path)
+            logits_for_entropy = logits_skip[:, :-1]  # [B, T-1, V] (exclude last token)
+            probs = jax.nn.softmax(logits_for_entropy, axis=-1)
+            token_entropy = -jnp.sum(probs * jnp.log(probs + 1e-10), axis=-1)  # [B, T-1]
+
+            # 2. Compute chunk-level entropy (weighted by attention mask)
+            mask_for_entropy = attention_mask[:, 1:]  # [B, T-1]
+            chunk_entropy = jnp.sum(token_entropy * mask_for_entropy, axis=-1) / jnp.maximum(
+                jnp.sum(mask_for_entropy, axis=-1), 1.0
             )  # [B]
 
-            # Per-sample update probability
+            # 3. Normalize entropy within batch (z-score)
+            entropy_mean = jnp.mean(chunk_entropy)
+            entropy_std = jnp.maximum(jnp.std(chunk_entropy), 0.01)
+            entropy_normalized = (chunk_entropy - entropy_mean) / entropy_std  # [B]
+
+            # 4. Create soft supervision target
+            # High entropy → target ≈ 1 (should UPDATE)
+            # Low entropy → target ≈ 0 (should SKIP)
+            # Temperature controls sharpness of target distribution
+            entropy_temperature = 1.0
+            target_update_prob = jax.nn.sigmoid(entropy_normalized / entropy_temperature)  # [B]
+            target_update_prob = jax.lax.stop_gradient(target_update_prob)
+
+            # 5. Per-sample update probability from gating network
             update_prob_per_sample = update_prob[:, 0]  # [B]
 
-            # Cost threshold λ: controls the cost-quality tradeoff
-            # Higher λ → more SKIP (only UPDATE when advantage > λ)
-            # λ = cost_weight * typical_advantage_scale
-            # We use adaptive λ based on mean advantage to handle different scales
-            mean_advantage = jnp.mean(advantage_per_sample)
-            lambda_threshold = cost_weight * jnp.maximum(mean_advantage, 0.1)
+            # 6. BCE loss: train gating to predict entropy-based target
+            bce_loss = -(
+                target_update_prob * jnp.log(update_prob_per_sample + 1e-10) +
+                (1 - target_update_prob) * jnp.log(1 - update_prob_per_sample + 1e-10)
+            )
+            gating_bce_loss = jnp.mean(bce_loss)
 
-            # Policy gradient loss (per sample)
-            # L_i = update_prob_i * (λ - advantage_i)
-            # - advantage_i > λ: negative loss (reward for UPDATE)
-            # - advantage_i < λ: positive loss (penalty for UPDATE)
-            policy_gradient_loss = update_prob_per_sample * (lambda_threshold - advantage_per_sample)
-            gating_quality_loss = jnp.mean(policy_gradient_loss)
+            # 7. Cost regularization: penalize UPDATE to control overall skip rate
+            # Higher cost_weight → more SKIP
+            cost_reg_loss = cost_weight * jnp.mean(update_prob_per_sample)
 
-            # For logging
-            advantage = mean_advantage
+            # Combined gating loss
+            gating_quality_loss = gating_bce_loss + cost_reg_loss
+
+            # For logging: also compute advantage to verify entropy-advantage correlation
+            ce_per_sample_skip = per_sample_cross_entropy_loss(
+                logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:]
+            )
+            ce_per_sample_update = per_sample_cross_entropy_loss(
+                logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:]
+            )
+            advantage_per_sample = jax.lax.stop_gradient(ce_per_sample_skip - ce_per_sample_update)
+            advantage = jnp.mean(advantage_per_sample)
 
             # CE loss for TTT parameters: ALWAYS use ce_loss_update
             # The gating decision affects inference cost, not training.
@@ -473,21 +488,21 @@ def main():
             # Skip rate on real code only
             skip_on_real = jnp.sum((decision_hard == 0).astype(jnp.float32) * is_real_code.astype(jnp.float32)) / num_real_code
 
-            # Compute advantage std for logging (measures discrimination)
+            # Compute stats for logging
             advantage_std = jnp.std(advantage_per_sample)
 
-            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_quality_loss, lambda_threshold, advantage_std)
+            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_quality_loss, entropy_mean, entropy_std, advantage_std)
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
         (loss, aux), grads = grad_fn(trainable_sys, rng_key)
-        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_loss, lambda_thresh, adv_std = aux
+        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_loss, ent_mean, ent_std, adv_std = aux
 
         optimizer.update(trainable_sys, grads)
 
         # Compute skip rate from hard decisions (overall)
         skip_rate = jnp.mean(decision_hard == 0)
 
-        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code, advantage, gating_loss, lambda_thresh, adv_std
+        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code, advantage, gating_loss, ent_mean, ent_std, adv_std
 
     # JIT compile training step
     train_step_jit = nnx.jit(
@@ -539,7 +554,8 @@ def main():
         total_real_code_chunks = 0.0
         total_advantage = 0.0
         total_gating_loss = 0.0
-        total_lambda = 0.0
+        total_entropy_mean = 0.0
+        total_entropy_std = 0.0
         total_adv_std = 0.0
         valid_chunks = 0
 
@@ -564,7 +580,7 @@ def main():
             # Get new random key
             rng_key, subkey = jax.random.split(rng_key)
 
-            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real, adv, gate_loss, lambda_t, adv_std = train_step_jit(
+            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real, adv, gate_loss, ent_mean, ent_std, adv_std = train_step_jit(
                 trainable_system,
                 optimizer,
                 cast(GPT2Model, ttt_model.base_model),  # train_hard_skip is GPT2-specific
@@ -594,7 +610,8 @@ def main():
             total_real_code_chunks += float(num_real)
             total_advantage += float(adv)
             total_gating_loss += float(gate_loss)
-            total_lambda += float(lambda_t)
+            total_entropy_mean += float(ent_mean)
+            total_entropy_std += float(ent_std)
             total_adv_std += float(adv_std)
             valid_chunks += 1
 
@@ -614,7 +631,8 @@ def main():
         avg_skip_on_real = total_skip_on_real / max(total_real_code_chunks, 1.0)
         avg_advantage = total_advantage / valid_chunks
         avg_gating_loss = total_gating_loss / valid_chunks
-        avg_lambda = total_lambda / valid_chunks
+        avg_entropy_mean = total_entropy_mean / valid_chunks
+        avg_entropy_std = total_entropy_std / valid_chunks
         avg_adv_std = total_adv_std / valid_chunks
         perplexity = math.exp(min(avg_ce_loss, 10.0))  # Cap to avoid overflow
 
@@ -623,7 +641,7 @@ def main():
             f"Iter {iter_count+1}{warmup_status}: Loss={avg_loss:.4f}, "
             f"CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
             f"SkipRate={avg_skip_rate:.2%} (real:{avg_skip_on_real:.2%}), Cost={avg_hard_cost:.2f}x, "
-            f"Adv={avg_advantage:.4f}±{avg_adv_std:.4f}, λ={avg_lambda:.4f}, Temp={temperature:.3f}"
+            f"Adv={avg_advantage:.4f}±{avg_adv_std:.4f}, Ent={avg_entropy_mean:.4f}±{avg_entropy_std:.4f}, Temp={temperature:.3f}"
         )
 
         # WandB Logging
@@ -643,7 +661,8 @@ def main():
                 "real_code_chunks": total_real_code_chunks,
                 "advantage": avg_advantage,
                 "advantage_std": avg_adv_std,
-                "lambda_threshold": avg_lambda,
+                "entropy_mean": avg_entropy_mean,
+                "entropy_std": avg_entropy_std,
                 "gating_loss": avg_gating_loss,
             })
 
