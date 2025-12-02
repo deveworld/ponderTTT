@@ -220,8 +220,7 @@ def main():
     # Each batch processes batch_size * chunks_per_sequence chunks
     chunks_per_batch = batch_size * chunks_per_sequence
     batches_needed = math.ceil(args.max_chunks / chunks_per_batch)
-    # Add 30% buffer for safety (some files may be very short)
-    examples_needed = int(batches_needed * batch_size * 1.3)
+    examples_needed = batches_needed * batch_size  # sequences needed
 
     def build_data_iter():
         return create_data_iterator(
@@ -363,7 +362,7 @@ def main():
             batch_size=batch_size,
             seq_length=seq_length,
             chunk_size=chunk_size,
-            max_examples=examples_needed,  # batch-aligned sequences
+            max_examples=examples_needed,
             num_workers=args.num_workers,
         )
 
