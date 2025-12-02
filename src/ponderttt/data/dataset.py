@@ -4,6 +4,7 @@ Dataset implementation for code data with multi-host sharding support.
 
 import gzip
 import hashlib
+import json
 import logging
 import pickle
 from collections.abc import Iterator
@@ -127,7 +128,7 @@ class CodeDataset:
 
             if jax.process_index() == 0:
                 print("Loading HumanEval for decontamination...")
-            
+
             he = HumanEvalBenchmark()
             count = 0
             for problem in he.problems:
@@ -135,10 +136,10 @@ class CodeDataset:
                 if problem.canonical_solution and len(problem.canonical_solution.strip()) > 40:
                     self.forbidden_strings.append(problem.canonical_solution.strip())
                     count += 1
-            
+
             if jax.process_index() == 0:
                 print(f"Loaded {count} forbidden strings for decontamination.")
-            
+
         except Exception as e:
             logging.warning(f"Failed to load benchmarks for decontamination: {e}")
 
@@ -156,7 +157,7 @@ class CodeDataset:
         try:
             # Direct boto3 access is faster than smart_open
             response = self.s3_client.get_object(
-                Bucket="softwareheritage", 
+                Bucket="softwareheritage",
                 Key=f"content/{blob_id}"
             )
             content_gz = response["Body"].read()
@@ -275,11 +276,11 @@ class CodeDataset:
         # Use ThreadPoolExecutor to prefetch and process examples in parallel
         # This significantly speeds up streaming when cache_data=False
         # We use a bounded buffer to prevent memory exhaustion while keeping workers busy
-        
+
         iterator = example_generator()
         with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             futures = []
-            
+
             # Initial fill of the pipeline
             for _ in range(self.num_workers * 2):
                 try:
@@ -287,7 +288,7 @@ class CodeDataset:
                     futures.append(executor.submit(self._process_example, item))
                 except StopIteration:
                     break
-            
+
             while futures:
                 # Wait for the first completed future
                 # Note: as_completed yields futures as they complete
@@ -296,33 +297,113 @@ class CodeDataset:
                 # Check for completed futures without blocking too long on any single one
                 # But we need to yield results in order or out of order?
                 # Out of order is fine for training data.
-                
+
                 # Simple strategy: wait for at least one, then collect all currently done
                 # and replenish.
-                
+
                 # Using as_completed on the current set of futures
                 # We need to be careful not to create a new as_completed iterator every loop
                 # if we are modifying the list.
-                
+
                 # Better approach: Use a list of futures and check them, or use a queue.
                 # Since we want to use ThreadPoolExecutor, let's use a simple loop with wait.
                 from concurrent.futures import wait, FIRST_COMPLETED
-                
+
                 done, not_done = wait(futures, return_when=FIRST_COMPLETED)
-                
+
                 for future in done:
                     result = future.result()
                     if result is not None:
                         yield result
-                    
+
                     # Submit a new task for each completed one to keep pool full
                     try:
                         item = next(iterator)
                         not_done.add(executor.submit(self._process_example, item))
                     except StopIteration:
                         pass
-                
+
                 futures = list(not_done)
+
+
+def _get_cache_base_key(
+    tokenizer: Tokenizer,
+    split: str,
+    language: str,
+    seq_length: int,
+    chunk_size: int,
+    exclude_benchmarks: bool,
+    concatenate_documents: bool,
+) -> str:
+    """Generate a cache key based on data format parameters (excluding max_examples)."""
+    try:
+        tokenizer_serialized = tokenizer.to_str()
+    except Exception:
+        tokenizer_serialized = repr(tokenizer)
+    tokenizer_hash = hashlib.md5(tokenizer_serialized.encode()).hexdigest()[:8]
+
+    return (
+        f"{split}_{language}_seq{seq_length}_chunk{chunk_size}_"
+        f"vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}_"
+        f"exclude{exclude_benchmarks}_concat{concatenate_documents}"
+    )
+
+
+def _find_compatible_cache(cache_dir: Path, base_key: str) -> tuple[Path | None, dict | None]:
+    """
+    Find existing cache files that are compatible with the base key.
+
+    Returns:
+        Tuple of (cache_path, metadata) or (None, None) if not found
+    """
+    cache_dir = Path(cache_dir)
+    if not cache_dir.exists():
+        return None, None
+
+    # Look for cache files with this base key
+    pattern = f"{base_key}_*.pkl"
+    cache_files = list(cache_dir.glob(pattern))
+
+    if not cache_files:
+        return None, None
+
+    # Find the cache with the most data
+    best_cache = None
+    best_metadata = None
+    best_count = 0
+
+    for cache_file in cache_files:
+        metadata_file = cache_file.with_suffix(".meta.json")
+        if metadata_file.exists():
+            try:
+                with open(metadata_file, "r") as f:
+                    metadata = json.load(f)
+                if metadata.get("total_sequences", 0) > best_count:
+                    best_count = metadata["total_sequences"]
+                    best_cache = cache_file
+                    best_metadata = metadata
+            except Exception:
+                continue
+
+    return best_cache, best_metadata
+
+
+def _save_cache_with_metadata(
+    cache_path: Path,
+    data: dict,
+    metadata: dict,
+):
+    """Save cache data and metadata."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Save data
+    with open(cache_path, "wb") as f:
+        pickle.dump(data, f)
+
+    # Save metadata
+    metadata_path = cache_path.with_suffix(".meta.json")
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
 
 
 def create_data_iterator(
@@ -431,203 +512,323 @@ def create_data_iterator(
 
     # Cache all data upfront if enabled with parallel downloading
     if cache_data:
-        # Create cache key based on parameters
-        try:
-            tokenizer_serialized = tokenizer.to_str()
-        except Exception:
-            tokenizer_serialized = repr(tokenizer)
-        tokenizer_hash = hashlib.md5(tokenizer_serialized.encode()).hexdigest()
-        tokenizer_id = getattr(tokenizer, "model", None)
-        tokenizer_id_str = tokenizer_id.__class__.__name__ if tokenizer_id is not None else "unknown"
+        cache_dir_path = Path(cache_dir)
 
-        cache_key = hashlib.md5(
-            f"{split}_{batch_size}_{seq_length}_{chunk_size}_{max_examples}_"
-            f"skip{skip_examples}_{language}_vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}_{tokenizer_id_str}_"
-            f"exclude{exclude_benchmarks}_concat{concatenate_documents}".encode()
-        ).hexdigest()
-        cache_path = Path(cache_dir) / f"{cache_key}.pkl"
+        # Generate base cache key (without max_examples)
+        base_key = _get_cache_base_key(
+            tokenizer, split, language, seq_length, chunk_size,
+            exclude_benchmarks, concatenate_documents
+        )
 
-        # Check if cache exists
-        if cache_path.exists():
-            print(f"Loading cached data from {cache_path}...")
-            with open(cache_path, "rb") as f:
-                cached_batches = pickle.load(f)
-            print(f"Loaded {len(cached_batches)} batches from cache")
-            return iter(cached_batches)
+        # Include skip_examples in the key since different skip values need different data
+        cache_key = f"{base_key}_skip{skip_examples}"
 
-        # Download and cache if not exists
-        print(f"Cache not found. Downloading with {num_workers} parallel workers...")
-        if concatenate_documents:
-            print("Using document concatenation (no padding)")
-        from tqdm import tqdm
+        # Target number of sequences needed
+        total_needed = max_examples if max_examples else batch_size * 100
 
-        # Collect and process in parallel
-        total_examples = max_examples if max_examples else batch_size * 100
-        # For concatenation mode, we need more raw files to fill the buffer
-        files_to_download = total_examples * 3 if concatenate_documents else total_examples
-        total_to_scan = files_to_download + skip_examples
+        # Find existing compatible cache
+        existing_cache, existing_metadata = _find_compatible_cache(cache_dir_path, cache_key)
 
-        if skip_examples > 0:
-            print(f"Skipping first {skip_examples} files, then downloading ~{files_to_download} files...")
-        else:
-            print(f"Downloading ~{files_to_download} files in parallel...")
-        from threading import Lock
-        pbar_lock = Lock()
+        # Check if existing cache has enough data
+        if existing_cache and existing_metadata:
+            cached_sequences = existing_metadata.get("total_sequences", 0)
+            cached_files_scanned = existing_metadata.get("files_scanned", 0)
 
-        # Get separator token for concatenation
-        eos_token_id = tokenizer.token_to_id("<|endoftext|>")
-        if eos_token_id is None:
-            eos_token_id = tokenizer.token_to_id("</s>")
-        if eos_token_id is None:
-            eos_token_id = dataset.pad_token_id  # fallback
+            if cached_sequences >= total_needed:
+                # Cache has enough data - load and slice
+                print(f"Loading cache with {cached_sequences} sequences (need {total_needed})...")
+                with open(existing_cache, "rb") as f:
+                    cache_data_dict = pickle.load(f)
 
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = []
-            skipped_count = 0
+                all_tokens = cache_data_dict["all_tokens"]
+                all_masks = cache_data_dict["all_masks"]
 
-            with tqdm(total=total_to_scan, desc="Scanning" if skip_examples > 0 else "Downloading") as pbar:
-                def update_pbar(f):
-                    with pbar_lock:
-                        pbar.update(1)
+                # Create batches from the required portion
+                num_chunks_per_seq = seq_length // chunk_size
+                cached_batches = []
+                batch: dict[str, list] = {
+                    "input_ids": [], "attention_mask": [],
+                    "chunks": [], "chunk_attention_mask": [],
+                }
 
-                for repo in dataset.dataset:
-                    if isinstance(repo, dict) and "files" in repo:
-                        for file_info in repo["files"]:
-                            if file_info.get("language") == dataset.language:
-                                # Skip examples first
-                                if skipped_count < skip_examples:
-                                    skipped_count += 1
-                                    pbar.update(1)
-                                    continue
-
-                                # Use _download_and_tokenize for concatenation mode
-                                if concatenate_documents:
-                                    future = executor.submit(dataset._download_and_tokenize, file_info)
-                                else:
-                                    future = executor.submit(dataset._process_example, file_info)
-                                future.add_done_callback(update_pbar)
-                                futures.append(future)
-
-                                if len(futures) >= files_to_download:
-                                    break
-                    if len(futures) >= files_to_download:
+                sequences_created = 0
+                for start_idx in range(0, len(all_tokens) - seq_length + 1, seq_length):
+                    if sequences_created >= total_needed:
                         break
 
-            # Collect results
-            print("Waiting for remaining downloads...")
-            raw_tokens = []
-            for f in futures:
-                res = f.result()
-                if res is not None:
-                    raw_tokens.append(res)
+                    input_ids = all_tokens[start_idx : start_idx + seq_length]
+                    attention_mask = all_masks[start_idx : start_idx + seq_length]
+                    chunks = input_ids.reshape(num_chunks_per_seq, chunk_size)
+                    chunk_attention = attention_mask.reshape(num_chunks_per_seq, chunk_size)
 
-        print(f"Successfully downloaded {len(raw_tokens)} files")
+                    batch["input_ids"].append(input_ids)
+                    batch["attention_mask"].append(attention_mask)
+                    batch["chunks"].append(chunks)
+                    batch["chunk_attention_mask"].append(chunk_attention)
+                    sequences_created += 1
 
-        # Process into examples
-        if concatenate_documents:
-            # Concatenate all tokens with separator
-            print("Concatenating documents...")
-            token_buffer = []
-            mask_buffer = []
+                    if len(batch["input_ids"]) == batch_size:
+                        cached_batches.append({
+                            "input_ids": jnp.array(batch["input_ids"]),
+                            "attention_mask": jnp.array(batch["attention_mask"]),
+                            "chunks": jnp.array(batch["chunks"]),
+                            "chunk_attention_mask": jnp.array(batch["chunk_attention_mask"]),
+                        })
+                        batch = {"input_ids": [], "attention_mask": [], "chunks": [], "chunk_attention_mask": []}
 
-            for item in raw_tokens:
-                if item is None:
-                    continue
-                input_ids, attention_mask = item
-
-                # Add separator between documents
-                if token_buffer:
-                    token_buffer.append(np.array([eos_token_id], dtype=np.int32))
-                    mask_buffer.append(np.array([True], dtype=bool))
-
-                token_buffer.append(input_ids)
-                mask_buffer.append(attention_mask)
-
-            # Concatenate all buffers
-            if token_buffer:
-                all_tokens = np.concatenate(token_buffer)
-                all_masks = np.concatenate(mask_buffer)
-            else:
-                all_tokens = np.array([], dtype=np.int32)
-                all_masks = np.array([], dtype=bool)
-
-            print(f"Total tokens after concatenation: {len(all_tokens)}")
-
-            # Create sequences from concatenated buffer
-            processed_examples = []
-            num_chunks_per_seq = seq_length // chunk_size
-
-            for start_idx in range(0, len(all_tokens) - seq_length + 1, seq_length):
-                input_ids = all_tokens[start_idx : start_idx + seq_length]
-                attention_mask = all_masks[start_idx : start_idx + seq_length]
-
-                chunks = input_ids.reshape(num_chunks_per_seq, chunk_size)
-                chunk_attention = attention_mask.reshape(num_chunks_per_seq, chunk_size)
-
-                processed_examples.append({
-                    "input_ids": input_ids,
-                    "attention_mask": attention_mask,
-                    "chunks": chunks,
-                    "chunk_attention_mask": chunk_attention,
-                })
-
-                if max_examples and len(processed_examples) >= max_examples:
-                    break
-
-            print(f"Created {len(processed_examples)} sequences (no padding)")
-        else:
-            # Legacy mode: each file is a separate example (may have padding)
-            processed_examples = [r for r in raw_tokens if r is not None]
-
-        print(f"Total sequences: {len(processed_examples)}")
-
-        # Create batches from processed examples
-        cached_batches = []
-        batch: dict[str, list] = {
-            "input_ids": [],
-            "attention_mask": [],
-            "chunks": [],
-            "chunk_attention_mask": [],
-        }
-
-        for example in processed_examples:
-            if example is None:
-                continue
-            batch["input_ids"].append(example["input_ids"])
-            batch["attention_mask"].append(example["attention_mask"])
-            batch["chunks"].append(example["chunks"])
-            batch["chunk_attention_mask"].append(example["chunk_attention_mask"])
-
-            if len(batch["input_ids"]) == batch_size:
-                cached_batches.append(
-                    {
+                if batch["input_ids"]:
+                    cached_batches.append({
                         "input_ids": jnp.array(batch["input_ids"]),
                         "attention_mask": jnp.array(batch["attention_mask"]),
                         "chunks": jnp.array(batch["chunks"]),
                         "chunk_attention_mask": jnp.array(batch["chunk_attention_mask"]),
-                    }
-                )
-                batch = {"input_ids": [], "attention_mask": [], "chunks": [], "chunk_attention_mask": []}
+                    })
 
-        if batch["input_ids"]:
-            cached_batches.append(
-                {
-                    "input_ids": jnp.array(batch["input_ids"]),
-                    "attention_mask": jnp.array(batch["attention_mask"]),
-                    "chunks": jnp.array(batch["chunks"]),
-                    "chunk_attention_mask": jnp.array(batch["chunk_attention_mask"]),
+                print(f"Using {sequences_created} sequences from cache ({len(cached_batches)} batches)")
+                return iter(cached_batches)
+            else:
+                # Cache exists but needs more data - will extend it
+                print(f"Cache has {cached_sequences} sequences, need {total_needed}. Extending...")
+                with open(existing_cache, "rb") as f:
+                    cache_data_dict = pickle.load(f)
+
+                existing_tokens = list(cache_data_dict.get("raw_tokens", []))
+                start_from_file = cached_files_scanned
+                print(f"Will continue downloading from file {start_from_file}...")
+        else:
+            # No existing cache
+            existing_tokens = []
+            start_from_file = 0
+            cached_files_scanned = 0
+
+        # Download data (either fresh or extending existing cache)
+        if not existing_cache or existing_metadata.get("total_sequences", 0) < total_needed:
+            print(f"Downloading with {num_workers} parallel workers...")
+            if concatenate_documents:
+                print("Using document concatenation (no padding)")
+            from tqdm import tqdm
+            from threading import Lock
+
+            # Calculate how many more files we need
+            # For concatenation mode, we need more raw files to fill the buffer
+            tokens_per_sequence = seq_length
+            sequences_still_needed = total_needed - len(existing_tokens) // tokens_per_sequence if existing_tokens else total_needed
+            files_to_download = sequences_still_needed * 3 if concatenate_documents else sequences_still_needed
+            files_to_download = max(files_to_download, 1000)  # Download at least 1000 files
+
+            total_to_scan = start_from_file + files_to_download + skip_examples
+
+            if skip_examples > 0 and start_from_file == 0:
+                print(f"Skipping first {skip_examples} files, then downloading ~{files_to_download} files...")
+            else:
+                print(f"Downloading ~{files_to_download} more files starting from file {start_from_file}...")
+
+            pbar_lock = Lock()
+
+            # Get separator token for concatenation
+            eos_token_id = tokenizer.token_to_id("<|endoftext|>")
+            if eos_token_id is None:
+                eos_token_id = tokenizer.token_to_id("</s>")
+            if eos_token_id is None:
+                eos_token_id = dataset.pad_token_id  # fallback
+
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = []
+                file_count = 0
+                files_after_skip = 0
+
+                desc = "Scanning" if skip_examples > 0 and start_from_file == 0 else "Downloading"
+                with tqdm(total=total_to_scan, desc=desc) as pbar:
+                    def update_pbar(f):
+                        with pbar_lock:
+                            pbar.update(1)
+
+                    for repo in dataset.dataset:
+                        if isinstance(repo, dict) and "files" in repo:
+                            for file_info in repo["files"]:
+                                if file_info.get("language") == dataset.language:
+                                    file_count += 1
+
+                                    # Skip examples first (for held-out evaluation)
+                                    if file_count <= skip_examples:
+                                        pbar.update(1)
+                                        continue
+
+                                    files_after_skip += 1
+
+                                    # Skip already cached files
+                                    if files_after_skip <= start_from_file:
+                                        pbar.update(1)
+                                        continue
+
+                                    # Download new files
+                                    if concatenate_documents:
+                                        future = executor.submit(dataset._download_and_tokenize, file_info)
+                                    else:
+                                        future = executor.submit(dataset._process_example, file_info)
+                                    future.add_done_callback(update_pbar)
+                                    futures.append(future)
+
+                                    if len(futures) >= files_to_download:
+                                        break
+                        if len(futures) >= files_to_download:
+                            break
+
+                # Collect results
+                print("Waiting for remaining downloads...")
+                new_raw_tokens = []
+                for f in futures:
+                    res = f.result()
+                    if res is not None:
+                        new_raw_tokens.append(res)
+
+            print(f"Successfully downloaded {len(new_raw_tokens)} new files")
+            total_files_scanned = start_from_file + len(futures)
+
+            # Combine with existing tokens
+            all_raw_tokens = existing_tokens + new_raw_tokens
+
+            # Process into concatenated tokens
+            if concatenate_documents:
+                print("Concatenating documents...")
+                token_buffer = []
+                mask_buffer = []
+
+                for item in all_raw_tokens:
+                    if item is None:
+                        continue
+                    input_ids, attention_mask = item
+
+                    # Add separator between documents
+                    if token_buffer:
+                        token_buffer.append(np.array([eos_token_id], dtype=np.int32))
+                        mask_buffer.append(np.array([True], dtype=bool))
+
+                    token_buffer.append(input_ids)
+                    mask_buffer.append(attention_mask)
+
+                # Concatenate all buffers
+                if token_buffer:
+                    all_tokens = np.concatenate(token_buffer)
+                    all_masks = np.concatenate(mask_buffer)
+                else:
+                    all_tokens = np.array([], dtype=np.int32)
+                    all_masks = np.array([], dtype=bool)
+
+                total_sequences = (len(all_tokens) - seq_length + 1) // seq_length if len(all_tokens) >= seq_length else 0
+                print(f"Total tokens: {len(all_tokens)}, can create {total_sequences} sequences")
+
+                # Save cache with raw tokens for future extension
+                cache_path = cache_dir_path / f"{cache_key}_{total_sequences}.pkl"
+                cache_data_to_save = {
+                    "all_tokens": all_tokens,
+                    "all_masks": all_masks,
+                    "raw_tokens": all_raw_tokens,  # Keep raw for extension
                 }
-            )
+                metadata = {
+                    "total_sequences": total_sequences,
+                    "total_tokens": len(all_tokens),
+                    "files_scanned": total_files_scanned,
+                    "raw_files_count": len(all_raw_tokens),
+                    "seq_length": seq_length,
+                    "chunk_size": chunk_size,
+                    "batch_size": batch_size,
+                    "skip_examples": skip_examples,
+                }
 
-        print(f"Created {len(cached_batches)} batches ready for training")
+                _save_cache_with_metadata(cache_path, cache_data_to_save, metadata)
+                print(f"Saved cache to {cache_path}")
 
-        # Save to cache
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "wb") as f_write:
-            pickle.dump(cached_batches, f_write)
-        print(f"Saved cache to {cache_path}")
+                # Remove old cache if we extended it
+                if existing_cache and existing_cache != cache_path:
+                    try:
+                        existing_cache.unlink()
+                        existing_cache.with_suffix(".meta.json").unlink()
+                        print(f"Removed old cache {existing_cache}")
+                    except Exception:
+                        pass
 
-        # Return iterator over cached data
-        return iter(cached_batches)
+                # Create batches
+                num_chunks_per_seq = seq_length // chunk_size
+                cached_batches = []
+                batch_dict: dict[str, list] = {
+                    "input_ids": [], "attention_mask": [],
+                    "chunks": [], "chunk_attention_mask": [],
+                }
+
+                sequences_created = 0
+                for start_idx in range(0, len(all_tokens) - seq_length + 1, seq_length):
+                    if max_examples and sequences_created >= max_examples:
+                        break
+
+                    input_ids = all_tokens[start_idx : start_idx + seq_length]
+                    attention_mask = all_masks[start_idx : start_idx + seq_length]
+                    chunks = input_ids.reshape(num_chunks_per_seq, chunk_size)
+                    chunk_attention = attention_mask.reshape(num_chunks_per_seq, chunk_size)
+
+                    batch_dict["input_ids"].append(input_ids)
+                    batch_dict["attention_mask"].append(attention_mask)
+                    batch_dict["chunks"].append(chunks)
+                    batch_dict["chunk_attention_mask"].append(chunk_attention)
+                    sequences_created += 1
+
+                    if len(batch_dict["input_ids"]) == batch_size:
+                        cached_batches.append({
+                            "input_ids": jnp.array(batch_dict["input_ids"]),
+                            "attention_mask": jnp.array(batch_dict["attention_mask"]),
+                            "chunks": jnp.array(batch_dict["chunks"]),
+                            "chunk_attention_mask": jnp.array(batch_dict["chunk_attention_mask"]),
+                        })
+                        batch_dict = {"input_ids": [], "attention_mask": [], "chunks": [], "chunk_attention_mask": []}
+
+                if batch_dict["input_ids"]:
+                    cached_batches.append({
+                        "input_ids": jnp.array(batch_dict["input_ids"]),
+                        "attention_mask": jnp.array(batch_dict["attention_mask"]),
+                        "chunks": jnp.array(batch_dict["chunks"]),
+                        "chunk_attention_mask": jnp.array(batch_dict["chunk_attention_mask"]),
+                    })
+
+                print(f"Created {len(cached_batches)} batches ({sequences_created} sequences)")
+                return iter(cached_batches)
+            else:
+                # Legacy mode: each file is a separate example (may have padding)
+                processed_examples = [r for r in all_raw_tokens if r is not None]
+                print(f"Total sequences: {len(processed_examples)}")
+
+                # Create batches
+                cached_batches = []
+                batch_dict: dict[str, list] = {
+                    "input_ids": [], "attention_mask": [],
+                    "chunks": [], "chunk_attention_mask": [],
+                }
+
+                for example in processed_examples:
+                    if example is None:
+                        continue
+                    batch_dict["input_ids"].append(example["input_ids"])
+                    batch_dict["attention_mask"].append(example["attention_mask"])
+                    batch_dict["chunks"].append(example["chunks"])
+                    batch_dict["chunk_attention_mask"].append(example["chunk_attention_mask"])
+
+                    if len(batch_dict["input_ids"]) == batch_size:
+                        cached_batches.append({
+                            "input_ids": jnp.array(batch_dict["input_ids"]),
+                            "attention_mask": jnp.array(batch_dict["attention_mask"]),
+                            "chunks": jnp.array(batch_dict["chunks"]),
+                            "chunk_attention_mask": jnp.array(batch_dict["chunk_attention_mask"]),
+                        })
+                        batch_dict = {"input_ids": [], "attention_mask": [], "chunks": [], "chunk_attention_mask": []}
+
+                if batch_dict["input_ids"]:
+                    cached_batches.append({
+                        "input_ids": jnp.array(batch_dict["input_ids"]),
+                        "attention_mask": jnp.array(batch_dict["attention_mask"]),
+                        "chunks": jnp.array(batch_dict["chunks"]),
+                        "chunk_attention_mask": jnp.array(batch_dict["chunk_attention_mask"]),
+                    })
+
+                print(f"Created {len(cached_batches)} batches ready for training")
+                return iter(cached_batches)
     else:
         return _batch_generator()
