@@ -22,9 +22,12 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 
+from flax import nnx
+
 from ..data import create_data_iterator, get_tokenizer
 from ..models import GPT2Model, load_ttt_model
 from ..utils import cross_entropy_loss, per_sample_cross_entropy_loss
+from ..utils.checkpointing import load_checkpoint
 
 
 def parse_args():
@@ -36,6 +39,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="outputs/analysis")
     parser.add_argument("--num_workers", type=int, default=16)
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to trained TTT checkpoint")
     return parser.parse_args()
 
 
@@ -65,6 +69,33 @@ def main():
         load_pretrained=True,
         vocab_size=tokenizer.get_vocab_size(),
     )
+
+    # Load checkpoint if provided
+    if args.checkpoint:
+        print(f"Loading checkpoint from {args.checkpoint}...")
+        # Create a container for the trainable parts
+        class TrainableSystem(nnx.Module):
+            def __init__(self, ttt_model):
+                self.fast_layer = ttt_model.fast_layer
+                self.fast_norm = ttt_model.fast_norm
+                if hasattr(ttt_model, 'lm_head'):
+                    self.lm_head = ttt_model.lm_head
+                else:
+                    self.lm_head = None
+
+        trainable_system = TrainableSystem(ttt_model)
+        target = {
+            "state": {"model": nnx.state(trainable_system)},
+            "step": 0,
+            "metadata": {}
+        }
+        try:
+            ckpt = load_checkpoint(args.checkpoint, target=target)
+            nnx.update(trainable_system, ckpt["state"]["model"])
+            print(f"Loaded checkpoint from step {ckpt.get('step', 'unknown')}")
+        except Exception as e:
+            print(f"Warning: Could not load checkpoint: {e}")
+            print("Proceeding with random initialized TTT layer")
 
     # Data Iterator
     chunk_size = args.chunk_size
