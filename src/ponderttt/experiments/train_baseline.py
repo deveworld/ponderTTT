@@ -452,7 +452,8 @@ def main():
                     total_loss_ce += metrics["loss_ce"]
                     total_loss_total += metrics["loss_total"]
                     total_cost += cost_multiplier
-                    chunks_processed += 1
+                    # Count sample-chunks processed (batch_size samples per position)
+                    chunks_processed += batch_size
 
                     pbar.set_postfix(
                         {
@@ -461,7 +462,7 @@ def main():
                             "ppl": f"{metrics['perplexity']:.2f}",
                         }
                     )
-                    pbar.update(1)
+                    pbar.update(batch_size)
                     
                     # WandB Log
                     if args.wandb_project:

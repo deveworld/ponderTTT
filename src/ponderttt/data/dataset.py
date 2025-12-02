@@ -600,14 +600,7 @@ def create_data_iterator(
                     })
 
                 print(f"Using {sequences_created} sequences from cache ({len(cached_batches)} batches)")
-                # Debug: verify iterator yields all batches
-                def _debug_iter_cache():
-                    for i, batch in enumerate(cached_batches):
-                        if i < 3 or i >= len(cached_batches) - 2:
-                            print(f"  [DEBUG] Yielding batch {i+1}/{len(cached_batches)}")
-                        yield batch
-                    print(f"  [DEBUG] Iterator complete: yielded {len(cached_batches)} batches")
-                return _debug_iter_cache()
+                return iter(cached_batches)
             else:
                 # Cache exists but needs more data - will extend it
                 print(f"Cache has {cached_sequences} sequences, need {total_needed}. Extending...")
@@ -827,14 +820,7 @@ def create_data_iterator(
                     })
 
                 print(f"Created {len(cached_batches)} batches ({sequences_created} sequences)")
-                # Debug: verify iterator yields all batches
-                def _debug_iter():
-                    for i, batch in enumerate(cached_batches):
-                        if i < 3 or i >= len(cached_batches) - 2:
-                            print(f"  [DEBUG] Yielding batch {i+1}/{len(cached_batches)}")
-                        yield batch
-                    print(f"  [DEBUG] Iterator complete: yielded {len(cached_batches)} batches")
-                return _debug_iter()
+                return iter(cached_batches)
             else:
                 # Legacy mode: each file is a separate example (may have padding)
                 processed_examples = [r for r in all_raw_tokens if r is not None]
