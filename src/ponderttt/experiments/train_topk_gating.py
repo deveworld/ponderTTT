@@ -1,12 +1,16 @@
 """
-Train binary gating network for adaptive TTT with Hard Skip.
+Train binary gating network with Top-k Gating for adaptive TTT.
 
-Uses Gumbel-Softmax for differentiable binary (SKIP/UPDATE) decisions.
-- SKIP: No TTT computation (cost = 1.0x)
-- UPDATE: Full TTT computation (cost = 3.0x)
+Key insight: Instead of "UPDATE if advantage > 0", we ask
+"Which k% of chunks benefit MOST from TTT?"
+
+This ensures:
+1. Fair comparison with random baseline (same budget)
+2. Discriminative learning (relative ranking, not absolute threshold)
+3. Automatic sparsity control via k parameter
 
 Usage:
-    python -m ponderttt.experiments.train_hard_skip --model_scale 125m --target_skip_rate 0.5
+    python -m ponderttt.experiments.train_topk_gating --model_scale 125m --target_update_rate 0.3
 """
 
 import argparse
@@ -32,7 +36,7 @@ import wandb
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Train Hard Skip gating (Binary Gating with Gumbel-Softmax)")
+    parser = argparse.ArgumentParser(description="Train Top-k Gating (Discriminative Selection)")
 
     parser.add_argument(
         "--model_scale",
@@ -60,16 +64,10 @@ def parse_args():
         help="Batch size (sequences)",
     )
     parser.add_argument(
-        "--cost_weight",
+        "--target_update_rate",
         type=float,
-        default=0.1,
-        help="Weight for computational cost penalty",
-    )
-    parser.add_argument(
-        "--target_skip_rate",
-        type=float,
-        default=0.5,
-        help="Target skip rate (0.5 = skip 50%% of chunks, cost ~2.0x)",
+        default=0.3,
+        help="Target update rate (0.3 = top 30%% get UPDATE)",
     )
     parser.add_argument(
         "--initial_temperature",
@@ -92,7 +90,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="outputs/hard_skip",
+        default="outputs/topk_gating",
         help="Output directory",
     )
     parser.add_argument(
@@ -141,13 +139,30 @@ def parse_args():
         "--warmup_steps",
         type=int,
         default=500,
-        help="Number of steps to disable cost penalty for warmup",
+        help="Number of steps to disable gating loss for warmup",
     )
     parser.add_argument(
         "--beta_ttt",
         type=float,
         default=0.1,
         help="Weight for TTT auxiliary loss",
+    )
+    parser.add_argument(
+        "--threshold_ema_decay",
+        type=float,
+        default=0.99,
+        help="EMA decay for threshold tracking (for inference)",
+    )
+    parser.add_argument(
+        "--use_soft_topk",
+        action="store_true",
+        help="Use soft top-k (differentiable) instead of hard top-k",
+    )
+    parser.add_argument(
+        "--ranking_margin",
+        type=float,
+        default=0.0,
+        help="Margin for ranking loss (0 = pure BCE on top-k targets)",
     )
 
     return parser.parse_args()
@@ -171,17 +186,72 @@ def get_temperature(step: int, initial: float, minimum: float, anneal_steps: int
     return initial * decay
 
 
+def compute_topk_targets(advantages: jax.Array, k: float) -> tuple[jax.Array, jax.Array]:
+    """
+    Compute top-k targets based on advantage values.
+
+    Args:
+        advantages: Per-sample advantage values [B]
+        k: Target update rate (0.0 to 1.0), e.g., 0.3 means top 30%
+
+    Returns:
+        targets: Binary targets [B] where 1 = UPDATE (top k%), 0 = SKIP
+        threshold: The threshold value used for this batch
+    """
+    # Compute threshold: (1-k) percentile
+    # e.g., k=0.3 means top 30%, so threshold = 70th percentile
+    percentile = (1.0 - k) * 100.0
+    threshold = jnp.percentile(advantages, percentile)
+
+    # Samples with advantage >= threshold are in top-k
+    targets = (advantages >= threshold).astype(jnp.float32)
+
+    return targets, threshold
+
+
+def soft_topk_targets(advantages: jax.Array, k: float, temperature: float = 1.0) -> jax.Array:
+    """
+    Compute soft top-k targets using a differentiable approximation.
+
+    Instead of hard 0/1 targets, produces soft targets based on
+    relative ranking within the batch.
+
+    Args:
+        advantages: Per-sample advantage values [B]
+        k: Target update rate
+        temperature: Softness of the ranking (lower = harder)
+
+    Returns:
+        soft_targets: Soft targets [B] in range [0, 1]
+    """
+    # Normalize advantages to [0, 1] range using sigmoid
+    # This preserves relative ordering
+    adv_mean = jnp.mean(advantages)
+    adv_std = jnp.maximum(jnp.std(advantages), 1e-6)
+    adv_normalized = (advantages - adv_mean) / adv_std
+
+    # Shift to target k% having high probability
+    # If k=0.3, we want top 30% to have target > 0.5
+    # This means we need to shift by inverse_sigmoid(1-k)
+    # inverse_sigmoid(0.7) ≈ 0.85
+    shift = jnp.log(k / (1.0 - k + 1e-6))  # logit of k
+
+    soft_targets = jax.nn.sigmoid((adv_normalized - shift) / temperature)
+
+    return soft_targets
+
+
 def main():
     args = parse_args()
 
     print("=" * 60)
-    print("PonderTTT Hard Skip Training (Binary Gating with Gumbel-Softmax)")
+    print("PonderTTT Top-k Gating Training (Discriminative Selection)")
     print("=" * 60)
     print(f"Model scale: {args.model_scale}")
-    print(f"Target skip rate: {args.target_skip_rate}")
-    print(f"Cost weight (gamma): {args.cost_weight}")
+    print(f"Target update rate: {args.target_update_rate} (top {args.target_update_rate*100:.0f}%)")
     print(f"Temperature: {args.initial_temperature} -> {args.min_temperature} over {args.temperature_anneal_steps} steps")
     print(f"Warmup steps: {args.warmup_steps}")
+    print(f"Soft top-k: {args.use_soft_topk}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -206,19 +276,17 @@ def main():
         hidden_dim=64,
         initial_temperature=args.initial_temperature,
         min_temperature=args.min_temperature,
-        scale_when_update=1.0,  # Scale of 1.0 when UPDATE is chosen
+        scale_when_update=1.0,
     )
     rngs = nnx.Rngs(args.seed + 1)
     gating_net = BinaryGatingNetwork(config=gating_config, rngs=rngs)
 
-    # System container for optimization (Only Trainable Parts)
+    # System container for optimization
     class TrainableSystem(nnx.Module):
         def __init__(self, ttt_model, gating_net):
-            # Share references to trainable parts
             self.fast_layer = ttt_model.fast_layer
             self.fast_norm = ttt_model.fast_norm
             self.gating_net = gating_net
-            # Handle LM Head
             if hasattr(ttt_model, 'lm_head'):
                 self.lm_head = ttt_model.lm_head
             else:
@@ -231,7 +299,7 @@ def main():
         wandb.init(
             project=args.wandb_project,
             config=vars(args),
-            name=f"hard_skip_{args.model_scale}_skip{args.target_skip_rate}",
+            name=f"topk_{args.model_scale}_k{args.target_update_rate}",
         )
 
     # Optimizer
@@ -246,6 +314,9 @@ def main():
 
     # Resume from checkpoint if requested
     start_iteration = 0
+    threshold_ema = 0.0  # Will be initialized from first batch
+    threshold_ema_initialized = False
+
     if args.resume_from:
         print(f"Resuming from checkpoint: {args.resume_from}")
         target = {
@@ -257,7 +328,10 @@ def main():
         nnx.update(trainable_system, ckpt["state"]["model"])
         nnx.update(optimizer, ckpt["state"]["optimizer"])
         start_iteration = ckpt.get("step", 0)
-        print(f"Resumed from iteration {start_iteration}")
+        threshold_ema = ckpt.get("metadata", {}).get("threshold_ema", 0.0)
+        if threshold_ema != 0.0:
+            threshold_ema_initialized = True
+        print(f"Resumed from iteration {start_iteration}, threshold_ema={threshold_ema:.4f}")
 
     # Feature Extractor
     feature_extractor = FeatureExtractor(
@@ -295,34 +369,26 @@ def main():
         temperature: float,
         rng_key: jax.Array,
         is_warmup: bool,
+        target_update_rate: float = 0.3,
         beta_ttt: float = 0.1,
-        cost_weight: float = 0.1,
-        target_skip_rate: float = 0.5,
+        use_soft_topk: bool = False,
+        ranking_margin: float = 0.0,
         tie_word_embeddings: bool = True,
-        padding_threshold: float = 0.1,
     ):
         """
-        Training step with Hard Skip (binary gating).
+        Training step with Top-k Gating.
 
-        Args:
-            padding_threshold: Minimum fraction of valid tokens to consider a chunk as real code.
-                              Chunks with fewer valid tokens are excluded from cost penalty.
+        Key difference from advantage-supervised:
+        - Target is based on relative ranking (top k%) not absolute advantage
+        - Forces same budget as random baseline for fair comparison
+        - Learns discriminative selection rather than binary classification
         """
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         position_ids = batch.get("position_ids")
         labels = input_ids
 
-        # Compute valid token ratio to identify padding-only chunks
-        # valid_ratio: [B] - fraction of non-padding tokens per sample
-        valid_tokens_per_sample = jnp.sum(attention_mask, axis=-1)  # [B]
-        seq_len = attention_mask.shape[-1]
-        valid_ratio = valid_tokens_per_sample / seq_len  # [B]
-
-        # Mask for real code chunks (not padding-dominated)
-        is_real_code = valid_ratio > padding_threshold  # [B]
-
-        # 1. Base Model Forward (Frozen) - Always needed for features
+        # 1. Base Model Forward (Frozen)
         hidden_states = jax.lax.stop_gradient(base_model(
             input_ids,
             position_ids=position_ids,
@@ -348,21 +414,27 @@ def main():
         features = jax.lax.stop_gradient(features)
 
         def loss_fn(sys, rng):
-            # 2. Get binary gating decision (Gumbel-Softmax)
-            # Returns:
-            # - gating_scale: Scaled hard decision (for TTT execution)
-            # - decision_probs_hard: One-hot hard decision (for stats)
-            # - decision_probs_soft: Soft probabilities (for BCE loss)
-            # - decision_hard: Integer hard decision (for stats)
-            gating_scale, decision_probs_hard, decision_probs_soft, decision_hard = sys.gating_net(
+            # 2. Get gating logits and decisions
+            gating_scale, decision_probs_soft, decision_hard = sys.gating_net(
                 features,
                 train=True,
                 temperature=temperature,
                 rng_key=rng,
             )
 
-            # 3. Compute both SKIP and UPDATE outputs
-            # SKIP output: use base hidden states directly
+            # Get raw logits for ranking loss (before softmax)
+            # We need to recompute this from the network
+            B = features.shape[0]
+            x = features.astype(jnp.float32).reshape(B, -1)
+            x = sys.gating_net.input_norm(x)
+            x = sys.gating_net.fc1(x)
+            x = jax.nn.relu(x)
+            x = sys.gating_net.fc2(x)
+            x = jax.nn.relu(x)
+            gating_logits = sys.gating_net.head(x)  # [B, 2]
+            update_logit = gating_logits[:, 1] - gating_logits[:, 0]  # [B] logit for UPDATE
+
+            # 3. Compute SKIP and UPDATE outputs
             embedding_kernel = None
             if tie_word_embeddings:
                 embedding_kernel = jnp.asarray(base_model.wte.embedding)
@@ -379,7 +451,7 @@ def main():
                 mask=attention_mask,
                 position_ids=position_ids,
                 train=True,
-                gating_scale=jnp.ones_like(gating_scale),  # Full TTT when updating
+                gating_scale=jnp.ones_like(gating_scale),
             )
             adapted_hidden = hidden_states + fast_output
 
@@ -390,26 +462,7 @@ def main():
             else:
                 raise ValueError("LM Head not found")
 
-            # 4. Blend outputs based on soft decision (for differentiability)
-            # We use decision_probs_hard (one-hot) for execution path to test true hard routing
-            # But gradients flow through Straight-Through Estimator in Gumbel-Softmax
-            update_prob_hard_vec = decision_probs_hard[:, 1:2]  # [B, 1]
-
-            # 5. Compute CE loss for TTT training (always use update path)
-            ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:])
-
-            # === ADVANTAGE-SUPERVISED GATING (Oracle Distillation) ===
-            #
-            # Key insight: Train gating to predict actual TTT benefit (advantage).
-            # - Advantage = L_skip - L_update (how much TTT helps each chunk)
-            # - Z-score normalization handles the uniform mean problem
-            # - Gating learns: features → advantage prediction
-            #
-            # At inference: gating predicts advantage without running TTT
-            # High predicted advantage → UPDATE
-            # Low predicted advantage → SKIP
-
-            # 1. Compute per-sample advantage (oracle signal)
+            # 4. Compute per-sample losses and advantage
             ce_per_sample_skip = per_sample_cross_entropy_loss(
                 logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:]
             )
@@ -418,56 +471,62 @@ def main():
             )
             advantage_per_sample = ce_per_sample_skip - ce_per_sample_update  # [B]
 
-            # 2. Z-score normalize advantage within batch
-            # This spreads values around 0, making relative differences learnable
-            # FIX: Lower floor from 0.01 to 1e-6 to capture small advantages
-            adv_mean = jnp.mean(advantage_per_sample)
-            adv_std = jnp.maximum(jnp.std(advantage_per_sample), 1e-6)
-            adv_normalized = (advantage_per_sample - adv_mean) / adv_std  # [B]
-            # Clamp to prevent extreme sigmoid values
-            adv_normalized = jnp.clip(adv_normalized, -5.0, 5.0)
+            # === TOP-K GATING ===
+            # Key insight: Instead of "advantage > 0 → UPDATE",
+            # we ask "Is this sample in the top k% of advantages?"
 
-            # 3. Create soft supervision target from normalized advantage
-            # High advantage (z > 0) → target > 0.5 → should UPDATE
-            # Low advantage (z < 0) → target < 0.5 → should SKIP
-            target_update_prob = jax.nn.sigmoid(adv_normalized)  # [B]
-            target_update_prob = jax.lax.stop_gradient(target_update_prob)
+            # 5. Compute top-k targets
+            if use_soft_topk:
+                # Soft targets based on relative ranking
+                topk_targets = soft_topk_targets(
+                    advantage_per_sample,
+                    k=target_update_rate,
+                    temperature=1.0
+                )
+                batch_threshold = jnp.array(0.0)  # Not used for soft
+            else:
+                # Hard targets: top k% get 1, rest get 0
+                topk_targets, batch_threshold = compute_topk_targets(
+                    advantage_per_sample,
+                    k=target_update_rate
+                )
 
-            # 4. Per-sample update probability from gating network
-            # FIX: Use decision_probs_soft for BCE loss to avoid log(0) instability
+            topk_targets = jax.lax.stop_gradient(topk_targets)
+            batch_threshold = jax.lax.stop_gradient(batch_threshold)
+
+            # 6. Gating loss: BCE on top-k targets
             update_prob_soft = decision_probs_soft[:, 1]  # [B]
-            
-            # Clamp for numerical stability in BCE
             eps = 1e-6
             update_prob_clamped = jnp.clip(update_prob_soft, eps, 1.0 - eps)
-            target_clamped = jnp.clip(target_update_prob, eps, 1.0 - eps)
+            target_clamped = jnp.clip(topk_targets, eps, 1.0 - eps)
 
-            # 5. BCE loss: train gating to predict advantage-based target
             bce_loss = -(
                 target_clamped * jnp.log(update_prob_clamped) +
                 (1 - target_clamped) * jnp.log(1 - update_prob_clamped)
             )
             gating_bce_loss = jnp.mean(bce_loss)
 
-            # 6. Bidirectional skip rate enforcement
-            # Penalize deviation from target skip rate in BOTH directions
-            # This prevents collapse to 100% skip or 100% update
-            target_update_rate = 1.0 - target_skip_rate  # e.g., 0.5 if target_skip_rate=0.5
-            
-            # Use soft probabilities for rate regularization too
-            actual_update_rate = jnp.mean(update_prob_soft)
-            skip_rate_loss = cost_weight * 10.0 * (actual_update_rate - target_update_rate) ** 2
+            # 7. Optional: Ranking margin loss
+            # Encourages logit_i > logit_j + margin when adv_i > adv_j
+            ranking_loss = jnp.array(0.0)
+            if ranking_margin > 0:
+                # Pairwise ranking loss (simplified: compare to batch mean)
+                mean_logit = jnp.mean(update_logit)
+                should_be_above = topk_targets  # Samples that should have high logits
+                # Loss: max(0, margin - (logit - mean_logit)) for top-k samples
+                # Loss: max(0, margin - (mean_logit - logit)) for non-top-k samples
+                margin_violation_topk = jnp.maximum(0, ranking_margin - (update_logit - mean_logit))
+                margin_violation_other = jnp.maximum(0, ranking_margin - (mean_logit - update_logit))
+                ranking_loss = jnp.mean(
+                    should_be_above * margin_violation_topk +
+                    (1 - should_be_above) * margin_violation_other
+                )
 
-            # Combined gating loss
-            gating_quality_loss = gating_bce_loss + skip_rate_loss
+            # Combined gating loss (no skip rate regularizer needed - k controls rate)
+            gating_quality_loss = gating_bce_loss + ranking_loss
 
-            # For logging
-            advantage_per_sample = jax.lax.stop_gradient(advantage_per_sample)
-            advantage = jnp.mean(advantage_per_sample)
-
-            # CE loss for TTT parameters: ALWAYS use ce_loss_update
-            # The gating decision affects inference cost, not training.
-            # TTT should always learn to improve predictions.
+            # 8. CE loss for TTT (always use update path for training TTT)
+            ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:])
             ce_loss = ce_loss_update
 
             # TTT auxiliary loss
@@ -478,51 +537,54 @@ def main():
             else:
                 l_ttt = jnp.array(0.0)
 
-            # For logging: compute stats on real code chunks
-            update_prob_flat = update_prob_soft  # Use soft for logging
-            num_real_code = jnp.maximum(jnp.sum(is_real_code.astype(jnp.float32)), 1.0)
-            avg_update_prob = jnp.mean(update_prob_flat)
-
-            # Apply warmup (disable gating loss during warmup to let TTT stabilize first)
+            # Apply warmup
             gating_quality_loss = jnp.where(is_warmup, 0.0, gating_quality_loss)
 
-            # Cost penalty for logging
-            cost_penalty = gating_quality_loss
-
-            # Total loss: CE (for TTT) + TTT aux + Gating loss
+            # Total loss
             total_loss = ce_loss + beta_ttt * l_ttt + gating_quality_loss
 
-            # Compute actual cost for logging
-            # Hard decision cost: SKIP=1.0, UPDATE=3.0
-            hard_cost = jnp.mean(jnp.where(decision_hard == 1, 3.0, 1.0))
-
-            # Skip rate on real code only
-            skip_on_real = jnp.sum((decision_hard == 0).astype(jnp.float32) * is_real_code.astype(jnp.float32)) / num_real_code
-
-            # Compute stats for logging
+            # Logging stats
+            advantage = jnp.mean(advantage_per_sample)
             advantage_std = jnp.std(advantage_per_sample)
+            hard_cost = jnp.mean(jnp.where(decision_hard == 1, 3.0, 1.0))
+            actual_update_rate = jnp.mean(decision_hard.astype(jnp.float32))
 
-            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_quality_loss, adv_mean, adv_std, advantage_std)
+            # How well does the learned gating match top-k oracle?
+            topk_match_rate = jnp.mean((decision_hard == topk_targets.astype(jnp.int32)).astype(jnp.float32))
+
+            return total_loss, (
+                ce_loss, l_ttt, gating_quality_loss,
+                jnp.mean(update_prob_soft), hard_cost, decision_hard,
+                advantage, advantage_std,
+                batch_threshold, topk_match_rate, actual_update_rate,
+                gating_bce_loss, ranking_loss
+            )
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
         (loss, aux), grads = grad_fn(trainable_sys, rng_key)
-        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_loss, adv_mean, adv_std_batch, adv_std = aux
+        (ce_loss, l_ttt, gating_loss, avg_update_prob, hard_cost, decision_hard,
+         advantage, advantage_std, batch_threshold, topk_match_rate, actual_update_rate,
+         bce_loss, ranking_loss) = aux
 
         optimizer.update(trainable_sys, grads)
 
-        # Compute skip rate from hard decisions (overall)
-        skip_rate = jnp.mean(decision_hard == 0)
+        skip_rate = 1.0 - actual_update_rate
 
-        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code, advantage, gating_loss, adv_mean, adv_std_batch, adv_std
+        return (loss, ce_loss, l_ttt, gating_loss, avg_update_prob, hard_cost,
+                skip_rate, advantage, advantage_std, batch_threshold,
+                topk_match_rate, bce_loss, ranking_loss)
 
     # JIT compile training step
     train_step_jit = nnx.jit(
         train_step,
-        static_argnames=("beta_ttt", "cost_weight", "target_skip_rate", "tie_word_embeddings", "padding_threshold"),
+        static_argnames=("target_update_rate", "beta_ttt", "use_soft_topk", "ranking_margin", "tie_word_embeddings"),
     )
 
     # History tracking
     history = []
+
+    # Advantage distribution tracking (for analysis)
+    advantage_history = []
 
     print("Starting training...")
     if start_iteration > 0:
@@ -530,6 +592,7 @@ def main():
 
     iter_count = start_iteration
     temperature = args.initial_temperature
+
     for i, sequence_batch in enumerate(data_iter):
         if i < start_iteration:
             continue
@@ -537,7 +600,6 @@ def main():
         if iter_count >= args.num_iterations:
             break
 
-        # Process chunks in sequence
         chunks = sequence_batch["chunks"]
         masks = sequence_batch["chunk_attention_mask"]
         num_chunks = chunks.shape[1]
@@ -550,24 +612,22 @@ def main():
             args.temperature_anneal_steps
         )
 
-        # Check if in warmup period
         is_warmup = iter_count < args.warmup_steps
 
         # Aggregate stats
         total_loss = 0.0
         total_ce_loss = 0.0
         total_l_ttt = 0.0
-        total_cost = 0.0
+        total_gating_loss = 0.0
         total_update_prob = 0.0
         total_hard_cost = 0.0
         total_skip_rate = 0.0
-        total_skip_on_real = 0.0
-        total_real_code_chunks = 0.0
         total_advantage = 0.0
-        total_gating_loss = 0.0
-        total_adv_mean = 0.0
-        total_adv_std_batch = 0.0
-        total_adv_std = 0.0
+        total_advantage_std = 0.0
+        total_threshold = 0.0
+        total_topk_match = 0.0
+        total_bce_loss = 0.0
+        total_ranking_loss = 0.0
         valid_chunks = 0
 
         feature_extractor.reset_history()
@@ -583,48 +643,56 @@ def main():
                 )[None, :].repeat(chunks.shape[0], axis=0)
             }
 
-            # Check for valid tokens
             num_valid_tokens = jnp.sum(chunk_batch["attention_mask"][:, 1:])
             if num_valid_tokens < 16:
                 continue
 
-            # Get new random key
             rng_key, subkey = jax.random.split(rng_key)
 
-            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real, adv, gate_loss, adv_mean, adv_std_batch, adv_std = train_step_jit(
+            results = train_step_jit(
                 trainable_system,
                 optimizer,
-                cast(GPT2Model, ttt_model.base_model),  # train_hard_skip is GPT2-specific
+                cast(GPT2Model, ttt_model.base_model),
                 chunk_batch,
                 temperature,
                 subkey,
                 is_warmup,
+                target_update_rate=args.target_update_rate,
                 beta_ttt=args.beta_ttt,
-                cost_weight=args.cost_weight,
-                target_skip_rate=args.target_skip_rate,
+                use_soft_topk=args.use_soft_topk,
+                ranking_margin=args.ranking_margin,
                 tie_word_embeddings=ttt_model.tie_word_embeddings,
-                padding_threshold=0.1,
             )
+
+            (loss, ce, l_ttt, gating_loss, update_prob, hard_cost,
+             skip_rate, adv, adv_std, batch_threshold, topk_match,
+             bce_loss, ranking_loss) = results
 
             # Stability check
             if not jnp.isfinite(loss) or float(ce) > 20.0:
                 print(f"Warning: Skipping unstable batch (loss={loss:.4f}, ce={ce:.4f})")
                 continue
 
+            # Update threshold EMA
+            if not threshold_ema_initialized:
+                threshold_ema = float(batch_threshold)
+                threshold_ema_initialized = True
+            else:
+                threshold_ema = args.threshold_ema_decay * threshold_ema + (1 - args.threshold_ema_decay) * float(batch_threshold)
+
             total_loss += float(loss)
             total_ce_loss += float(ce)
             total_l_ttt += float(l_ttt)
-            total_cost += float(cost)
+            total_gating_loss += float(gating_loss)
             total_update_prob += float(update_prob)
             total_hard_cost += float(hard_cost)
             total_skip_rate += float(skip_rate)
-            total_skip_on_real += float(skip_on_real) * float(num_real)
-            total_real_code_chunks += float(num_real)
             total_advantage += float(adv)
-            total_gating_loss += float(gate_loss)
-            total_adv_mean += float(adv_mean)
-            total_adv_std_batch += float(adv_std_batch)
-            total_adv_std += float(adv_std)
+            total_advantage_std += float(adv_std)
+            total_threshold += float(batch_threshold)
+            total_topk_match += float(topk_match)
+            total_bce_loss += float(bce_loss)
+            total_ranking_loss += float(ranking_loss)
             valid_chunks += 1
 
             feature_extractor.update_history(float(ce), float(hard_cost))
@@ -637,23 +705,25 @@ def main():
         avg_loss = total_loss / valid_chunks
         avg_ce_loss = total_ce_loss / valid_chunks
         avg_l_ttt = total_l_ttt / valid_chunks
+        avg_gating_loss = total_gating_loss / valid_chunks
         avg_update_prob = total_update_prob / valid_chunks
         avg_hard_cost = total_hard_cost / valid_chunks
         avg_skip_rate = total_skip_rate / valid_chunks
-        avg_skip_on_real = total_skip_on_real / max(total_real_code_chunks, 1.0)
         avg_advantage = total_advantage / valid_chunks
-        avg_gating_loss = total_gating_loss / valid_chunks
-        avg_adv_mean = total_adv_mean / valid_chunks
-        avg_adv_std_batch = total_adv_std_batch / valid_chunks
-        avg_adv_std = total_adv_std / valid_chunks
-        perplexity = math.exp(min(avg_ce_loss, 10.0))  # Cap to avoid overflow
+        avg_advantage_std = total_advantage_std / valid_chunks
+        avg_threshold = total_threshold / valid_chunks
+        avg_topk_match = total_topk_match / valid_chunks
+        avg_bce_loss = total_bce_loss / valid_chunks
+        avg_ranking_loss = total_ranking_loss / valid_chunks
+        perplexity = math.exp(min(avg_ce_loss, 10.0))
 
         warmup_status = " [WARMUP]" if is_warmup else ""
         print(
             f"Iter {iter_count+1}{warmup_status}: Loss={avg_loss:.4f}, "
             f"CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
-            f"SkipRate={avg_skip_rate:.2%} (real:{avg_skip_on_real:.2%}), Cost={avg_hard_cost:.2f}x, "
-            f"Adv={avg_advantage:.4f}±{avg_adv_std:.4f}, AdvBatch={avg_adv_mean:.4f}±{avg_adv_std_batch:.4f}, Temp={temperature:.3f}"
+            f"SkipRate={avg_skip_rate:.2%}, TopkMatch={avg_topk_match:.2%}, "
+            f"Cost={avg_hard_cost:.2f}x, Adv={avg_advantage:.4f}±{avg_advantage_std:.4f}, "
+            f"Thresh={avg_threshold:.4f} (EMA:{threshold_ema:.4f}), Temp={temperature:.3f}"
         )
 
         # WandB Logging
@@ -663,19 +733,20 @@ def main():
                 "loss_ce": avg_ce_loss,
                 "perplexity": perplexity,
                 "l_ttt": avg_l_ttt,
+                "gating_loss": avg_gating_loss,
+                "bce_loss": avg_bce_loss,
+                "ranking_loss": avg_ranking_loss,
                 "update_prob": avg_update_prob,
                 "skip_rate": avg_skip_rate,
-                "skip_rate_real_code": avg_skip_on_real,
+                "topk_match_rate": avg_topk_match,
                 "hard_cost": avg_hard_cost,
                 "temperature": temperature,
                 "is_warmup": float(is_warmup),
                 "iteration": iter_count + 1,
-                "real_code_chunks": total_real_code_chunks,
-                "advantage": avg_advantage,
-                "advantage_std": avg_adv_std,
-                "advantage_batch_mean": avg_adv_mean,
-                "advantage_batch_std": avg_adv_std_batch,
-                "gating_loss": avg_gating_loss,
+                "advantage_mean": avg_advantage,
+                "advantage_std": avg_advantage_std,
+                "batch_threshold": avg_threshold,
+                "threshold_ema": threshold_ema,
             })
 
         history.append({
@@ -683,13 +754,14 @@ def main():
             "loss_total": avg_loss,
             "loss_ce": avg_ce_loss,
             "perplexity": perplexity,
-            "l_ttt": avg_l_ttt,
-            "update_prob": avg_update_prob,
             "skip_rate": avg_skip_rate,
-            "skip_rate_real_code": avg_skip_on_real,
+            "topk_match_rate": avg_topk_match,
             "hard_cost": avg_hard_cost,
             "temperature": temperature,
             "is_warmup": is_warmup,
+            "advantage_mean": avg_advantage,
+            "advantage_std": avg_advantage_std,
+            "threshold_ema": threshold_ema,
         })
 
         # Periodic Checkpoint
@@ -701,15 +773,16 @@ def main():
                 state={"model": nnx.state(trainable_system), "optimizer": nnx.state(optimizer)},
                 metadata={
                     "model_scale": args.model_scale,
-                    "target_skip_rate": args.target_skip_rate,
+                    "target_update_rate": args.target_update_rate,
                     "temperature": temperature,
+                    "threshold_ema": threshold_ema,
                 }
             )
 
         iter_count += 1
 
     # Save results
-    with open(output_dir / "history_hard_skip.json", "w") as f:
+    with open(output_dir / "history_topk_gating.json", "w") as f:
         json.dump(history, f, indent=2)
 
     # Save Final Checkpoint
@@ -720,8 +793,9 @@ def main():
         state={"model": nnx.state(trainable_system), "optimizer": nnx.state(optimizer)},
         metadata={
             "model_scale": args.model_scale,
-            "target_skip_rate": args.target_skip_rate,
+            "target_update_rate": args.target_update_rate,
             "final_temperature": temperature,
+            "threshold_ema": threshold_ema,
         }
     )
     finalize_checkpointing()
@@ -733,9 +807,12 @@ def main():
     print("=" * 60)
     if history:
         final_stats = history[-1]
+        print(f"Target Update Rate: {args.target_update_rate:.0%}")
         print(f"Final Skip Rate: {final_stats['skip_rate']:.2%}")
+        print(f"Final Top-k Match Rate: {final_stats['topk_match_rate']:.2%}")
         print(f"Final Cost: {final_stats['hard_cost']:.2f}x")
         print(f"Final Perplexity: {final_stats['perplexity']:.2f}")
+        print(f"Threshold EMA (for inference): {threshold_ema:.4f}")
 
     if args.wandb_project:
         wandb.finish()

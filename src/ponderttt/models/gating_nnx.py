@@ -191,7 +191,7 @@ class BinaryGatingNetwork(nnx.Module):
         train: bool = False,
         temperature: float | None = None,
         rng_key: jax.Array | None = None,
-    ) -> Tuple[jax.Array, jax.Array, jax.Array]:
+    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Forward pass.
 
@@ -203,9 +203,10 @@ class BinaryGatingNetwork(nnx.Module):
 
         Returns:
             Tuple of:
-            - gating_scale: [batch, 1] - 0.0 for SKIP, scale_when_update for UPDATE
-            - decision_probs: [batch, 2] - soft probabilities [P(SKIP), P(UPDATE)]
-            - decision_hard: [batch] - hard decisions (0=SKIP, 1=UPDATE)
+            - gating_scale: [batch, 1] - 0.0 for SKIP, scale_when_update for UPDATE (derived from HARD decision)
+            - decision_probs_hard: [batch, 2] - One-hot probabilities from Gumbel-Softmax (for execution path)
+            - decision_probs_soft: [batch, 2] - Soft probabilities (for BCE loss)
+            - decision_hard: [batch] - Integer hard decisions (0=SKIP, 1=UPDATE)
         """
         B = features.shape[0]
         x = features.astype(jnp.float32).reshape(B, -1)
@@ -225,23 +226,48 @@ class BinaryGatingNetwork(nnx.Module):
         temp = temperature if temperature is not None else self.config.initial_temperature
 
         if train and rng_key is not None:
-            # Training: Gumbel-Softmax with straight-through estimator
-            decision_probs = gumbel_softmax(logits, temp, hard=True, rng_key=rng_key)
-            # Hard decision from Gumbel-Softmax (includes noise)
-            decision_hard = jnp.argmax(decision_probs, axis=-1)  # [batch]
+            # Training: Gumbel-Softmax
+            # 1. Soft probs for Loss (gradient source 1)
+            decision_probs_soft = gumbel_softmax(logits, temp, hard=False, rng_key=rng_key)
+            
+            # 2. Hard probs for Execution (gradient source 2 via Straight-Through)
+            # We re-use the logic from gumbel_softmax(hard=True) but manually to ensure consistency if needed,
+            # or just call it again with the same key/noise if possible.
+            # However, gumbel_softmax samples noise inside.
+            # To ensure hard and soft are consistent (same noise), we should sample noise once.
+            
+            # Sample Gumbel noise once
+            gumbel_noise = jax.random.gumbel(rng_key, logits.shape)
+            y_soft = jax.nn.softmax((logits + gumbel_noise) / temp, axis=-1)
+            
+            # Hard conversion (Straight-Through)
+            y_hard = jax.nn.one_hot(jnp.argmax(y_soft, axis=-1), logits.shape[-1])
+            decision_probs_hard = y_hard - jax.lax.stop_gradient(y_soft) + y_soft
+            
+            # decision_probs_soft should be the one with noise? 
+            # Usually BCE uses the pure logits-based probability or the gumbel-soft one?
+            # For "oracle distillation", we want the network's *prediction* (logits) to match the target.
+            # The noise is for exploration.
+            # If we use noisy soft probs for BCE, we are training the "noisy" output.
+            # Standard practice for Gumbel-Softmax is usually to minimize task loss.
+            # Here we have an auxiliary supervision (BCE).
+            # Using the pure logits-softmax for BCE is cleaner for supervision.
+            decision_probs_soft = jax.nn.softmax(logits / temp, axis=-1)
+            
+            decision_hard = jnp.argmax(y_soft, axis=-1)  # [batch]
+
         else:
-            # Evaluation: deterministic softmax
-            decision_probs = jax.nn.softmax(logits / temp, axis=-1)
-            # Hard decision from soft probability (threshold 0.5)
-            # This ensures consistency with training where soft probs drive learning
-            decision_hard = (decision_probs[:, 1] > 0.5).astype(jnp.int32)  # [batch]
+            # Evaluation: deterministic
+            decision_probs_soft = jax.nn.softmax(logits / temp, axis=-1)
+            decision_probs_hard = jax.nn.one_hot(jnp.argmax(decision_probs_soft, axis=-1), 2)
+            decision_hard = (decision_probs_soft[:, 1] > 0.5).astype(jnp.int32)  # [batch]
 
         # Gating scale: 0 for SKIP, scale_when_update for UPDATE
-        # Use soft probabilities for differentiable training
-        update_prob = decision_probs[:, 1:2]  # [batch, 1] - probability of UPDATE
-        gating_scale = update_prob * self.config.scale_when_update
+        # Use HARD probabilities for the actual TTT update mask
+        update_prob_hard = decision_probs_hard[:, 1:2]  # [batch, 1]
+        gating_scale = update_prob_hard * self.config.scale_when_update
 
-        return gating_scale, decision_probs, decision_hard
+        return gating_scale, decision_probs_hard, decision_probs_soft, decision_hard
 
     def get_decision(
         self,
@@ -263,8 +289,8 @@ class BinaryGatingNetwork(nnx.Module):
             - gating_scale: [batch, 1] - 0.0 for SKIP, scale_when_update for UPDATE
             - decision: [batch] - hard decisions (0=SKIP, 1=UPDATE)
         """
-        _, decision_probs, _ = self(features, train=False)
-        update_prob = decision_probs[:, 1]  # [batch]
+        _, _, decision_probs_soft, _ = self(features, train=False)
+        update_prob = decision_probs_soft[:, 1]  # [batch]
 
         if rng_key is not None:
             # Stochastic sampling: sample from Bernoulli(update_prob)
