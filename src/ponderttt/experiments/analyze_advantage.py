@@ -83,7 +83,7 @@ def main():
     )
 
     # JIT compiled evaluation function
-    @jax.jit
+    @jax.jit(static_argnames=("tie_word_embeddings",))
     def compute_advantages(
         base_model: GPT2Model,
         fast_layer,
