@@ -193,7 +193,7 @@ phase3_eval_id() {
 
     # 125M
     local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_skip0.8")
-    local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1")
+    local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
     if [ -z "$ckpt_125m" ]; then
         log_error "No checkpoint found for 125M Hard Skip"
     else
@@ -212,7 +212,7 @@ phase3_eval_id() {
 
     # 350M
     local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_skip0.8")
-    local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1")
+    local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
     if [ -z "$ckpt_350m" ]; then
         log_error "No checkpoint found for 350M Hard Skip"
     else
@@ -245,8 +245,8 @@ phase4_eval_ood() {
     local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_skip0.8")
 
     # Get UPDATE_1 checkpoints for baselines
-    local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1")
-    local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1")
+    local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
+    local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
 
     # 125M OOD
     if [ -z "$ckpt_125m" ]; then
