@@ -19,13 +19,22 @@
 
 # NOTE: No 'set -e' - we want to continue even if individual experiments fail
 
-# Configuration
+# Configuration - Common
 NUM_WORKERS=128
-BATCH_SIZE=16
-NUM_ITERATIONS=10000
-MAX_CHUNKS=100000
-NUM_EVAL_BATCHES=1000
-NUM_EVAL_BATCHES_OOD=500
+
+# Configuration - 125M Model
+BATCH_SIZE_125M=16
+NUM_ITERATIONS_125M=10000
+MAX_CHUNKS_125M=100000
+NUM_EVAL_BATCHES_125M=1000
+NUM_EVAL_BATCHES_OOD_125M=500
+
+# Configuration - 350M Model
+BATCH_SIZE_350M=8
+NUM_ITERATIONS_350M=10000
+MAX_CHUNKS_350M=100000
+NUM_EVAL_BATCHES_350M=1000
+NUM_EVAL_BATCHES_OOD_350M=500
 
 # Track failures
 declare -a FAILED_EXPERIMENTS=()
@@ -109,45 +118,45 @@ phase1_baselines() {
     # 125M Baselines
     run_experiment "125M UPDATE_1" \
         python -m ponderttt.experiments.train_baseline \
-            --model_scale 125m --action UPDATE_1 --max_chunks $MAX_CHUNKS \
+            --model_scale 125m --action UPDATE_1 --max_chunks $MAX_CHUNKS_125M \
             --output_dir outputs/baselines/125m_update1 \
-            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE \
+            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_125M \
             --wandb_project ponderttt-125m
 
     run_experiment "125M UPDATE_2" \
         python -m ponderttt.experiments.train_baseline \
-            --model_scale 125m --action UPDATE_2 --max_chunks $MAX_CHUNKS \
+            --model_scale 125m --action UPDATE_2 --max_chunks $MAX_CHUNKS_125M \
             --output_dir outputs/baselines/125m_update2 \
-            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE \
+            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_125M \
             --wandb_project ponderttt-125m
 
     run_experiment "125M UPDATE_4" \
         python -m ponderttt.experiments.train_baseline \
-            --model_scale 125m --action UPDATE_4 --max_chunks $MAX_CHUNKS \
+            --model_scale 125m --action UPDATE_4 --max_chunks $MAX_CHUNKS_125M \
             --output_dir outputs/baselines/125m_update4 \
-            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE \
+            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_125M \
             --wandb_project ponderttt-125m
 
     # 350M Baselines
     run_experiment "350M UPDATE_1" \
         python -m ponderttt.experiments.train_baseline \
-            --model_scale 350m --action UPDATE_1 --max_chunks $MAX_CHUNKS \
+            --model_scale 350m --action UPDATE_1 --max_chunks $MAX_CHUNKS_350M \
             --output_dir outputs/baselines/350m_update1 \
-            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE \
+            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_350M \
             --wandb_project ponderttt-350m
 
     run_experiment "350M UPDATE_2" \
         python -m ponderttt.experiments.train_baseline \
-            --model_scale 350m --action UPDATE_2 --max_chunks $MAX_CHUNKS \
+            --model_scale 350m --action UPDATE_2 --max_chunks $MAX_CHUNKS_350M \
             --output_dir outputs/baselines/350m_update2 \
-            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE \
+            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_350M \
             --wandb_project ponderttt-350m
 
     run_experiment "350M UPDATE_4" \
         python -m ponderttt.experiments.train_baseline \
-            --model_scale 350m --action UPDATE_4 --max_chunks $MAX_CHUNKS \
+            --model_scale 350m --action UPDATE_4 --max_chunks $MAX_CHUNKS_350M \
             --output_dir outputs/baselines/350m_update4 \
-            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE \
+            --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_350M \
             --wandb_project ponderttt-350m
 
     log_info "Phase 1 Complete!"
@@ -167,7 +176,7 @@ phase2_hard_skip() {
     run_experiment "125M Hard Skip (target_update=0.5)" \
         python -m ponderttt.experiments.train_hard_skip \
             --model_scale 125m --target_update_rate 0.5 \
-            --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
+            --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
             --output_dir outputs/hard_skip/125m_update0.5 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-125m
 
@@ -175,7 +184,7 @@ phase2_hard_skip() {
     run_experiment "125M Hard Skip (target_update=0.2)" \
         python -m ponderttt.experiments.train_hard_skip \
             --model_scale 125m --target_update_rate 0.2 \
-            --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
+            --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
             --output_dir outputs/hard_skip/125m_update0.2 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-125m
 
@@ -183,14 +192,14 @@ phase2_hard_skip() {
     run_experiment "350M Hard Skip (target_update=0.5)" \
         python -m ponderttt.experiments.train_hard_skip \
             --model_scale 350m --target_update_rate 0.5 \
-            --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
+            --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
             --output_dir outputs/hard_skip/350m_update0.5 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-350m
 
     run_experiment "350M Hard Skip (target_update=0.2)" \
         python -m ponderttt.experiments.train_hard_skip \
             --model_scale 350m --target_update_rate 0.2 \
-            --num_iterations $NUM_ITERATIONS --batch_size $BATCH_SIZE \
+            --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
             --output_dir outputs/hard_skip/350m_update0.2 \
             --num_workers $NUM_WORKERS --wandb_project ponderttt-350m
 
@@ -221,7 +230,7 @@ phase3_eval_id() {
                 --model_scale 125m \
                 --binary_gating_checkpoint "$ckpt_125m" \
                 --update1_checkpoint "$ckpt_125m_update1" \
-                --num_eval_batches $NUM_EVAL_BATCHES \
+                --num_eval_batches $NUM_EVAL_BATCHES_125M \
                 --language Python \
                 --skip_examples $SKIP_EXAMPLES \
                 --output_dir outputs/eval/125m_python
@@ -240,7 +249,7 @@ phase3_eval_id() {
                 --model_scale 350m \
                 --binary_gating_checkpoint "$ckpt_350m" \
                 --update1_checkpoint "$ckpt_350m_update1" \
-                --num_eval_batches $NUM_EVAL_BATCHES \
+                --num_eval_batches $NUM_EVAL_BATCHES_350M \
                 --language Python \
                 --skip_examples $SKIP_EXAMPLES \
                 --output_dir outputs/eval/350m_python
@@ -278,7 +287,7 @@ phase4_eval_ood() {
                     --model_scale 125m \
                     --binary_gating_checkpoint "$ckpt_125m" \
                     --update1_checkpoint "$ckpt_125m_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_OOD \
+                    --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
                     --language "$lang" \
                     --output_dir "outputs/eval/125m_${lang_lower}"
         done
@@ -296,7 +305,7 @@ phase4_eval_ood() {
                     --model_scale 350m \
                     --binary_gating_checkpoint "$ckpt_350m" \
                     --update1_checkpoint "$ckpt_350m_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_OOD \
+                    --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
                     --language "$lang" \
                     --output_dir "outputs/eval/350m_${lang_lower}"
         done
