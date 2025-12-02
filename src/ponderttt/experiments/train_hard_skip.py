@@ -340,16 +340,16 @@ def main():
     chunk_size = args.chunk_size
     seq_length = 1024
     chunks_per_sequence = max(1, seq_length // chunk_size)
-    total_chunks = args.num_iterations * chunks_per_sequence
-    examples_needed = math.ceil(total_chunks / chunks_per_sequence)
-    max_examples = examples_needed * args.batch_size
+    # Each iteration processes one batch of batch_size sequences
+    # So we need num_iterations * batch_size sequences total
+    examples_needed = args.num_iterations * args.batch_size
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         split="train",
         batch_size=args.batch_size,
         seq_length=seq_length,
         chunk_size=chunk_size,
-        max_examples=max_examples,
+        max_examples=examples_needed,
         num_workers=args.num_workers,
     )
 

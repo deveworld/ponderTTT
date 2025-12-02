@@ -226,7 +226,7 @@ def main():
             batch_size=batch_size,
             seq_length=seq_length,
             chunk_size=chunk_size,
-            max_examples=examples_needed * batch_size,
+            max_examples=examples_needed,  # number of sequences, not batches
             num_workers=args.num_workers,
         )
 
@@ -359,7 +359,7 @@ def main():
             batch_size=batch_size,
             seq_length=seq_length,
             chunk_size=chunk_size,
-            max_examples=examples_needed * batch_size,
+            max_examples=examples_needed,  # number of sequences, not batches
             num_workers=args.num_workers,
         )
 
