@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import functools
 import json
 import math
 from pathlib import Path
@@ -26,7 +27,7 @@ from flax import nnx
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import GPT2Model, load_ttt_model
-from ..utils import cross_entropy_loss, per_sample_cross_entropy_loss
+from ..utils import per_sample_cross_entropy_loss
 from ..utils.checkpointing import load_checkpoint
 
 
@@ -111,7 +112,7 @@ def main():
     )
 
     # JIT compiled evaluation function
-    @jax.jit(static_argnames=("tie_word_embeddings",))
+    @functools.partial(jax.jit, static_argnames=("tie_word_embeddings",))
     def compute_advantages(
         base_model: GPT2Model,
         fast_layer,
@@ -147,7 +148,7 @@ def main():
         adapted_hidden = hidden_states + fast_output
 
         if tie_word_embeddings:
-            logits_update = adapted_hidden @ embedding_kernel.T
+            logits_update = adapted_hidden @ jnp.asarray(base_model.wte.embedding).T
         else:
             logits_update = adapted_hidden
 
@@ -227,7 +228,7 @@ def main():
     print("ADVANTAGE DISTRIBUTION ANALYSIS")
     print("=" * 60)
 
-    print(f"\nAdvantage Statistics:")
+    print("\nAdvantage Statistics:")
     print(f"  Mean: {advantages.mean():.4f}")
     print(f"  Std:  {advantages.std():.4f}")
     print(f"  Min:  {advantages.min():.4f}")
@@ -240,7 +241,7 @@ def main():
 
     # Percentiles
     percentiles = [10, 25, 50, 75, 90, 95, 99]
-    print(f"\n  Percentiles:")
+    print("\n  Percentiles:")
     for p in percentiles:
         val = np.percentile(advantages, p)
         print(f"    {p}th: {val:.4f}")
@@ -367,7 +368,7 @@ def main():
     print(f"\n1. Oracle advantage over random is largest at k={best_k['k']*100:.0f}%:")
     print(f"   Oracle is {best_k['oracle_vs_random_pct']:.1f}% better than random")
 
-    print(f"\n2. Advantage distribution:")
+    print("\n2. Advantage distribution:")
     if positive_frac > 0.9:
         print(f"   {positive_frac*100:.0f}% of chunks benefit from TTT (advantage > 0)")
         print("   This explains why naive gating tends to 'always UPDATE'")

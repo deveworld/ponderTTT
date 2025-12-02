@@ -132,7 +132,7 @@ class Gemma3Config:
             "dtype": dtype,
         }
         config.update(override)
-        return cls(**config)
+        return cls(**config)  # type: ignore[arg-type]
 
     @classmethod
     def gemma3_12b(cls, dtype: Any = jnp.bfloat16, **override) -> Gemma3Config:
@@ -170,7 +170,7 @@ class Gemma3Config:
             "dtype": dtype,
         }
         config.update(override)
-        return cls(**config)
+        return cls(**config)  # type: ignore[arg-type]
 
     @classmethod
     def gemma3_1b(cls, dtype: Any = jnp.bfloat16, **override) -> Gemma3Config:
@@ -200,7 +200,7 @@ class Gemma3Config:
             "dtype": dtype,
         }
         config.update(override)
-        return cls(**config)
+        return cls(**config)  # type: ignore[arg-type]
 
     def __post_init__(self):
         if self.num_heads != self.num_kv_heads:

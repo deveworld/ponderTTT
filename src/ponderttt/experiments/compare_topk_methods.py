@@ -111,7 +111,6 @@ def main():
     )
 
     try:
-        import optax
         target = {
             "state": {"model": nnx.state(trainable_system), "optimizer": nnx.state(optimizer)},
             "step": 0,
@@ -198,7 +197,7 @@ def main():
         adapted_hidden = hidden_states + fast_output
 
         if tie_word_embeddings:
-            logits_update = adapted_hidden @ embedding_kernel.T
+            logits_update = adapted_hidden @ jnp.asarray(base_model.wte.embedding).T
         else:
             logits_update = adapted_hidden
 
@@ -300,14 +299,14 @@ def main():
     # 1. Baseline (100% SKIP)
     baseline_ce = ce_skip.mean()
     baseline_ppl = math.exp(min(baseline_ce, 10))
-    print(f"\n1. Baseline (100% SKIP):")
+    print("\n1. Baseline (100% SKIP):")
     print(f"   CE: {baseline_ce:.4f}, PPL: {baseline_ppl:.2f}")
     results["baseline"] = {"ce": baseline_ce, "ppl": baseline_ppl}
 
     # 2. Full TTT (100% UPDATE)
     full_ce = ce_update.mean()
     full_ppl = math.exp(min(full_ce, 10))
-    print(f"\n2. Full TTT (100% UPDATE):")
+    print("\n2. Full TTT (100% UPDATE):")
     print(f"   CE: {full_ce:.4f}, PPL: {full_ppl:.2f}")
     results["full_ttt"] = {"ce": full_ce, "ppl": full_ppl}
 
@@ -442,7 +441,7 @@ def main():
         print(f"   But only captures {gap_captured:.1f}% of oracle's advantage.")
         print("   Consider: more training, better features, or different k value.")
     else:
-        print(f"\n NEEDS IMPROVEMENT: Learned gating is not better than random.")
+        print("\n NEEDS IMPROVEMENT: Learned gating is not better than random.")
         print("   Possible causes:")
         print("   - Insufficient training")
         print("   - Features don't capture difficulty well")

@@ -74,7 +74,7 @@ def module_from_linen_variables(
   for path, val in traverse_util.flatten_dict(variables).items():
     mapped_path = key_mapper(path)
     if mapped_path not in state:
-      class_name = mdl.__class__.__name__
+      class_name = type(mdl).__name__
       raise ValueError(
           f"'{class_name}.{_flatten_path(mapped_path)}' doesn't "
           f' exist (original path={path}).'

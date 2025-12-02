@@ -458,11 +458,6 @@ def main():
             else:
                 raise ValueError("LM Head not found")
 
-            # 4. Blend outputs based on soft decision (for differentiability)
-            # We use decision_probs_hard (one-hot) for execution path to test true hard routing
-            # But gradients flow through Straight-Through Estimator in Gumbel-Softmax
-            update_prob_hard_vec = decision_probs_hard[:, 1:2]  # [B, 1]
-
             # 5. Compute CE loss for TTT training (always use update path)
             ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:])
 

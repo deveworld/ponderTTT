@@ -89,7 +89,7 @@ def measure_latency(func, num_warmup, num_trials):
         jax.block_until_ready(result)
 
     # Timing
-    times = []
+    times: list[float] = []
     for _ in range(num_trials):
         start = time.perf_counter()
         result = func()
