@@ -272,17 +272,16 @@ def main():
     print("\n" + "=" * 60)
     print("ORACLE TOP-K vs RANDOM SELECTION")
     print("=" * 60)
-    print("Expected perplexity improvement under different selection strategies\n")
+    print("Expected CE reduction under different selection strategies\n")
 
     # Baseline: No TTT (all SKIP)
     baseline_ce = ce_skip.mean()
-    baseline_ppl = math.exp(min(baseline_ce, 10))
-    print(f"Baseline (100% SKIP):  CE={baseline_ce:.4f}, PPL={baseline_ppl:.2f}")
+    print(f"Baseline (100% SKIP):  CE={baseline_ce:.4f}")
 
     # Full TTT (all UPDATE)
     full_ttt_ce = ce_update.mean()
-    full_ttt_ppl = math.exp(min(full_ttt_ce, 10))
-    print(f"Full TTT (100% UPDATE): CE={full_ttt_ce:.4f}, PPL={full_ttt_ppl:.2f}")
+    full_ttt_reduction = (baseline_ce - full_ttt_ce) / baseline_ce * 100
+    print(f"Full TTT (100% UPDATE): CE={full_ttt_ce:.4f} ({full_ttt_reduction:+.1f}% CE reduction)")
     print()
 
     comparison_results = []
@@ -296,7 +295,6 @@ def main():
 
         # Oracle CE: UPDATE for top-k, SKIP for rest
         oracle_ce = np.where(oracle_mask, ce_update, ce_skip).mean()
-        oracle_ppl = math.exp(min(oracle_ce, 10))
 
         # Random: randomly select k%
         np.random.seed(args.seed)
@@ -305,29 +303,31 @@ def main():
         random_mask[random_indices] = True
 
         random_ce = np.where(random_mask, ce_update, ce_skip).mean()
-        random_ppl = math.exp(min(random_ce, 10))
 
         # Theoretical cost
         cost = 1.0 + 2.0 * k  # SKIP=1, UPDATE=3
 
-        improvement_oracle = (baseline_ppl - oracle_ppl) / baseline_ppl * 100
-        improvement_random = (baseline_ppl - random_ppl) / baseline_ppl * 100
-        oracle_vs_random = (random_ppl - oracle_ppl) / random_ppl * 100
+        # CE reduction from baseline
+        oracle_reduction = (baseline_ce - oracle_ce) / baseline_ce * 100
+        random_reduction = (baseline_ce - random_ce) / baseline_ce * 100
+
+        # Oracle vs Random: how much better is Oracle's CE?
+        oracle_vs_random_ce = random_ce - oracle_ce  # CE difference (lower is better)
+        oracle_vs_random_pct = oracle_vs_random_ce / random_ce * 100 if random_ce > 0 else 0
 
         print(f"Update Rate {k*100:.0f}% (Cost {cost:.1f}x):")
-        print(f"  Oracle Top-{k*100:.0f}%:  CE={oracle_ce:.4f}, PPL={oracle_ppl:.2f} ({improvement_oracle:+.1f}% vs baseline)")
-        print(f"  Random {k*100:.0f}%:      CE={random_ce:.4f}, PPL={random_ppl:.2f} ({improvement_random:+.1f}% vs baseline)")
-        print(f"  Oracle advantage:  {oracle_vs_random:.1f}% better than random")
+        print(f"  Oracle Top-{k*100:.0f}%:  CE={oracle_ce:.4f} ({oracle_reduction:+.1f}% vs baseline)")
+        print(f"  Random {k*100:.0f}%:      CE={random_ce:.4f} ({random_reduction:+.1f}% vs baseline)")
+        print(f"  Oracle advantage:  CE {oracle_vs_random_ce:.2f} lower ({oracle_vs_random_pct:.1f}% better)")
         print()
 
         comparison_results.append({
             "k": k,
             "cost": cost,
-            "oracle_ce": oracle_ce,
-            "oracle_ppl": oracle_ppl,
-            "random_ce": random_ce,
-            "random_ppl": random_ppl,
-            "oracle_vs_random_pct": oracle_vs_random,
+            "oracle_ce": float(oracle_ce),
+            "random_ce": float(random_ce),
+            "oracle_vs_random_ce": float(oracle_vs_random_ce),
+            "oracle_vs_random_pct": float(oracle_vs_random_pct),
         })
 
     # === SAVE RESULTS ===
@@ -345,8 +345,8 @@ def main():
         "percentiles": {str(p): float(np.percentile(advantages, p)) for p in percentiles},
         "topk_capture": topk_results,
         "oracle_vs_random": comparison_results,
-        "baseline_ppl": baseline_ppl,
-        "full_ttt_ppl": full_ttt_ppl,
+        "baseline_ce": float(baseline_ce),
+        "full_ttt_ce": float(full_ttt_ce),
     }
 
     output_file = output_dir / f"advantage_analysis_{args.model_scale}.json"
