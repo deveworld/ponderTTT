@@ -578,7 +578,7 @@ def main():
     print(summary)
 
     # Real code only analysis
-    real_code_df = full_df[full_df["is_real_code"] == True]
+    real_code_df = full_df[full_df["is_real_code"]]
     print("\n=== Final Results (Real Code Only, excluding padding) ===")
     summary_real = cast(pd.DataFrame, real_code_df.groupby("method").agg({"loss": "mean", "cost": "mean"})).sort_values(by="loss")
     print(summary_real)

@@ -322,6 +322,47 @@ def cross_entropy_loss(
     return loss
 
 
+def per_sample_cross_entropy_loss(
+    logits: jnp.ndarray,
+    labels: jnp.ndarray,
+    mask: jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    """
+    Compute per-sample cross-entropy loss.
+
+    Args:
+        logits: Shape (batch, seq_len, vocab_size)
+        labels: Shape (batch, seq_len)
+        mask: Optional mask, shape (batch, seq_len)
+
+    Returns:
+        Per-sample loss, shape (batch,)
+    """
+    if mask is None:
+        mask = jnp.ones(labels.shape[:2])
+
+    # Ensure mask is float
+    mask = mask.astype(jnp.float32)
+
+    # Valid sequence length per sample
+    valid_length = jnp.maximum(jnp.sum(mask, axis=-1), 1e-10)
+
+    # Log probabilities
+    logits = logits.astype(jnp.float32)
+    log_probs = jax.nn.log_softmax(logits, axis=-1)
+
+    # Gather log probs for true labels
+    token_log_probs = jnp.take_along_axis(
+        log_probs, jnp.expand_dims(labels, -1), axis=-1
+    ).squeeze(-1)
+
+    # Mask and compute per-sample loss
+    token_log_probs = jnp.where(mask > 0, token_log_probs, 0.0)
+    per_sample_loss = -jnp.sum(token_log_probs, axis=-1) / valid_length
+
+    return per_sample_loss
+
+
 def print_on_main(message: str) -> None:
     """
     Print message only from main process to avoid spam.

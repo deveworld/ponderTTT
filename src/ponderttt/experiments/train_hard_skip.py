@@ -24,7 +24,7 @@ from typing import cast
 from ..data import create_data_iterator, get_tokenizer
 from ..models import GPT2Model, load_ttt_model
 from ..models.gating_nnx import BinaryGatingConfig, BinaryGatingNetwork
-from ..utils import FeatureExtractor, cross_entropy_loss
+from ..utils import FeatureExtractor, cross_entropy_loss, per_sample_cross_entropy_loss
 from ..utils.checkpointing import save_checkpoint, load_checkpoint, finalize_checkpointing
 
 import wandb
@@ -388,64 +388,56 @@ def main():
             # update_prob is the probability of choosing UPDATE
             update_prob = decision_probs[:, 1:2]  # [B, 1]
 
-            # Expand for broadcasting: [B, 1, 1] for [B, T, V] logits
-            update_prob_expanded = update_prob[:, :, None]
-
-            # 5. Compute losses separately for skip and update
-            ce_loss_skip = cross_entropy_loss(logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:])
+            # 5. Compute CE loss for TTT training (always use update path)
             ce_loss_update = cross_entropy_loss(logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:])
 
-            # === REWARD/PENALTY GATING (Section 3.2) ===
-            # Key insight: Gating should learn to SKIP when UPDATE provides little benefit.
+            # === POLICY GRADIENT GATING ===
             #
-            # advantage = ce_loss_skip - ce_loss_update (how much UPDATE helps)
-            # - Large advantage: UPDATE is very beneficial → should UPDATE
-            # - Small advantage: UPDATE barely helps → can SKIP to save cost
+            # Frame gating as a contextual bandit problem:
+            # - State: chunk features
+            # - Action: d ∈ {0=SKIP, 1=UPDATE}
+            # - Reward: R(d,x) = -Loss(d,x) - γ·Cost(d)
             #
-            # Gating loss design:
-            # - When UPDATE (d=1): reward proportional to advantage (good decision if advantage is high)
-            # - When SKIP (d=0): penalty proportional to advantage (bad decision if advantage was high)
+            # Optimal policy: UPDATE if advantage > λ (cost threshold)
+            # where advantage = L_skip - L_update
             #
-            # L_gate = d * (-advantage) + (1-d) * advantage * cost_scale
-            #        = d * (-advantage) + (1-d) * advantage * cost_scale
+            # Policy Gradient Loss:
+            # L_gate = -E[update_prob * (advantage - λ)]
+            #        = E[update_prob * (λ - advantage)]
             #
-            # Simplified: L_gate = (1 - 2*d) * advantage * scale
-            # - d=1 (UPDATE): L_gate = -advantage (reward for high advantage)
-            # - d=0 (SKIP): L_gate = +advantage (penalty for skipping high advantage)
-            #
-            # The cost_weight scales how much we penalize skipping vs reward updating.
-            # Higher cost_weight = more willing to skip (penalty for skipping is relatively smaller)
+            # - When advantage > λ: encourages higher update_prob (reward UPDATE)
+            # - When advantage < λ: encourages lower update_prob (penalize UPDATE)
 
-            # Compute relative advantage (percentage improvement)
-            advantage_raw = ce_loss_skip - ce_loss_update
-            advantage = jax.lax.stop_gradient(
-                advantage_raw / jnp.maximum(ce_loss_skip, 0.1)
-            )
-            update_prob_scalar = jnp.mean(update_prob)
+            # Per-sample advantages (stop gradient - these are "rewards", not differentiable targets)
+            ce_per_sample_skip = per_sample_cross_entropy_loss(
+                logits_skip[:, :-1], labels[:, 1:], attention_mask[:, 1:]
+            )  # [B]
+            ce_per_sample_update = per_sample_cross_entropy_loss(
+                logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:]
+            )  # [B]
+            advantage_per_sample = jax.lax.stop_gradient(
+                ce_per_sample_skip - ce_per_sample_update
+            )  # [B]
 
-            # === BIDIRECTIONAL SKIP RATE ENFORCEMENT ===
-            # Push gating toward target update rate from BOTH directions:
-            # - Too much UPDATE (d̄ > target): penalty scaled by cost_weight
-            # - Too much SKIP (d̄ < target): penalty scaled by advantage (quality loss)
-            #
-            # L_gate = max(d̄ - r_target, 0) * γ + max(r_target - d̄, 0) * A
-            #
-            # This ensures:
-            # - If skipping too much: quality penalty pushes toward more UPDATE
-            # - If updating too much: cost penalty pushes toward more SKIP
+            # Per-sample update probability
+            update_prob_per_sample = update_prob[:, 0]  # [B]
 
-            target_update_rate = 1.0 - args.target_skip_rate
+            # Cost threshold λ: controls the cost-quality tradeoff
+            # Higher λ → more SKIP (only UPDATE when advantage > λ)
+            # λ = cost_weight * typical_advantage_scale
+            # We use adaptive λ based on mean advantage to handle different scales
+            mean_advantage = jnp.mean(advantage_per_sample)
+            lambda_threshold = cost_weight * jnp.maximum(mean_advantage, 0.1)
 
-            # Penalty for exceeding target update rate (too much UPDATE)
-            excess_update = jnp.maximum(update_prob_scalar - target_update_rate, 0.0)
-            update_penalty = excess_update * cost_weight
+            # Policy gradient loss (per sample)
+            # L_i = update_prob_i * (λ - advantage_i)
+            # - advantage_i > λ: negative loss (reward for UPDATE)
+            # - advantage_i < λ: positive loss (penalty for UPDATE)
+            policy_gradient_loss = update_prob_per_sample * (lambda_threshold - advantage_per_sample)
+            gating_quality_loss = jnp.mean(policy_gradient_loss)
 
-            # Penalty for falling below target update rate (too much SKIP)
-            # Scale by advantage: if advantage is high, skipping is more costly
-            deficit_update = jnp.maximum(target_update_rate - update_prob_scalar, 0.0)
-            skip_penalty = deficit_update * advantage * cost_weight
-
-            gating_quality_loss = update_penalty + skip_penalty
+            # For logging
+            advantage = mean_advantage
 
             # CE loss for TTT parameters: ALWAYS use ce_loss_update
             # The gating decision affects inference cost, not training.
@@ -463,7 +455,6 @@ def main():
             # For logging: compute stats on real code chunks
             update_prob_flat = update_prob[:, 0]  # [B]
             num_real_code = jnp.maximum(jnp.sum(is_real_code.astype(jnp.float32)), 1.0)
-            avg_update_prob_real = jnp.sum(update_prob_flat * is_real_code.astype(jnp.float32)) / num_real_code
             avg_update_prob = jnp.mean(update_prob_flat)
 
             # Apply warmup (disable gating loss during warmup to let TTT stabilize first)
@@ -482,21 +473,21 @@ def main():
             # Skip rate on real code only
             skip_on_real = jnp.sum((decision_hard == 0).astype(jnp.float32) * is_real_code.astype(jnp.float32)) / num_real_code
 
-            # Debug: log the soft update probability from Gumbel-Softmax
-            soft_update_prob = jnp.mean(decision_probs[:, 1])  # Soft probability of UPDATE
+            # Compute advantage std for logging (measures discrimination)
+            advantage_std = jnp.std(advantage_per_sample)
 
-            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_quality_loss, soft_update_prob)
+            return total_loss, (ce_loss, l_ttt, cost_penalty, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_quality_loss, lambda_threshold, advantage_std)
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
         (loss, aux), grads = grad_fn(trainable_sys, rng_key)
-        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_loss, soft_update_prob = aux
+        ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_loss, lambda_thresh, adv_std = aux
 
         optimizer.update(trainable_sys, grads)
 
         # Compute skip rate from hard decisions (overall)
         skip_rate = jnp.mean(decision_hard == 0)
 
-        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code, advantage, gating_loss, soft_update_prob
+        return loss, ce_loss, l_ttt, cost_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code, advantage, gating_loss, lambda_thresh, adv_std
 
     # JIT compile training step
     train_step_jit = nnx.jit(
@@ -548,7 +539,8 @@ def main():
         total_real_code_chunks = 0.0
         total_advantage = 0.0
         total_gating_loss = 0.0
-        total_soft_prob = 0.0
+        total_lambda = 0.0
+        total_adv_std = 0.0
         valid_chunks = 0
 
         feature_extractor.reset_history()
@@ -572,7 +564,7 @@ def main():
             # Get new random key
             rng_key, subkey = jax.random.split(rng_key)
 
-            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real, adv, gate_loss, soft_prob = train_step_jit(
+            loss, ce, l_ttt, cost, update_prob, hard_cost, skip_rate, skip_on_real, num_real, adv, gate_loss, lambda_t, adv_std = train_step_jit(
                 trainable_system,
                 optimizer,
                 cast(GPT2Model, ttt_model.base_model),  # train_hard_skip is GPT2-specific
@@ -602,7 +594,8 @@ def main():
             total_real_code_chunks += float(num_real)
             total_advantage += float(adv)
             total_gating_loss += float(gate_loss)
-            total_soft_prob += float(soft_prob)
+            total_lambda += float(lambda_t)
+            total_adv_std += float(adv_std)
             valid_chunks += 1
 
             feature_extractor.update_history(float(ce), float(hard_cost))
@@ -621,7 +614,8 @@ def main():
         avg_skip_on_real = total_skip_on_real / max(total_real_code_chunks, 1.0)
         avg_advantage = total_advantage / valid_chunks
         avg_gating_loss = total_gating_loss / valid_chunks
-        avg_soft_prob = total_soft_prob / valid_chunks
+        avg_lambda = total_lambda / valid_chunks
+        avg_adv_std = total_adv_std / valid_chunks
         perplexity = math.exp(min(avg_ce_loss, 10.0))  # Cap to avoid overflow
 
         warmup_status = " [WARMUP]" if is_warmup else ""
@@ -629,7 +623,7 @@ def main():
             f"Iter {iter_count+1}{warmup_status}: Loss={avg_loss:.4f}, "
             f"CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
             f"SkipRate={avg_skip_rate:.2%} (real:{avg_skip_on_real:.2%}), Cost={avg_hard_cost:.2f}x, "
-            f"Adv={avg_advantage:.4f}, GateLoss={avg_gating_loss:.4f}, SoftProb={avg_soft_prob:.4f}, Temp={temperature:.3f}"
+            f"Adv={avg_advantage:.4f}±{avg_adv_std:.4f}, λ={avg_lambda:.4f}, Temp={temperature:.3f}"
         )
 
         # WandB Logging
@@ -648,6 +642,8 @@ def main():
                 "iteration": iter_count + 1,
                 "real_code_chunks": total_real_code_chunks,
                 "advantage": avg_advantage,
+                "advantage_std": avg_adv_std,
+                "lambda_threshold": avg_lambda,
                 "gating_loss": avg_gating_loss,
             })
 
