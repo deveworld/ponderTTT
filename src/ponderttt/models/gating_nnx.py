@@ -230,10 +230,11 @@ class BinaryGatingNetwork(nnx.Module):
             # Hard decision from Gumbel-Softmax (includes noise)
             decision_hard = jnp.argmax(decision_probs, axis=-1)  # [batch]
         else:
-            # Evaluation: deterministic softmax (or hard argmax)
+            # Evaluation: deterministic softmax
             decision_probs = jax.nn.softmax(logits / temp, axis=-1)
-            # Hard decision from raw logits (deterministic)
-            decision_hard = jnp.argmax(logits, axis=-1)  # [batch]
+            # Hard decision from soft probability (threshold 0.5)
+            # This ensures consistency with training where soft probs drive learning
+            decision_hard = (decision_probs[:, 1] > 0.5).astype(jnp.int32)  # [batch]
 
         # Gating scale: 0 for SKIP, scale_when_update for UPDATE
         # Use soft probabilities for differentiable training
