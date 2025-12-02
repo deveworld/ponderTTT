@@ -52,32 +52,21 @@ uv pip install -e . --dev
 
 ## Quick Start
 
-### 1. Validate Setup
-Run the lightweight smoke tests to ensure tokenizer and model loading work:
+### Reproduce Paper Results
+To run the full suite of experiments (Training, OOD Evaluation, Latency, Ablations) as described in the paper, simply execute the provided shell script. This script also validates the setup before running experiments.
+
 ```bash
-python scripts/quick_test.py
-python scripts/test_pipeline.py
+chmod +x scripts/run_all_experiments.sh
+./scripts/run_all_experiments.sh
 ```
 
-### 2. Binary Gating Training (Main Workflow)
-Train the binary gating network with Gumbel-Softmax on The Stack v2:
-```bash
-python -m ponderttt.experiments.train_hard_skip \
-    --model_scale 125m \
-    --target_update_rate 0.5 \
-    --num_iterations 10000 \
-    --output_dir outputs/hard_skip
-```
-Checkpoints will be saved to `outputs/hard_skip` (e.g., `checkpoint_10000`).
-
-### 3. Compare Methods
-Evaluate trained models against fixed baselines:
-```bash
-python -m ponderttt.experiments.compare_methods \
-    --model_scale 125m \
-    --budget 2.0 \
-    --num_eval_batches 20
-```
+This script automates the entire pipeline:
+1.  **Phase 1:** Train fixed baselines (UPDATE_1/2/4)
+2.  **Phase 2:** Train PonderTTT (Hard Skip)
+3.  **Phase 3:** Evaluate on Python (In-Distribution)
+4.  **Phase 4:** Evaluate on OOD languages (JS, Java, Go)
+5.  **Phase 5:** Measure Latency
+6.  **Phase 6 & 7:** Run Shuffled Input Test & Causal Ablations
 
 ### 4. Evaluation (Benchmarks)
 Use `ponderttt.evaluation.benchmarks` for HumanEval/MBPP. Code execution is unsafe and gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1`. Only set this in a sandboxed environment.
