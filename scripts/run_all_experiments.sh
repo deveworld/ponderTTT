@@ -364,8 +364,8 @@ phase5_latency() {
                 python scripts/measure_latency.py \
                     --checkpoint "$ckpt_125m" \
                     --model_scale 125m \
-                    --num_iterations 100 \
-                    --warmup_iterations 10
+                    --chunk_size 1024 \
+                    --num_warmup 128
         fi
     fi
 
@@ -379,8 +379,8 @@ phase5_latency() {
                 python scripts/measure_latency.py \
                     --checkpoint "$ckpt_350m" \
                     --model_scale 350m \
-                    --num_iterations 100 \
-                    --warmup_iterations 10
+                    --num_iterations 1024 \
+                    --warmup_iterations 128
         fi
     fi
 
