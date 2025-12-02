@@ -243,19 +243,35 @@ class BinaryGatingNetwork(nnx.Module):
 
         return gating_scale, decision_probs, decision_hard
 
-    def get_decision(self, features: jax.Array) -> Tuple[jax.Array, jax.Array]:
+    def get_decision(
+        self,
+        features: jax.Array,
+        threshold: float = 0.5,
+        rng_key: jax.Array | None = None,
+    ) -> Tuple[jax.Array, jax.Array]:
         """
-        Get hard decision for evaluation (no sampling).
+        Get hard decision for evaluation.
 
         Args:
             features: Input features [batch, feature_dim]
+            threshold: Probability threshold for UPDATE decision.
+                      If rng_key is provided, this is ignored and stochastic sampling is used.
+            rng_key: If provided, use stochastic sampling instead of threshold.
 
         Returns:
             Tuple of:
             - gating_scale: [batch, 1] - 0.0 for SKIP, scale_when_update for UPDATE
             - decision: [batch] - hard decisions (0=SKIP, 1=UPDATE)
         """
-        gating_scale, _, decision_hard = self(features, train=False)
+        _, decision_probs, _ = self(features, train=False)
+        update_prob = decision_probs[:, 1]  # [batch]
+
+        if rng_key is not None:
+            # Stochastic sampling: sample from Bernoulli(update_prob)
+            decision_hard = (jax.random.uniform(rng_key, update_prob.shape) < update_prob).astype(jnp.int32)
+        else:
+            # Deterministic: use threshold
+            decision_hard = (update_prob > threshold).astype(jnp.int32)
 
         # For evaluation, use hard decision directly
         hard_scale = jnp.where(

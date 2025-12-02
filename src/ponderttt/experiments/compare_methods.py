@@ -79,10 +79,15 @@ def jit_base_forward_and_features(
     return logits, features
 
 
-@nnx.jit
-def jit_binary_decision(gating_net: BinaryGatingNetwork, features: jax.Array):
+@nnx.jit(static_argnames=("threshold",))
+def jit_binary_decision(
+    gating_net: BinaryGatingNetwork,
+    features: jax.Array,
+    threshold: float = 0.5,
+    rng_key: jax.Array | None = None,
+):
     """Get binary gating decision (JIT compiled)."""
-    return gating_net.get_decision(features)
+    return gating_net.get_decision(features, threshold=threshold, rng_key=rng_key)
 
 
 @nnx.jit
@@ -163,6 +168,7 @@ def evaluate_model(
     skip_examples: int = 0,
     num_workers: int = 32,
     hard_skip_threshold: float = 0.1,
+    binary_eval_stochastic: bool = True,  # Use stochastic sampling for BinaryGatingNetwork
 ):
     if gating_net is not None:
         assert batch_size == 1, "Batch size must be 1 for dynamic gating evaluation (mixed SKIP/TTT strategies)."
@@ -216,6 +222,9 @@ def evaluate_model(
         "text": [],
         "is_real_code": [],  # True if chunk has >10% valid tokens
     }
+
+    # RNG key for stochastic evaluation
+    rng_key = jax.random.PRNGKey(seed)
 
     # Evaluation Loop
     for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
@@ -298,7 +307,13 @@ def evaluate_model(
 
             elif isinstance(gating_net, BinaryGatingNetwork):
                 # Binary decision
-                hard_scale, decision = jit_binary_decision(gating_net, features)
+                if binary_eval_stochastic:
+                    # Stochastic sampling: use rng_key
+                    rng_key, subkey = jax.random.split(rng_key)
+                    hard_scale, decision = jit_binary_decision(gating_net, features, rng_key=subkey)
+                else:
+                    # Deterministic: use threshold 0.5
+                    hard_scale, decision = jit_binary_decision(gating_net, features, threshold=0.5)
                 decision_val = int(decision[0])
 
                 if decision_val == 0:
