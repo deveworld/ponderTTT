@@ -297,6 +297,7 @@ def main():
         is_warmup: bool,
         beta_ttt: float = 0.1,
         cost_weight: float = 0.1,
+        target_skip_rate: float = 0.5,
         tie_word_embeddings: bool = True,
         padding_threshold: float = 0.1,
     ):
@@ -448,12 +449,15 @@ def main():
             )
             gating_bce_loss = jnp.mean(bce_loss)
 
-            # 7. Cost regularization: penalize UPDATE to control overall skip rate
-            # Higher cost_weight → more SKIP
-            cost_reg_loss = cost_weight * jnp.mean(update_prob_per_sample)
+            # 7. Bidirectional skip rate enforcement
+            # Penalize deviation from target skip rate in BOTH directions
+            # This prevents collapse to 100% skip or 100% update
+            target_update_rate = 1.0 - target_skip_rate  # e.g., 0.5 if target_skip_rate=0.5
+            actual_update_rate = jnp.mean(update_prob_per_sample)
+            skip_rate_loss = cost_weight * 10.0 * (actual_update_rate - target_update_rate) ** 2
 
             # Combined gating loss
-            gating_quality_loss = gating_bce_loss + cost_reg_loss
+            gating_quality_loss = gating_bce_loss + skip_rate_loss
 
             # For logging: also compute advantage to verify entropy-advantage correlation
             ce_per_sample_skip = per_sample_cross_entropy_loss(
@@ -518,7 +522,7 @@ def main():
     # JIT compile training step
     train_step_jit = nnx.jit(
         train_step,
-        static_argnames=("beta_ttt", "cost_weight", "tie_word_embeddings", "padding_threshold"),
+        static_argnames=("beta_ttt", "cost_weight", "target_skip_rate", "tie_word_embeddings", "padding_threshold"),
     )
 
     # History tracking
@@ -601,6 +605,7 @@ def main():
                 is_warmup,
                 beta_ttt=args.beta_ttt,
                 cost_weight=args.cost_weight,
+                target_skip_rate=args.target_skip_rate,
                 tie_word_embeddings=ttt_model.tie_word_embeddings,
                 padding_threshold=0.1,
             )
