@@ -335,18 +335,28 @@ def _get_cache_base_key(
     exclude_benchmarks: bool,
     concatenate_documents: bool,
 ) -> str:
-    """Generate a cache key based on data format parameters (excluding max_examples)."""
+    """Generate a short cache key based on data format parameters.
+
+    Format: {language_abbrev}_{params_hash}
+    Example: py_a1b2c3d4 (for Python with specific params)
+    """
+    # Language abbreviation (lowercase, max 4 chars)
+    lang_abbrev = language.lower()[:4]
+
+    # Hash all parameters for uniqueness
     try:
         tokenizer_serialized = tokenizer.to_str()
     except Exception:
         tokenizer_serialized = repr(tokenizer)
-    tokenizer_hash = hashlib.md5(tokenizer_serialized.encode()).hexdigest()[:8]
 
-    return (
-        f"{split}_{language}_seq{seq_length}_chunk{chunk_size}_"
-        f"vocab{tokenizer.get_vocab_size()}_{tokenizer_hash}_"
-        f"exclude{exclude_benchmarks}_concat{concatenate_documents}"
+    params_str = (
+        f"{split}_{language}_{seq_length}_{chunk_size}_"
+        f"{tokenizer.get_vocab_size()}_{tokenizer_serialized}_"
+        f"{exclude_benchmarks}_{concatenate_documents}"
     )
+    params_hash = hashlib.md5(params_str.encode()).hexdigest()[:8]
+
+    return f"{lang_abbrev}_{params_hash}"
 
 
 def _find_compatible_cache(cache_dir: Path, base_key: str) -> tuple[Path | None, dict | None]:
@@ -521,7 +531,12 @@ def create_data_iterator(
         )
 
         # Include skip_examples in the key since different skip values need different data
-        cache_key = f"{base_key}_skip{skip_examples}"
+        # Use 'k' suffix for thousands to keep filename short (e.g., s160k instead of s160000)
+        if skip_examples >= 1000 and skip_examples % 1000 == 0:
+            skip_str = f"s{skip_examples // 1000}k"
+        else:
+            skip_str = f"s{skip_examples}"
+        cache_key = f"{base_key}_{skip_str}"
 
         # Target number of sequences needed
         total_needed = max_examples if max_examples else batch_size * 100
@@ -724,7 +739,12 @@ def create_data_iterator(
                 print(f"Total tokens: {len(all_tokens)}, can create {total_sequences} sequences")
 
                 # Save cache with raw tokens for future extension
-                cache_path = cache_dir_path / f"{cache_key}_{total_sequences}.pkl"
+                # Use 'k' suffix for thousands to keep filename short
+                if total_sequences >= 1000 and total_sequences % 1000 == 0:
+                    seq_str = f"{total_sequences // 1000}k"
+                else:
+                    seq_str = str(total_sequences)
+                cache_path = cache_dir_path / f"{cache_key}_{seq_str}.pkl"
                 cache_data_to_save = {
                     "all_tokens": all_tokens,
                     "all_masks": all_masks,
