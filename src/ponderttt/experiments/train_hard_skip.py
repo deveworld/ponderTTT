@@ -263,6 +263,7 @@ def main():
                 model_state = unwrap_state(ckpt["state"]["model"])
                 nnx.update(ttt_model, model_state)
                 print(f"Loaded TTT checkpoint from step {ckpt.get('step', 'unknown')}")
+
             else:
                 print("Warning: Could not find 'state.model' in TTT checkpoint.")
         except Exception as e:
@@ -295,6 +296,11 @@ def main():
                 self.lm_head = None
 
     trainable_system = TrainableSystem(ttt_model, gating_net)
+
+    # WORKAROUND: Split and merge to normalize state keys
+    # (fixes int vs str key type mismatch in NNX optimizer when loading from checkpoint)
+    graphdef, state = nnx.split(trainable_system)
+    trainable_system = nnx.merge(graphdef, state)
 
     # Initialize WandB
     if args.wandb_project:
