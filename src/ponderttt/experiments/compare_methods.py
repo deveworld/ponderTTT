@@ -761,8 +761,10 @@ def main():
         print(f"\n=== Binary Gating Update Rate: {binary_update_rate:.2%} ===")
 
     # 6. Evaluate Random Skip Baseline (same update rate as Binary Gating)
-    if binary_update_rate is not None and update1_ttt_model is not None:
+    # IMPORTANT: Use binary_ttt_model (same TTT weights as Binary Gating) for fair comparison
+    if binary_update_rate is not None and binary_ttt_model is not None:
         print(f"\n=== Running Random Skip Baseline (update_rate={binary_update_rate:.2%}) ===")
+        print("    (Using same TTT weights as Binary Gating for fair comparison)")
         df_random = evaluate_model(
             f"Random Skip ({binary_update_rate:.0%} update)",
             args.model_scale,
@@ -771,7 +773,7 @@ def main():
             args.batch_size,
             args.seed + 1,  # Different seed for random decisions
             gating_net=None,
-            model=update1_ttt_model,
+            model=binary_ttt_model,  # Use same TTT weights as Binary Gating
             language=args.language,
             split=args.split,
             skip_examples=args.skip_examples,
@@ -782,6 +784,7 @@ def main():
 
         # 6b. Evaluate Oracle Baseline (upper bound)
         print(f"\n=== Running Oracle Baseline (update_rate={binary_update_rate:.2%}) ===")
+        print("    (Using same TTT weights as Binary Gating for fair comparison)")
         df_oracle = evaluate_oracle(
             f"Oracle ({binary_update_rate:.0%} update)",
             args.model_scale,
@@ -789,7 +792,7 @@ def main():
             num_batches=args.num_eval_batches,
             batch_size=args.batch_size,
             seed=args.seed,
-            model=update1_ttt_model,
+            model=binary_ttt_model,  # Use same TTT weights as Binary Gating
             language=args.language,
             split=args.split,
             skip_examples=args.skip_examples,
