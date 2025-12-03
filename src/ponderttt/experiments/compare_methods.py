@@ -139,6 +139,160 @@ def jit_loss_from_logits(
     )
 
 
+def evaluate_oracle(
+    method_name: str,
+    model_scale: str,
+    update_rate: float,  # Same update rate as Binary Gating for fair comparison
+    num_batches: int,
+    batch_size: int,
+    seed: int,
+    model: Optional[TTTModel] = None,
+    language: str = "Python",
+    split: str = "test",
+    skip_examples: int = 0,
+    num_workers: int = 32,
+):
+    """
+    Oracle baseline: compute advantage for each chunk and select top-k% to update.
+    This provides the upper bound for learned gating.
+    """
+    print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}...")
+
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    tokenizer = get_tokenizer(model_name)
+
+    # Load TTT Model if not provided
+    if model is None:
+        ttt_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=seed,
+            load_pretrained=True,
+            vocab_size=tokenizer.get_vocab_size(),
+        )
+    else:
+        ttt_model = model
+
+    data_iter = create_data_iterator(
+        tokenizer=tokenizer,
+        split=split,
+        language=language,
+        batch_size=batch_size,
+        seq_length=1024,
+        chunk_size=512,
+        max_examples=batch_size * num_batches * 2,
+        skip_examples=skip_examples,
+        num_workers=num_workers,
+    )
+
+    results = {
+        "loss": [],
+        "cost": [],
+        "method": [],
+        "decision": [],
+        "text": [],
+        "is_real_code": [],
+    }
+
+    assert isinstance(ttt_model, TTTTransformerLM)
+
+    for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
+        if i >= num_batches:
+            break
+
+        chunks = batch["chunks"]
+        masks = batch["chunk_attention_mask"]
+        num_chunks = chunks.shape[1]
+
+        # Step 1: Compute advantage for all chunks in this batch
+        chunk_data = []
+        for c_idx in range(num_chunks):
+            chunk_batch = {
+                "input_ids": chunks[:, c_idx],
+                "attention_mask": masks[:, c_idx]
+            }
+
+            chunk_len = chunk_batch["input_ids"].shape[-1]
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
+            position_ids = position_ids + c_idx * chunk_len
+            position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
+
+            # Compute SKIP loss
+            out_skip = ttt_model(
+                chunk_batch["input_ids"],
+                attention_mask=chunk_batch["attention_mask"],
+                position_ids=position_ids,
+                use_ttt=False,
+            )
+            loss_skip = float(cross_entropy_loss(
+                out_skip["logits"][:, :-1],
+                chunk_batch["input_ids"][:, 1:],
+                chunk_batch["attention_mask"][:, 1:],
+            ))
+
+            # Compute UPDATE loss
+            gating_scale = jnp.array([[1.0]], dtype=jnp.float32)
+            out_update = ttt_model(
+                chunk_batch["input_ids"],
+                attention_mask=chunk_batch["attention_mask"],
+                position_ids=position_ids,
+                use_ttt=True,
+                gating_scale=gating_scale,
+            )
+            loss_update = float(cross_entropy_loss(
+                out_update["logits"][:, :-1],
+                chunk_batch["input_ids"][:, 1:],
+                chunk_batch["attention_mask"][:, 1:],
+            ))
+
+            # Advantage: how much better is UPDATE vs SKIP
+            advantage = loss_skip - loss_update
+
+            # Decode text
+            try:
+                text = tokenizer.decode(chunk_batch["input_ids"][0], skip_special_tokens=False)
+            except Exception:
+                text = "[Decode Error]"
+
+            # Valid ratio for is_real_code
+            valid_ratio = float(jnp.sum(chunk_batch["attention_mask"])) / chunk_len
+            is_real_code = valid_ratio > 0.1
+
+            chunk_data.append({
+                "c_idx": c_idx,
+                "loss_skip": loss_skip,
+                "loss_update": loss_update,
+                "advantage": advantage,
+                "text": text,
+                "is_real_code": is_real_code,
+            })
+
+        # Step 2: Select top-k% chunks by advantage (Oracle selection)
+        num_to_update = max(1, int(len(chunk_data) * update_rate))
+        sorted_chunks = sorted(chunk_data, key=lambda x: x["advantage"], reverse=True)
+
+        update_indices = set(c["c_idx"] for c in sorted_chunks[:num_to_update])
+
+        # Step 3: Record results based on Oracle decision
+        for c in chunk_data:
+            if c["c_idx"] in update_indices:
+                # Oracle says UPDATE
+                results["loss"].append(c["loss_update"])
+                results["cost"].append(3.0)
+                results["decision"].append("UPDATE")
+            else:
+                # Oracle says SKIP
+                results["loss"].append(c["loss_skip"])
+                results["cost"].append(1.0)
+                results["decision"].append("SKIP")
+
+            results["method"].append(method_name)
+            results["text"].append(c["text"])
+            results["is_real_code"].append(c["is_real_code"])
+
+    return pd.DataFrame(results)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare optimization methods")
     parser.add_argument("--model_scale", type=str, default="125m", choices=["125m", "350m", "1b"])
@@ -625,6 +779,23 @@ def main():
         )
         all_results.append(df_random)
 
+        # 6b. Evaluate Oracle Baseline (upper bound)
+        print(f"\n=== Running Oracle Baseline (update_rate={binary_update_rate:.2%}) ===")
+        df_oracle = evaluate_oracle(
+            f"Oracle ({binary_update_rate:.0%} update)",
+            args.model_scale,
+            update_rate=binary_update_rate,
+            num_batches=args.num_eval_batches,
+            batch_size=args.batch_size,
+            seed=args.seed,
+            model=update1_ttt_model,
+            language=args.language,
+            split=args.split,
+            skip_examples=args.skip_examples,
+            num_workers=args.num_workers,
+        )
+        all_results.append(df_oracle)
+
     # 7. Visualize & Report
     full_df = pd.concat(all_results)
 
@@ -645,8 +816,10 @@ def main():
             skip_rate_real = (binary_real["decision"] == "SKIP").mean()
             print(f"\n=== Binary Gating Skip Rate on Real Code: {skip_rate_real:.2%} ===")
 
-    # Random Skip vs Binary Gating comparison (Ablation)
+    # Random Skip vs Binary Gating vs Oracle comparison (Ablation)
     random_method = [m for m in summary.index if m.startswith("Random Skip")]
+    oracle_method = [m for m in summary.index if m.startswith("Oracle")]
+
     if random_method and "Binary Gating (Hard Skip)" in summary.index:
         random_name = random_method[0]
         random_loss = float(summary.loc[random_name, "loss"])
@@ -654,22 +827,61 @@ def main():
         random_cost = float(summary.loc[random_name, "cost"])
         binary_cost = float(summary.loc["Binary Gating (Hard Skip)", "cost"])
 
-        improvement = (random_loss - binary_loss) / random_loss * 100
+        improvement_vs_random = (random_loss - binary_loss) / random_loss * 100
 
-        print("\n" + "=" * 60)
-        print("ABLATION: Random Skip vs Learned Gating")
-        print("=" * 60)
-        print(f"Random Skip:    Loss = {random_loss:.4f}, Cost = {random_cost:.2f}x")
-        print(f"Binary Gating:  Loss = {binary_loss:.4f}, Cost = {binary_cost:.2f}x")
-        print(f"Improvement:    {improvement:.2f}%")
-        print()
-        if improvement > 5:
-            print("CONCLUSION: Learned gating provides meaningful improvement over random.")
-        elif improvement > 0:
-            print("CONCLUSION: Learned gating provides marginal improvement over random.")
+        print("\n" + "=" * 70)
+        print("ABLATION: Random Skip vs Learned Gating vs Oracle")
+        print("=" * 70)
+        print(f"{'Method':<25} {'Loss':>10} {'Cost':>10} {'vs Random':>12}")
+        print("-" * 70)
+        print(f"{'Random Skip':<25} {random_loss:>10.4f} {random_cost:>10.2f}x {'baseline':>12}")
+        print(f"{'Binary Gating (Learned)':<25} {binary_loss:>10.4f} {binary_cost:>10.2f}x {improvement_vs_random:>+11.2f}%")
+
+        if oracle_method:
+            oracle_name = oracle_method[0]
+            oracle_loss = float(summary.loc[oracle_name, "loss"])
+            oracle_cost = float(summary.loc[oracle_name, "cost"])
+            improvement_oracle = (random_loss - oracle_loss) / random_loss * 100
+            improvement_binary_vs_oracle = (binary_loss - oracle_loss) / (random_loss - oracle_loss) * 100 if random_loss != oracle_loss else 0
+
+            print(f"{'Oracle (Upper Bound)':<25} {oracle_loss:>10.4f} {oracle_cost:>10.2f}x {improvement_oracle:>+11.2f}%")
+            print("-" * 70)
+
+            # How much of the Oracle improvement does Binary Gating capture?
+            gap_random_to_oracle = random_loss - oracle_loss
+            gap_random_to_binary = random_loss - binary_loss
+            capture_rate = (gap_random_to_binary / gap_random_to_oracle * 100) if gap_random_to_oracle > 0 else 0
+
+            print(f"\nOracle Gap:    Random → Oracle = {gap_random_to_oracle:.4f}")
+            print(f"Learned Gap:   Random → Binary = {gap_random_to_binary:.4f}")
+            print(f"Capture Rate:  {capture_rate:.1f}% of Oracle improvement")
+
+            print("\n" + "-" * 70)
+            if gap_random_to_oracle < 0.01:
+                print("CONCLUSION: Oracle provides NO improvement over Random.")
+                print("            'Where to update' does NOT matter for this task.")
+            elif capture_rate > 80:
+                print("CONCLUSION: Learned gating captures most of Oracle improvement!")
+                print("            Gating network is working well.")
+            elif capture_rate > 50:
+                print("CONCLUSION: Learned gating captures partial Oracle improvement.")
+                print("            Room for improvement in gating network.")
+            elif capture_rate > 20:
+                print("CONCLUSION: Learned gating captures little Oracle improvement.")
+                print("            Gating network needs significant improvement.")
+            else:
+                print("CONCLUSION: Learned gating fails to capture Oracle improvement.")
+                print("            Gating training may be broken.")
         else:
-            print("CONCLUSION: Learned gating provides NO improvement over random skip!")
-        print("=" * 60)
+            print("-" * 70)
+            if improvement_vs_random > 5:
+                print("CONCLUSION: Learned gating provides meaningful improvement over random.")
+            elif improvement_vs_random > 0:
+                print("CONCLUSION: Learned gating provides marginal improvement over random.")
+            else:
+                print("CONCLUSION: Learned gating provides NO improvement over random skip!")
+
+        print("=" * 70)
 
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
