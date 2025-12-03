@@ -637,8 +637,8 @@ def create_data_iterator(
             # 1. Many code files are short (< seq_length tokens)
             # 2. Decontamination filters out files containing benchmark solutions
             # 3. Some files may be mostly whitespace/comments
-            # Using 30x multiplier to be safe (empirically determined)
-            files_to_download = sequences_still_needed * 30 if concatenate_documents else sequences_still_needed
+            # Using 3x multiplier to be safe (empirically determined)
+            files_to_download = sequences_still_needed * 3 if concatenate_documents else sequences_still_needed
             files_to_download = max(files_to_download, 10000)  # Download at least 10k files
 
             total_to_scan = start_from_file + files_to_download + skip_examples
