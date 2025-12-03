@@ -275,22 +275,6 @@ def main():
         vocab_size=tokenizer.get_vocab_size(),
     )
 
-    # Load pre-trained TTT checkpoint if provided
-    if args.ttt_checkpoint:
-        print(f"Loading TTT checkpoint from {args.ttt_checkpoint}...")
-        try:
-            ckpt = load_checkpoint(args.ttt_checkpoint, target=None)
-            if "state" in ckpt and "model" in ckpt["state"]:
-                model_state = unwrap_state(ckpt["state"]["model"])
-                nnx.update(ttt_model, model_state)
-                print(f"Loaded TTT checkpoint from step {ckpt.get('step', 'unknown')}")
-
-            else:
-                print("Warning: Could not find 'state.model' in TTT checkpoint.")
-        except Exception as e:
-            print(f"Warning: Could not load TTT checkpoint: {e}")
-            print("Proceeding with random initialized TTT layer")
-
     # Initialize Binary Gating Network
     print("Initializing Binary Gating Network...")
     gating_config = BinaryGatingConfig(
@@ -326,16 +310,31 @@ def main():
             name=f"hard_skip_{args.model_scale}_update{args.target_update_rate}",
         )
 
-    # Optimizer - TrainableSystem already contains only trainable parts
-    # (fast_layer, fast_norm, gating_net), so we don't need wrt filter.
-    # This also avoids NNX state key sorting issues with mixed int/str keys.
+    # Optimizer - Create BEFORE loading checkpoint to avoid NNX state key issues
     optimizer = nnx.Optimizer(
         trainable_system,
         optax.chain(
             optax.clip_by_global_norm(args.max_grad_norm),
             optax.adam(args.learning_rate),
         ),
+        wrt=nnx.All(nnx.Param),
     )
+
+    # Load pre-trained TTT checkpoint if provided (AFTER optimizer creation)
+    if args.ttt_checkpoint:
+        print(f"Loading TTT checkpoint from {args.ttt_checkpoint}...")
+        try:
+            ckpt = load_checkpoint(args.ttt_checkpoint, target=None)
+            if "state" in ckpt and "model" in ckpt["state"]:
+                model_state = unwrap_state(ckpt["state"]["model"])
+                # Update only the model parameters, not optimizer state
+                nnx.update(ttt_model, model_state)
+                print(f"Loaded TTT checkpoint from step {ckpt.get('step', 'unknown')}")
+            else:
+                print("Warning: Could not find 'state.model' in TTT checkpoint.")
+        except Exception as e:
+            print(f"Warning: Could not load TTT checkpoint: {e}")
+            print("Proceeding with random initialized TTT layer")
 
     # Resume from checkpoint if requested
     start_iteration = 0
