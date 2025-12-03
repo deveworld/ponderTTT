@@ -188,48 +188,70 @@ phase1_baselines() {
 # Paper: Table 1 (Main Results), Appendix Training Dynamics
 # Note: target_update_rate=0.5 corresponds to "Target Skip 0.5" in paper
 #       target_update_rate=0.2 corresponds to "Target Skip 0.8" in paper
+# IMPORTANT: Requires Phase 1 (UPDATE_1 baseline) to be completed first!
+#            The TTT checkpoint from UPDATE_1 is used to compute meaningful advantages.
 # ============================================================
 phase2_hard_skip() {
     log_phase "Phase 2: Training Hard Skip (Table 1, Appendix Training Dynamics)"
 
     # 125M Scale
     if [ "$RUN_125M" = true ]; then
-        # Paper "Target Skip 0.5" = 50% skip target = 50% update target
-        run_experiment "125M Hard Skip (target_update=0.5)" \
-            python -m ponderttt.experiments.train_hard_skip \
-                --model_scale 125m --target_update_rate 0.5 \
-                --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
-                --output_dir outputs/hard_skip/125m_update0.5 \
-                --num_workers $NUM_WORKERS --wandb_project ponderttt-125m \
-                --save_every $SAVE_EVERY_HARDSKIP_125M
+        local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
+        if [ -z "$ckpt_125m_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 125M. Run Phase 1 first!"
+            log_error "Expected: outputs/baselines/125m_update1/checkpoints/checkpoint_*"
+        else
+            log_info "Using TTT checkpoint: $ckpt_125m_update1"
 
-        # Paper "Target Skip 0.8" = 80% skip target = 20% update target
-        run_experiment "125M Hard Skip (target_update=0.2)" \
-            python -m ponderttt.experiments.train_hard_skip \
-                --model_scale 125m --target_update_rate 0.2 \
-                --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
-                --output_dir outputs/hard_skip/125m_update0.2 \
-                --num_workers $NUM_WORKERS --wandb_project ponderttt-125m \
-                --save_every $SAVE_EVERY_HARDSKIP_125M
+            # Paper "Target Skip 0.5" = 50% skip target = 50% update target
+            run_experiment "125M Hard Skip (target_update=0.5)" \
+                python -m ponderttt.experiments.train_hard_skip \
+                    --model_scale 125m --target_update_rate 0.5 \
+                    --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
+                    --ttt_checkpoint "$ckpt_125m_update1" \
+                    --output_dir outputs/hard_skip/125m_update0.5 \
+                    --num_workers $NUM_WORKERS --wandb_project ponderttt-125m \
+                    --save_every $SAVE_EVERY_HARDSKIP_125M
+
+            # Paper "Target Skip 0.8" = 80% skip target = 20% update target
+            run_experiment "125M Hard Skip (target_update=0.2)" \
+                python -m ponderttt.experiments.train_hard_skip \
+                    --model_scale 125m --target_update_rate 0.2 \
+                    --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
+                    --ttt_checkpoint "$ckpt_125m_update1" \
+                    --output_dir outputs/hard_skip/125m_update0.2 \
+                    --num_workers $NUM_WORKERS --wandb_project ponderttt-125m \
+                    --save_every $SAVE_EVERY_HARDSKIP_125M
+        fi
     fi
 
     # 350M Scale
     if [ "$RUN_350M" = true ]; then
-        run_experiment "350M Hard Skip (target_update=0.5)" \
-            python -m ponderttt.experiments.train_hard_skip \
-                --model_scale 350m --target_update_rate 0.5 \
-                --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
-                --output_dir outputs/hard_skip/350m_update0.5 \
-                --num_workers $NUM_WORKERS --wandb_project ponderttt-350m \
-                --save_every $SAVE_EVERY_HARDSKIP_350M
+        local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
+        if [ -z "$ckpt_350m_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 350M. Run Phase 1 first!"
+            log_error "Expected: outputs/baselines/350m_update1/checkpoints/checkpoint_*"
+        else
+            log_info "Using TTT checkpoint: $ckpt_350m_update1"
 
-        run_experiment "350M Hard Skip (target_update=0.2)" \
-            python -m ponderttt.experiments.train_hard_skip \
-                --model_scale 350m --target_update_rate 0.2 \
-                --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
-                --output_dir outputs/hard_skip/350m_update0.2 \
-                --num_workers $NUM_WORKERS --wandb_project ponderttt-350m \
-                --save_every $SAVE_EVERY_HARDSKIP_350M
+            run_experiment "350M Hard Skip (target_update=0.5)" \
+                python -m ponderttt.experiments.train_hard_skip \
+                    --model_scale 350m --target_update_rate 0.5 \
+                    --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
+                    --ttt_checkpoint "$ckpt_350m_update1" \
+                    --output_dir outputs/hard_skip/350m_update0.5 \
+                    --num_workers $NUM_WORKERS --wandb_project ponderttt-350m \
+                    --save_every $SAVE_EVERY_HARDSKIP_350M
+
+            run_experiment "350M Hard Skip (target_update=0.2)" \
+                python -m ponderttt.experiments.train_hard_skip \
+                    --model_scale 350m --target_update_rate 0.2 \
+                    --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
+                    --ttt_checkpoint "$ckpt_350m_update1" \
+                    --output_dir outputs/hard_skip/350m_update0.2 \
+                    --num_workers $NUM_WORKERS --wandb_project ponderttt-350m \
+                    --save_every $SAVE_EVERY_HARDSKIP_350M
+        fi
     fi
 
     log_info "Phase 2 Complete!"
