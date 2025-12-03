@@ -318,12 +318,6 @@ def main():
 
     trainable_system = TrainableSystem(ttt_model, gating_net)
 
-    # WORKAROUND: Normalize state keys after checkpoint loading
-    # (fixes int vs str key type mismatch in NNX optimizer)
-    graphdef, state = nnx.split(trainable_system)
-    state = normalize_state_keys(state)
-    trainable_system = nnx.merge(graphdef, state)
-
     # Initialize WandB
     if args.wandb_project:
         wandb.init(
@@ -332,14 +326,15 @@ def main():
             name=f"hard_skip_{args.model_scale}_update{args.target_update_rate}",
         )
 
-    # Optimizer
+    # Optimizer - TrainableSystem already contains only trainable parts
+    # (fast_layer, fast_norm, gating_net), so we don't need wrt filter.
+    # This also avoids NNX state key sorting issues with mixed int/str keys.
     optimizer = nnx.Optimizer(
         trainable_system,
         optax.chain(
             optax.clip_by_global_norm(args.max_grad_norm),
             optax.adam(args.learning_rate),
         ),
-        wrt=nnx.All(nnx.Param),
     )
 
     # Resume from checkpoint if requested
