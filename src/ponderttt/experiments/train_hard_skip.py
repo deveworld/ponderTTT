@@ -53,6 +53,27 @@ def unwrap_state(state):
     return state
 
 
+def normalize_state_keys(state):
+    """Recursively convert all dict keys to strings for NNX state compatibility.
+
+    NNX requires consistent key types for sorting. This converts int keys
+    (from nnx.List indices) to strings.
+    """
+    from flax.nnx.statelib import State
+
+    if isinstance(state, State):
+        # Convert State's internal mapping
+        normalized = {}
+        for k, v in state._mapping.items():
+            new_key = str(k) if isinstance(k, int) else k
+            normalized[new_key] = normalize_state_keys(v)
+        return State(normalized)
+    elif isinstance(state, dict):
+        return {str(k) if isinstance(k, int) else k: normalize_state_keys(v) for k, v in state.items()}
+    else:
+        return state
+
+
 def compute_topk_targets(advantages: jax.Array, k: float) -> tuple[jax.Array, jax.Array]:
     """
     Compute top-k targets based on advantage values.
@@ -297,9 +318,10 @@ def main():
 
     trainable_system = TrainableSystem(ttt_model, gating_net)
 
-    # WORKAROUND: Split and merge to normalize state keys
-    # (fixes int vs str key type mismatch in NNX optimizer when loading from checkpoint)
+    # WORKAROUND: Normalize state keys after checkpoint loading
+    # (fixes int vs str key type mismatch in NNX optimizer)
     graphdef, state = nnx.split(trainable_system)
+    state = normalize_state_keys(state)
     trainable_system = nnx.merge(graphdef, state)
 
     # Initialize WandB
