@@ -496,15 +496,15 @@ def main():
             # 3. Per-sample update probability from gating network
             update_prob_soft = decision_probs_soft[:, 1]  # [B]
 
-            # Clamp for numerical stability in BCE
-            eps = 1e-6
+            # Clamp predictions only (not targets) for numerical stability in BCE
+            eps = 1e-7
             update_prob_clamped = jnp.clip(update_prob_soft, eps, 1.0 - eps)
-            target_clamped = jnp.clip(topk_targets, eps, 1.0 - eps)
+            # NOTE: Do NOT clamp targets - they should be exactly 0 or 1
 
             # 4. BCE loss: train gating to predict top-k membership
             bce_loss = -(
-                target_clamped * jnp.log(update_prob_clamped) +
-                (1 - target_clamped) * jnp.log(1 - update_prob_clamped)
+                topk_targets * jnp.log(update_prob_clamped) +
+                (1.0 - topk_targets) * jnp.log(1.0 - update_prob_clamped)
             )
             gating_bce_loss = jnp.mean(bce_loss)
 

@@ -239,20 +239,15 @@ class BinaryGatingNetwork(nnx.Module):
             # Sample Gumbel noise once
             gumbel_noise = jax.random.gumbel(rng_key, logits.shape)
             y_soft = jax.nn.softmax((logits + gumbel_noise) / temp, axis=-1)
-            
+
             # Hard conversion (Straight-Through)
             y_hard = jax.nn.one_hot(jnp.argmax(y_soft, axis=-1), logits.shape[-1])
             decision_probs_hard = y_hard - jax.lax.stop_gradient(y_soft) + y_soft
-            
-            # decision_probs_soft should be the one with noise? 
-            # Usually BCE uses the pure logits-based probability or the gumbel-soft one?
-            # For "oracle distillation", we want the network's *prediction* (logits) to match the target.
-            # The noise is for exploration.
-            # If we use noisy soft probs for BCE, we are training the "noisy" output.
-            # Standard practice for Gumbel-Softmax is usually to minimize task loss.
-            # Here we have an auxiliary supervision (BCE).
-            # Using the pure logits-softmax for BCE is cleaner for supervision.
-            decision_probs_soft = jax.nn.softmax(logits / temp, axis=-1)
+
+            # For BCE supervision: use pure logits WITHOUT temperature scaling
+            # Temperature is for Gumbel-Softmax exploration, not for the supervised signal.
+            # Using temperature in BCE makes gradients unstable as temp → 0.
+            decision_probs_soft = jax.nn.softmax(logits, axis=-1)  # No temperature!
             
             decision_hard = jnp.argmax(y_soft, axis=-1)  # [batch]
 
