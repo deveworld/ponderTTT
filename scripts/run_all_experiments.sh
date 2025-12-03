@@ -35,14 +35,16 @@ NUM_WORKERS=128
 
 # Configuration - 125M Model
 BATCH_SIZE_125M=16
-NUM_ITERATIONS_125M=100000
+# For 100k chunks: 3125 iters * 16 batch * 2 chunks/seq = 100,000 chunks
+NUM_ITERATIONS_125M=3125
 MAX_CHUNKS_125M=100000
 NUM_EVAL_BATCHES_125M=1000
 NUM_EVAL_BATCHES_OOD_125M=500
 
 # Configuration - 350M Model
 BATCH_SIZE_350M=16
-NUM_ITERATIONS_350M=100000
+# For 100k chunks: 3125 iters * 16 batch * 2 chunks/seq = 100,000 chunks
+NUM_ITERATIONS_350M=3125
 MAX_CHUNKS_350M=100000
 NUM_EVAL_BATCHES_350M=1000
 NUM_EVAL_BATCHES_OOD_350M=500
@@ -124,11 +126,11 @@ run_experiment() {
     fi
 }
 
-# ============================================================
+# ============================================================ 
 # Phase 1: Baseline Training (UPDATE_1, UPDATE_2, UPDATE_4)
 # Paper: Appendix Table (Baseline Results on Training Data)
 # SKIP doesn't need training - no learnable parameters
-# ============================================================
+# ============================================================ 
 phase1_baselines() {
     log_phase "Phase 1: Training Baselines (Appendix Baseline Table)"
 
@@ -183,14 +185,14 @@ phase1_baselines() {
     log_info "Phase 1 Complete!"
 }
 
-# ============================================================
+# ============================================================ 
 # Phase 2: Hard Skip (Binary Gating) Training
 # Paper: Table 1 (Main Results), Appendix Training Dynamics
 # Note: target_update_rate=0.5 corresponds to "Target Skip 0.5" in paper
 #       target_update_rate=0.2 corresponds to "Target Skip 0.8" in paper
 # IMPORTANT: Requires Phase 1 (UPDATE_1 baseline) to be completed first!
 #            The TTT checkpoint from UPDATE_1 is used to compute meaningful advantages.
-# ============================================================
+# ============================================================ 
 phase2_hard_skip() {
     log_phase "Phase 2: Training Hard Skip (Table 1, Appendix Training Dynamics)"
 
@@ -257,10 +259,10 @@ phase2_hard_skip() {
     log_info "Phase 2 Complete!"
 }
 
-# ============================================================
+# ============================================================ 
 # Phase 3: Evaluation - In-Distribution (Python)
 # Paper: Table 1 (Main Results)
-# ============================================================
+# ============================================================ 
 phase3_eval_id() {
     log_phase "Phase 3: Evaluating In-Distribution Python (Table 1)"
 
@@ -313,10 +315,10 @@ phase3_eval_id() {
     log_info "Phase 3 Complete!"
 }
 
-# ============================================================
+# ============================================================ 
 # Phase 4: Evaluation - Out-of-Distribution (JS, Java, Go)
 # Paper: Table 2 (OOD), Appendix OOD Full
-# ============================================================
+# ============================================================ 
 phase4_eval_ood() {
     log_phase "Phase 4: Evaluating Out-of-Distribution (Table 2, Appendix OOD)"
 
@@ -369,10 +371,10 @@ phase4_eval_ood() {
     log_info "Phase 4 Complete!"
 }
 
-# ============================================================
+# ============================================================ 
 # Phase 5: Latency Measurement
 # Paper: Table 3 (Latency Analysis)
-# ============================================================
+# ============================================================ 
 phase5_latency() {
     log_phase "Phase 5: Measuring Latency (Table 3)"
 
@@ -411,10 +413,10 @@ phase5_latency() {
     log_info "Phase 5 Complete!"
 }
 
-# ============================================================
+# ============================================================ 
 # Phase 6: Shuffled Input Sanity Check
 # Paper: Table 8 (Shuffled Input Test)
-# ============================================================
+# ============================================================ 
 phase6_shuffled() {
     log_phase "Phase 6: Shuffled Input Test (Table 8)"
 
@@ -451,10 +453,10 @@ phase6_shuffled() {
     log_info "Phase 6 Complete!"
 }
 
-# ============================================================
+# ============================================================ 
 # Phase 7: Causal Mask Diagonal Ablation
 # Paper: Table 9 (Causal Mask Diagonal Ablation)
-# ============================================================
+# ============================================================ 
 phase7_causal_ablation() {
     log_phase "Phase 7: Causal Mask Ablation (Table 9)"
 
@@ -491,9 +493,9 @@ phase7_causal_ablation() {
     log_info "Phase 7 Complete!"
 }
 
-# ============================================================
+# ============================================================ 
 # Print Summary
-# ============================================================
+# ============================================================ 
 print_summary() {
     log_phase "EXPERIMENT SUMMARY"
 
@@ -517,9 +519,9 @@ print_summary() {
     fi
 }
 
-# ============================================================
+# ============================================================ 
 # Main
-# ============================================================
+# ============================================================ 
 run_all() {
     log_info "Running ALL experiment phases..."
     log_info "This will reproduce all tables from paper/main.tex"
@@ -549,13 +551,13 @@ for arg in "$@"; do
     case $arg in
         --125m)
             RUN_125M=true
-            ;;
+            ;; 
         --350m)
             RUN_350M=true
-            ;;
+            ;; 
         *)
             PHASES+=("$arg")
-            ;;
+            ;; 
     esac
 done
 
@@ -582,29 +584,29 @@ else
         case $phase in
             phase1|baselines)
                 phase1_baselines
-                ;;
+                ;; 
             phase2|hard_skip)
                 phase2_hard_skip
-                ;;
+                ;; 
             phase3|eval_id)
                 phase3_eval_id
-                ;;
+                ;; 
             phase4|eval_ood)
                 phase4_eval_ood
-                ;;
+                ;; 
             phase5|latency)
                 phase5_latency
-                ;;
+                ;; 
             phase6|shuffled)
                 phase6_shuffled
-                ;;
+                ;; 
             phase7|causal_ablation)
                 phase7_causal_ablation
-                ;;
+                ;; 
             all)
                 run_all
                 exit $?
-                ;;
+                ;; 
             *)
                 log_error "Unknown phase: $phase"
                 echo "Available phases:"
@@ -621,7 +623,7 @@ else
                 echo "  --125m                  - Run only 125M experiments"
                 echo "  --350m                  - Run only 350M experiments"
                 exit 1
-                ;;
+                ;; 
         esac
     done
     print_summary
