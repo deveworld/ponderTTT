@@ -174,6 +174,7 @@ def evaluate_model(
     num_workers: int = 32,
     hard_skip_threshold: float = 0.1,
     binary_eval_stochastic: bool = True,  # Use stochastic sampling for BinaryGatingNetwork
+    random_update_rate: Optional[float] = None,  # For Random Skip baseline (0.0-1.0)
 ):
     if gating_net is not None:
         assert batch_size == 1, "Batch size must be 1 for dynamic gating evaluation (mixed SKIP/TTT strategies)."
@@ -286,7 +287,31 @@ def evaluate_model(
             decision_str = ""
 
             if gating_net is None:
-                if fixed_action == "SKIP":
+                if random_update_rate is not None:
+                    # Random Skip Baseline: randomly decide SKIP/UPDATE based on update_rate
+                    rng_key, subkey = jax.random.split(rng_key)
+                    do_update = jax.random.uniform(subkey) < random_update_rate
+
+                    if do_update:
+                        gating_scale = jnp.array([[1.0]], dtype=jnp.float32)
+                        loss = float(jit_eval_with_scale(
+                            ttt_model,
+                            chunk_batch["input_ids"],
+                            chunk_batch["attention_mask"],
+                            position_ids,
+                            gating_scale
+                        ))
+                        cost = 3.0
+                        decision_str = "UPDATE"
+                    else:
+                        cost = 1.0
+                        loss = float(jit_loss_from_logits(
+                            logits_base,
+                            chunk_batch["input_ids"],
+                            chunk_batch["attention_mask"]
+                        ))
+                        decision_str = "SKIP"
+                elif fixed_action == "SKIP":
                     # Fixed Baseline: SKIP
                     cost = 1.0
                     loss = float(jit_loss_from_logits(
@@ -558,6 +583,7 @@ def main():
         all_results.append(df_diff)
 
     # 5. Evaluate Binary Gating (Hard Skip with Gumbel-Softmax)
+    binary_update_rate = None
     if binary_net is not None:
         df_binary = evaluate_model(
             "Binary Gating (Hard Skip)",
@@ -575,7 +601,31 @@ def main():
         )
         all_results.append(df_binary)
 
-    # 6. Visualize & Report
+        # Calculate actual update rate from Binary Gating
+        binary_update_rate = (df_binary["decision"] == "UPDATE").mean()
+        print(f"\n=== Binary Gating Update Rate: {binary_update_rate:.2%} ===")
+
+    # 6. Evaluate Random Skip Baseline (same update rate as Binary Gating)
+    if binary_update_rate is not None and update1_ttt_model is not None:
+        print(f"\n=== Running Random Skip Baseline (update_rate={binary_update_rate:.2%}) ===")
+        df_random = evaluate_model(
+            f"Random Skip ({binary_update_rate:.0%} update)",
+            args.model_scale,
+            args.budget,
+            args.num_eval_batches,
+            args.batch_size,
+            args.seed + 1,  # Different seed for random decisions
+            gating_net=None,
+            model=update1_ttt_model,
+            language=args.language,
+            split=args.split,
+            skip_examples=args.skip_examples,
+            num_workers=args.num_workers,
+            random_update_rate=binary_update_rate,
+        )
+        all_results.append(df_random)
+
+    # 7. Visualize & Report
     full_df = pd.concat(all_results)
 
     print("\n=== Final Results (All Chunks) ===")
@@ -594,6 +644,32 @@ def main():
         if len(binary_real) > 0:
             skip_rate_real = (binary_real["decision"] == "SKIP").mean()
             print(f"\n=== Binary Gating Skip Rate on Real Code: {skip_rate_real:.2%} ===")
+
+    # Random Skip vs Binary Gating comparison (Ablation)
+    random_method = [m for m in summary.index if m.startswith("Random Skip")]
+    if random_method and "Binary Gating (Hard Skip)" in summary.index:
+        random_name = random_method[0]
+        random_loss = float(summary.loc[random_name, "loss"])
+        binary_loss = float(summary.loc["Binary Gating (Hard Skip)", "loss"])
+        random_cost = float(summary.loc[random_name, "cost"])
+        binary_cost = float(summary.loc["Binary Gating (Hard Skip)", "cost"])
+
+        improvement = (random_loss - binary_loss) / random_loss * 100
+
+        print("\n" + "=" * 60)
+        print("ABLATION: Random Skip vs Learned Gating")
+        print("=" * 60)
+        print(f"Random Skip:    Loss = {random_loss:.4f}, Cost = {random_cost:.2f}x")
+        print(f"Binary Gating:  Loss = {binary_loss:.4f}, Cost = {binary_cost:.2f}x")
+        print(f"Improvement:    {improvement:.2f}%")
+        print()
+        if improvement > 5:
+            print("CONCLUSION: Learned gating provides meaningful improvement over random.")
+        elif improvement > 0:
+            print("CONCLUSION: Learned gating provides marginal improvement over random.")
+        else:
+            print("CONCLUSION: Learned gating provides NO improvement over random skip!")
+        print("=" * 60)
 
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
