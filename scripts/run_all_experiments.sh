@@ -36,14 +36,14 @@ NUM_WORKERS=128
 # Configuration - 125M Model
 BATCH_SIZE_125M=16
 NUM_ITERATIONS_125M=100000
-MAX_CHUNKS_125M=10000
+MAX_CHUNKS_125M=100000
 NUM_EVAL_BATCHES_125M=1000
 NUM_EVAL_BATCHES_OOD_125M=500
 
 # Configuration - 350M Model
 BATCH_SIZE_350M=16
 NUM_ITERATIONS_350M=100000
-MAX_CHUNKS_350M=10000
+MAX_CHUNKS_350M=100000
 NUM_EVAL_BATCHES_350M=1000
 NUM_EVAL_BATCHES_OOD_350M=500
 
@@ -386,8 +386,9 @@ phase5_latency() {
                 python scripts/measure_latency.py \
                     --checkpoint "$ckpt_125m" \
                     --model_scale 125m \
-                    --chunk_size 1024 \
-                    --num_warmup 128
+                    --chunk_size 512 \
+                    --num_warmup 128 \
+                    --num_trials 100
         fi
     fi
 
@@ -401,8 +402,9 @@ phase5_latency() {
                 python scripts/measure_latency.py \
                     --checkpoint "$ckpt_350m" \
                     --model_scale 350m \
-                    --num_iterations 1024 \
-                    --warmup_iterations 128
+                    --chunk_size 512 \
+                    --num_warmup 128 \
+                    --num_trials 100
         fi
     fi
 
