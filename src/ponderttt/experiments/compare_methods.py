@@ -196,6 +196,17 @@ def evaluate_oracle(
 
     assert isinstance(ttt_model, TTTTransformerLM)
 
+    # JIT-compiled functions for Oracle
+    @nnx.jit
+    def jit_skip_loss(model, input_ids, attention_mask, position_ids):
+        out = model(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=False)
+        return cross_entropy_loss(out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:])
+
+    @nnx.jit
+    def jit_update_loss(model, input_ids, attention_mask, position_ids, gating_scale):
+        out = model(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=True, gating_scale=gating_scale)
+        return cross_entropy_loss(out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:])
+
     for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
         if i >= num_batches:
             break
@@ -217,32 +228,22 @@ def evaluate_oracle(
             position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
 
-            # Compute SKIP loss
-            out_skip = ttt_model(
+            # Compute SKIP loss (JIT)
+            loss_skip = float(jit_skip_loss(
+                ttt_model,
                 chunk_batch["input_ids"],
-                attention_mask=chunk_batch["attention_mask"],
-                position_ids=position_ids,
-                use_ttt=False,
-            )
-            loss_skip = float(cross_entropy_loss(
-                out_skip["logits"][:, :-1],
-                chunk_batch["input_ids"][:, 1:],
-                chunk_batch["attention_mask"][:, 1:],
+                chunk_batch["attention_mask"],
+                position_ids,
             ))
 
-            # Compute UPDATE loss
+            # Compute UPDATE loss (JIT)
             gating_scale = jnp.array([[1.0]], dtype=jnp.float32)
-            out_update = ttt_model(
+            loss_update = float(jit_update_loss(
+                ttt_model,
                 chunk_batch["input_ids"],
-                attention_mask=chunk_batch["attention_mask"],
-                position_ids=position_ids,
-                use_ttt=True,
-                gating_scale=gating_scale,
-            )
-            loss_update = float(cross_entropy_loss(
-                out_update["logits"][:, :-1],
-                chunk_batch["input_ids"][:, 1:],
-                chunk_batch["attention_mask"][:, 1:],
+                chunk_batch["attention_mask"],
+                position_ids,
+                gating_scale,
             ))
 
             # Advantage: how much better is UPDATE vs SKIP
