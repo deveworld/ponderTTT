@@ -256,13 +256,19 @@ def create_sharding_config(args: argparse.Namespace) -> ShardingConfig:
 def make_train_step(ssl_weight: float) -> Callable:
     """Create training step function."""
 
-    def train_step(model: TTTModel, optimizer: nnx.Optimizer, batch: dict[str, jax.Array], use_ttt: bool) -> tuple[dict[str, jax.Array], dict[str, Any]]:
-        # Batch may not be dict though. Need to revise.
+    def train_step(
+        model: TTTModel,
+        optimizer: nnx.Optimizer,
+        input_ids: jax.Array,
+        attention_mask: jax.Array,
+        position_ids: jax.Array,
+        use_ttt: bool
+    ) -> tuple[dict[str, jax.Array], dict[str, Any]]:
         def loss_fn(model: TTTModel) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict[str, Any]]]:
             outputs = model(
-                batch["input_ids"],
-                attention_mask=batch.get("attention_mask"),
-                position_ids=batch.get("position_ids"),
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
                 use_ttt=use_ttt,
             )
             logits = outputs["logits"]
@@ -270,18 +276,14 @@ def make_train_step(ssl_weight: float) -> Callable:
 
             # Cross-entropy loss
             logits_for_loss = logits[:, :-1]
-            labels = batch["input_ids"][:, 1:]
-            mask = batch["attention_mask"][:, 1:] if "attention_mask" in batch else None
+            labels = input_ids[:, 1:]
+            mask = attention_mask[:, 1:]
 
             # Compute CE loss
             log_probs = jax.nn.log_softmax(logits_for_loss, axis=-1)
             one_hot = jax.nn.one_hot(labels, logits_for_loss.shape[-1])
             ce_loss = -jnp.sum(log_probs * one_hot, axis=-1)
-
-            if mask is not None:
-                ce_loss = jnp.sum(ce_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
-            else:
-                ce_loss = jnp.mean(ce_loss)
+            ce_loss = jnp.sum(ce_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
             # SSL auxiliary loss
             aux_loss = jnp.array(0.0)
@@ -319,27 +321,29 @@ def make_train_step(ssl_weight: float) -> Callable:
 def make_eval_step() -> Callable:
     """Create evaluation step function."""
 
-    def eval_step(model: TTTModel, batch: dict[str, jax.Array], use_ttt: bool) -> dict[str, jax.Array]:
+    def eval_step(
+        model: TTTModel,
+        input_ids: jax.Array,
+        attention_mask: jax.Array,
+        position_ids: jax.Array,
+        use_ttt: bool
+    ) -> dict[str, jax.Array]:
         outputs = model(
-            batch["input_ids"],
-            attention_mask=batch.get("attention_mask"),
-            position_ids=batch.get("position_ids"),
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
             use_ttt=use_ttt,
         )
         logits = outputs["logits"]
 
         logits_for_loss = logits[:, :-1]
-        labels = batch["input_ids"][:, 1:]
-        mask = batch["attention_mask"][:, 1:] if "attention_mask" in batch else None
+        labels = input_ids[:, 1:]
+        mask = attention_mask[:, 1:]
 
         log_probs = jax.nn.log_softmax(logits_for_loss, axis=-1)
         one_hot = jax.nn.one_hot(labels, logits_for_loss.shape[-1])
         ce_loss = -jnp.sum(log_probs * one_hot, axis=-1)
-
-        if mask is not None:
-            ce_loss = jnp.sum(ce_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
-        else:
-            ce_loss = jnp.mean(ce_loss)
+        ce_loss = jnp.sum(ce_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return {"loss_ce": ce_loss, "perplexity": jnp.exp(ce_loss)}
 
@@ -467,22 +471,12 @@ def main() -> None:
     # JIT compile train/eval steps
     if mesh is not None:
         # With explicit sharding
-        jit_train_step = partial(jax.jit, static_argnames=['use_ttt'])(
-            lambda model, optimizer, batch, use_ttt: train_step_fn(model, optimizer, batch, use_ttt)
-        )
-        jit_eval_step = partial(jax.jit, static_argnames=['use_ttt'])(
-            lambda model, batch, use_ttt: eval_step_fn(model, batch, use_ttt)
-        )
+        jit_train_step = partial(jax.jit, static_argnames=['use_ttt'])(train_step_fn)
+        jit_eval_step = partial(jax.jit, static_argnames=['use_ttt'])(eval_step_fn)
     else:
         # Auto sharding
-        jit_train_step = nnx.jit(
-            lambda model, optimizer, batch, use_ttt: train_step_fn(model, optimizer, batch, use_ttt),
-            static_argnames=['use_ttt']
-        )
-        jit_eval_step = nnx.jit(
-            lambda model, batch, use_ttt: eval_step_fn(model, batch, use_ttt),
-            static_argnames=['use_ttt']
-        )
+        jit_train_step = nnx.jit(train_step_fn, static_argnames=['use_ttt'])
+        jit_eval_step = nnx.jit(eval_step_fn, static_argnames=['use_ttt'])
 
     # Training loop
     logger.info("\nStarting training...")
@@ -566,36 +560,35 @@ def main() -> None:
                     if chunks_processed >= args.max_chunks:
                         break
 
-                    chunk_batch = {
-                        "input_ids": batch["chunks"][:, chunk_idx, :],
-                        "attention_mask": batch["chunk_attention_mask"][:, chunk_idx, :],
-                        "position_ids": jnp.arange(
-                            chunk_idx * chunk_size,
-                            (chunk_idx + 1) * chunk_size,
-                            dtype=jnp.int32
-                        )[None, :].repeat(batch["chunks"].shape[0], axis=0)
-                    }
+                    chunk_input_ids = batch["chunks"][:, chunk_idx, :]
+                    chunk_attention_mask = batch["chunk_attention_mask"][:, chunk_idx, :]
+                    chunk_position_ids = jnp.arange(
+                        chunk_idx * chunk_size,
+                        (chunk_idx + 1) * chunk_size,
+                        dtype=jnp.int32
+                    )[None, :].repeat(batch["chunks"].shape[0], axis=0)
 
                     # Apply data sharding if enabled
                     if data_sharding is not None:
-                        chunk_batch = jax.tree.map(
-                            lambda x: jax.device_put(x, data_sharding),
-                            chunk_batch
-                        )
+                        chunk_input_ids = jax.device_put(chunk_input_ids, data_sharding)
+                        chunk_attention_mask = jax.device_put(chunk_attention_mask, data_sharding)
+                        chunk_position_ids = jax.device_put(chunk_position_ids, data_sharding)
 
                     # Check for valid tokens
-                    num_valid_tokens = jnp.sum(chunk_batch["attention_mask"][:, 1:])
+                    num_valid_tokens = jnp.sum(chunk_attention_mask[:, 1:])
                     if num_valid_tokens < 16:
                         continue
 
                     if action_steps == 0:
-                        metrics = jit_eval_step(model, chunk_batch, use_ttt=False)
+                        metrics = jit_eval_step(
+                            model, chunk_input_ids, chunk_attention_mask, chunk_position_ids, use_ttt=False
+                        )
                         metrics["loss_total"] = metrics["loss_ce"]
                         metrics["loss_aux"] = jnp.array(0.0)
                     else:
                         for _ in range(action_steps):
                             metrics, _ = jit_train_step(
-                                model, optimizer, chunk_batch, use_ttt=True
+                                model, optimizer, chunk_input_ids, chunk_attention_mask, chunk_position_ids, use_ttt=True
                             )
 
                     # Stability check

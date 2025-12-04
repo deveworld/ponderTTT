@@ -188,6 +188,7 @@ class Gemma3TTTModel(nnx.Module):
         self.gemma_config = gemma_config
         self.ttt_config = ttt_config
         self.tie_word_embeddings = tie_word_embeddings
+        self.is_training = False
 
         # Base Gemma 3 model (slow weights - frozen during training)
         self.base_model = Gemma3Model(gemma_config, rngs=rngs)
@@ -327,7 +328,7 @@ class Gemma3TTTModel(nnx.Module):
                 hidden_states_normed,
                 mask=attention_mask,
                 position_ids=position_ids,
-                train=True,
+                train=self.is_training,
                 gating_scale=gating_scale,
             )
 
@@ -361,6 +362,16 @@ class Gemma3TTTModel(nnx.Module):
         This method is kept for API compatibility.
         """
         pass
+
+    def train(self, **attributes):
+        """Set model to training mode."""
+        super().train(**attributes)
+        self.is_training = True
+
+    def eval(self, **attributes):
+        """Set model to evaluation mode."""
+        super().eval(**attributes)
+        self.is_training = False
 
     def get_trainable_params(self) -> nnx.State:
         """Get only trainable parameters (TTT layer + fast_norm + projections).
