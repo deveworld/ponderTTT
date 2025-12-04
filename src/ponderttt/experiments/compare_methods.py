@@ -501,6 +501,11 @@ def evaluate_model(
                     hard_scale, decision = jit_binary_decision(gating_net, features, threshold=0.5)
                 decision_val = int(decision[0])
 
+                # DEBUG: Print update probability for first few chunks
+                if i < 2 and c_idx < 5:
+                     _, _, soft_probs, _ = gating_net(features, train=False)
+                     print(f"DEBUG Batch {i} Chunk {c_idx}: SoftProbs={soft_probs[0]} Decision={decision_val}")
+
                 if decision_val == 0:
                     # SKIP
                     cost = 1.0
@@ -655,6 +660,10 @@ def main():
 
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
+            print("DEBUG: Loaded checkpoint keys:", model_state.keys())
+            if "gating_net" in model_state:
+                print("DEBUG: gating_net keys:", model_state["gating_net"].keys())
+            
             nnx.update(trainable_system_binary, model_state)
             print("Binary Gating (Hard Skip) and TTT weights loaded.")
         else:
