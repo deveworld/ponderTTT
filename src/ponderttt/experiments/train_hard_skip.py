@@ -389,6 +389,7 @@ def main():
         base_model: GPT2Model,
         batch: dict,
         temperature: float,
+        target_threshold: float,
         rng_key: jax.Array,
         is_warmup: bool,
         beta_ttt: float = 0.1,
@@ -507,26 +508,31 @@ def main():
             )
             advantage_per_sample = ce_per_sample_skip - ce_per_sample_update  # [B]
 
-            # 2. Compute Top-k targets
-            # Top k% by advantage get target=1 (UPDATE), rest get target=0 (SKIP)
-            topk_targets, batch_threshold = compute_topk_targets(
+            # 2. Compute Top-k targets (batch-relative) for threshold tracking
+            # This is used to update the EMA threshold outside the loop
+            _, batch_threshold = compute_topk_targets(
                 advantage_per_sample, k=target_update_rate
             )
-            topk_targets = jax.lax.stop_gradient(topk_targets)
             batch_threshold = jax.lax.stop_gradient(batch_threshold)
 
-            # 3. Per-sample update probability from gating network
+            # 3. Compute Training Targets using STABLE threshold
+            # We use the passed-in target_threshold (from EMA) to define the positive class.
+            # This prevents the "moving target" problem where the definition of "top-k"
+            # changes wildly between batches.
+            training_targets = (advantage_per_sample >= target_threshold).astype(jnp.float32)
+            training_targets = jax.lax.stop_gradient(training_targets)
+
+            # 4. Per-sample update probability from gating network
             update_prob_soft = decision_probs_soft[:, 1]  # [B]
 
             # Clamp predictions only (not targets) for numerical stability in BCE
             eps = 1e-7
             update_prob_clamped = jnp.clip(update_prob_soft, eps, 1.0 - eps)
-            # NOTE: Do NOT clamp targets - they should be exactly 0 or 1
 
-            # 4. BCE loss: train gating to predict top-k membership
+            # 5. BCE loss: train gating to predict STABLE targets
             bce_loss = -(
-                topk_targets * jnp.log(update_prob_clamped) +
-                (1.0 - topk_targets) * jnp.log(1.0 - update_prob_clamped)
+                training_targets * jnp.log(update_prob_clamped) +
+                (1.0 - training_targets) * jnp.log(1.0 - update_prob_clamped)
             )
             gating_bce_loss = jnp.mean(bce_loss)
 
@@ -572,8 +578,8 @@ def main():
             # Compute stats for logging
             advantage_std = jnp.std(advantage_per_sample)
 
-            # Top-k match rate: how well does gating match oracle top-k?
-            topk_match_rate = jnp.mean((decision_hard == topk_targets.astype(jnp.int32)).astype(jnp.float32))
+            # Top-k match rate: how well does gating match the STABLE target?
+            topk_match_rate = jnp.mean((decision_hard == training_targets.astype(jnp.int32)).astype(jnp.float32))
 
             return total_loss, (ce_loss, l_ttt, gating_quality_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_bce_loss, batch_threshold, topk_match_rate, advantage_std)
 
@@ -670,6 +676,7 @@ def main():
                 cast(GPT2Model, ttt_model.base_model),  # train_hard_skip is GPT2-specific
                 chunk_batch,
                 temperature,
+                threshold_ema,
                 subkey,
                 is_warmup,
                 beta_ttt=args.beta_ttt,
