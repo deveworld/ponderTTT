@@ -506,8 +506,14 @@ def evaluate_model(
 
                 # DEBUG: Print update probability for first few chunks
                 if i < 2 and c_idx < 5:
-                     _, _, soft_probs, _ = gating_net(features, train=False)
-                     print(f"DEBUG Batch {i} Chunk {c_idx}: SoftProbs={soft_probs[0]} Decision={decision_val}")
+                     _, _, soft_probs, decision_from_call = gating_net(features, train=False)
+                     # Verify: decision from get_decision vs decision from __call__
+                     # soft_probs[:, 1] is UPDATE probability
+                     update_prob = float(soft_probs[0, 1])
+                     expected_decision = 1 if update_prob > 0.5 else 0
+                     print(f"DEBUG Batch {i} Chunk {c_idx}: UpdateProb={update_prob:.4f} "
+                           f"Decision={decision_val} Expected={expected_decision} "
+                           f"CallDecision={int(decision_from_call[0])}")
 
                 if decision_val == 0:
                     # SKIP
@@ -665,18 +671,11 @@ def main():
 
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
-            print("DEBUG: Loaded checkpoint keys:", model_state.keys())
-            if "gating_net" in model_state:
-                print("DEBUG: gating_net keys:", model_state["gating_net"].keys())
-
             nnx.update(trainable_system_binary, model_state)
             # IMPORTANT: Reassign binary_net to the updated gating_net
             # nnx.update may replace Variable objects, breaking the original reference
             binary_net = trainable_system_binary.gating_net
             print("Binary Gating (Hard Skip) and TTT weights loaded.")
-
-            # Debug: verify head bias was loaded (should not be all zeros if trained)
-            print(f"DEBUG: gating_net.head.bias = {binary_net.head.bias.value}")
         else:
             print("Warning: Could not find 'state.model' in checkpoint.")
     else:
