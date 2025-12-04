@@ -41,7 +41,7 @@ import logging
 import math
 from pathlib import Path
 from functools import partial
-from typing import cast
+from typing import Any, Callable, cast
 
 import jax
 import jax.numpy as jnp
@@ -50,7 +50,7 @@ from flax import nnx
 from tqdm import tqdm
 
 from ..data import create_data_iterator, get_tokenizer
-from ..models import load_ttt_model
+from ..models import load_ttt_model, TTTModel
 from ..models.gemma3 import (
     Gemma3Config,
     ShardingConfig,
@@ -241,7 +241,7 @@ def count_params(model: nnx.Module) -> int:
     return sum(x.size for x in jax.tree.leaves(state) if hasattr(x, 'size'))
 
 
-def create_sharding_config(args) -> ShardingConfig:
+def create_sharding_config(args: argparse.Namespace) -> ShardingConfig:
     """Create sharding configuration from args."""
     return ShardingConfig(
         dcn_data_parallelism=args.dcn_data_parallelism,
@@ -253,11 +253,12 @@ def create_sharding_config(args) -> ShardingConfig:
     )
 
 
-def make_train_step(ssl_weight: float):
+def make_train_step(ssl_weight: float) -> Callable:
     """Create training step function."""
 
-    def train_step(model, optimizer, batch, use_ttt: bool):
-        def loss_fn(model):
+    def train_step(model: TTTModel, optimizer: nnx.Optimizer, batch: dict[str, jax.Array], use_ttt: bool) -> tuple[dict[str, jax.Array], dict[str, Any]]:
+        # Batch may not be dict though. Need to revise.
+        def loss_fn(model: TTTModel) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict[str, Any]]]:
             outputs = model(
                 batch["input_ids"],
                 attention_mask=batch.get("attention_mask"),
@@ -315,10 +316,10 @@ def make_train_step(ssl_weight: float):
     return train_step
 
 
-def make_eval_step():
+def make_eval_step() -> Callable:
     """Create evaluation step function."""
 
-    def eval_step(model, batch, use_ttt: bool):
+    def eval_step(model: TTTModel, batch: dict[str, jax.Array], use_ttt: bool) -> dict[str, jax.Array]:
         outputs = model(
             batch["input_ids"],
             attention_mask=batch.get("attention_mask"),
@@ -345,7 +346,7 @@ def make_eval_step():
     return eval_step
 
 
-def main():
+def main() -> None:
     args = parse_args()
     seeds = [args.seed] if args.seeds is None else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
 
@@ -417,7 +418,7 @@ def main():
     train_step_fn = make_train_step(args.ssl_weight)
     eval_step_fn = make_eval_step()
 
-    def init_model(seed):
+    def init_model(seed: int) -> tuple[TTTModel, Any]:
         logger.info(f"\nInitializing Gemma 3 model with TTT layer (seed={seed})...")
         model, config = load_ttt_model(
             model_name=model_name,
@@ -450,7 +451,7 @@ def main():
     action_steps = action_to_steps(args.action)
     effective_lr = args.learning_rate / max(action_steps, 1)
 
-    def create_optimizer(mdl):
+    def create_optimizer(mdl: TTTModel) -> nnx.Optimizer:
         return nnx.Optimizer(
             mdl,
             optax.chain(
