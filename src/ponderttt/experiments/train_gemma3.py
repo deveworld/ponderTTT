@@ -354,6 +354,11 @@ def main() -> None:
     args = parse_args()
     seeds = [args.seed] if args.seeds is None else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
 
+    # Initialize JAX distributed for multi-host TPU setups
+    # This must be called before any other JAX operations
+    if args.enable_sharding:
+        jax.distributed.initialize()
+
     logger.info("=" * 60)
     logger.info("PonderTTT Gemma 3 Training (Multi-Host TPU Support)")
     logger.info("=" * 60)
