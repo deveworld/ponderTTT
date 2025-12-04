@@ -252,6 +252,7 @@ class TTTTransformerLM(nnx.Module):
 
             return {
                 "logits": logits,
+                "hidden_states": hidden_states,  # For feature extraction
                 "ttt_stats": fast_stats,  # Works for both TTT and LoRA
             }
         else:
@@ -266,7 +267,7 @@ class TTTTransformerLM(nnx.Module):
             if self.pad_token_id is not None:
                 logits = logits.at[..., self.pad_token_id].set(-1e9)
 
-            return {"logits": logits, "ttt_stats": None}
+            return {"logits": logits, "hidden_states": hidden_states, "ttt_stats": None}
 
 
 def load_ttt_model(

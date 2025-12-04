@@ -63,6 +63,7 @@ def jit_base_forward_and_features(
         use_ttt=False,
     )
     logits = out_base["logits"]
+    hidden_states = out_base["hidden_states"]
 
     # 2. Feature Extraction
     extractor = FeatureExtractor(
@@ -74,9 +75,11 @@ def jit_base_forward_and_features(
     extractor.difficulty_sq_ema = diff_sq_ema
     extractor.cost_ema = cost_ema
 
+    # IMPORTANT: Pass hidden_states to match training feature extraction
     features = extractor.extract(
         input_ids=input_ids,
         logits=logits,
+        hidden_states=[hidden_states],
         attention_mask=attention_mask,
         budget_remaining=budget_remaining,
     )
