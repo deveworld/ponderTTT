@@ -253,7 +253,10 @@ class BinaryGatingNetwork(nnx.Module):
 
         else:
             # Evaluation: deterministic
-            decision_probs_soft = jax.nn.softmax(logits / temp, axis=-1)
+            # Use logits WITHOUT temperature to match training supervision (line 250)
+            # During training, BCE loss uses softmax(logits) without temperature,
+            # so evaluation should be consistent.
+            decision_probs_soft = jax.nn.softmax(logits, axis=-1)
             decision_probs_hard = jax.nn.one_hot(jnp.argmax(decision_probs_soft, axis=-1), 2)
             decision_hard = (decision_probs_soft[:, 1] > 0.5).astype(jnp.int32)  # [batch]
 
