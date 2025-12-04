@@ -325,10 +325,11 @@ class TTTLayer(nnx.Module):
         self.learnable_token_idx = nnx.Param(jnp.zeros((self.mini_batch_size,), dtype=jnp.float32))
 
         # Learnable learning rate (per-head)
-        # Create num_heads separate linear layers for per-head learning rate
-        self.learnable_ttt_lr_layers = nnx.List([
-            nnx.Linear(config.hidden_dim, 1, rngs=rngs) for _ in range(config.num_heads)
-        ])
+        # Use Dict with string keys to avoid int/str comparison issues in sorting
+        self.learnable_ttt_lr_layers = nnx.Dict({
+            str(i): nnx.Linear(config.hidden_dim, 1, rngs=rngs) 
+            for i in range(config.num_heads)
+        })
 
         # Per-head TTT normalization
         self.ttt_norm = TTTLayerNorm(config.num_heads, config.head_dim, 1e-5, rngs)
@@ -404,7 +405,8 @@ class TTTLayer(nnx.Module):
         X_flat = X.astype(jnp.float32).reshape(-1, W)
         
         learnable_lrs = []
-        for head_idx, lr_layer in enumerate(self.learnable_ttt_lr_layers):
+        for head_idx in range(len(self.learnable_ttt_lr_layers)):
+            lr_layer = self.learnable_ttt_lr_layers[str(head_idx)]
             lr = lr_layer(X_flat)  # [B*n*m, 1]
             lr = lr.reshape(B, N_mini, Mini, 1)
             learnable_lrs.append(lr)
