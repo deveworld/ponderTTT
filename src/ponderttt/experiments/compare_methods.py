@@ -620,6 +620,8 @@ def main():
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
             nnx.update(trainable_system, model_state)
+            # IMPORTANT: Reassign diff_net to the updated gating_net
+            diff_net = trainable_system.gating_net
             print("Differentiable Gating and TTT weights loaded.")
         else:
             print("Warning: Could not find 'state.model' in checkpoint.")
@@ -663,9 +665,15 @@ def main():
             print("DEBUG: Loaded checkpoint keys:", model_state.keys())
             if "gating_net" in model_state:
                 print("DEBUG: gating_net keys:", model_state["gating_net"].keys())
-            
+
             nnx.update(trainable_system_binary, model_state)
+            # IMPORTANT: Reassign binary_net to the updated gating_net
+            # nnx.update may replace Variable objects, breaking the original reference
+            binary_net = trainable_system_binary.gating_net
             print("Binary Gating (Hard Skip) and TTT weights loaded.")
+
+            # Debug: verify head bias was loaded (should not be all zeros if trained)
+            print(f"DEBUG: gating_net.head.bias = {binary_net.head.bias.value}")
         else:
             print("Warning: Could not find 'state.model' in checkpoint.")
     else:
