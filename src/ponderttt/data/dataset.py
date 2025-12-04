@@ -166,7 +166,7 @@ class CodeDataset:
             # logging.warning("Failed to download blob %s: %s", blob_id, exc)
             return ""
 
-    def _download_and_tokenize(self, example: dict) -> tuple[np.ndarray, np.ndarray] | None:
+    def _download_and_tokenize(self, example: dict) -> tuple[np.ndarray, np.ndarray, str | None] | None:
         """
         Download and tokenize a single file.
 
@@ -174,7 +174,7 @@ class CodeDataset:
             example: Dataset example with blob_id and src_encoding
 
         Returns:
-            Tuple of (input_ids, attention_mask) arrays or None if failed
+            Tuple of (input_ids, attention_mask, blob_id) or None if failed
         """
         # Download actual content from S3
         text = self._download_content(example["blob_id"], example["src_encoding"])
@@ -195,7 +195,7 @@ class CodeDataset:
         input_ids = np.array(encoded.ids, dtype=np.int32)
         attention_mask = np.array(encoded.attention_mask, dtype=bool)
 
-        return input_ids, attention_mask
+        return input_ids, attention_mask, example.get("blob_id")
 
     def _create_sequence_from_buffer(
         self, token_buffer: np.ndarray, mask_buffer: np.ndarray
@@ -240,7 +240,11 @@ class CodeDataset:
         if result is None:
             return None
 
-        input_ids, attention_mask = result
+        blob_id = None
+        if len(result) == 3:
+            input_ids, attention_mask, blob_id = result
+        else:
+            input_ids, attention_mask = result
 
         # Truncate if longer than seq_length
         if len(input_ids) > self.seq_length:
@@ -254,7 +258,9 @@ class CodeDataset:
             input_ids = np.concatenate([input_ids, pad_ids])
             attention_mask = np.concatenate([attention_mask, pad_mask])
 
-        return self._create_sequence_from_buffer(input_ids, attention_mask)
+        processed = self._create_sequence_from_buffer(input_ids, attention_mask)
+        processed["blob_id"] = blob_id
+        return processed
 
     def __iter__(self) -> Iterator[dict[str, np.ndarray]]:
         """
@@ -548,6 +554,7 @@ def create_data_iterator(
         if existing_cache and existing_metadata:
             cached_sequences = existing_metadata.get("total_sequences", 0)
             cached_files_scanned = existing_metadata.get("files_scanned", 0)
+            cached_blob_ids: list[str] = existing_metadata.get("blob_ids", [])
 
             if cached_sequences >= total_needed:
                 # Cache has enough data - load and slice
@@ -609,12 +616,14 @@ def create_data_iterator(
 
                 existing_tokens = list(cache_data_dict.get("raw_tokens", []))
                 start_from_file = cached_files_scanned
+                existing_blob_ids = cached_blob_ids
                 print(f"Will continue downloading from file {start_from_file}...")
         else:
             # No existing cache
             existing_tokens = []
             start_from_file = 0
             cached_files_scanned = 0
+            existing_blob_ids = []
 
         # Download data (either fresh or extending existing cache)
         if not existing_cache or existing_metadata.get("total_sequences", 0) < total_needed:
@@ -701,11 +710,29 @@ def create_data_iterator(
 
                 # Collect results
                 print("Waiting for remaining downloads...")
-                new_raw_tokens = []
-                for f in futures:
-                    res = f.result()
-                    if res is not None:
-                        new_raw_tokens.append(res)
+            new_raw_tokens: list = []
+            new_blob_ids: list[str] = []
+            for f in futures:
+                res = f.result()
+                if res is None:
+                    continue
+
+                if concatenate_documents:
+                    # res = (input_ids, attention_mask, blob_id)
+                    if len(res) == 3:
+                        tokens, mask, blob_id = res
+                    else:
+                        tokens, mask = res
+                        blob_id = None
+                    new_raw_tokens.append((tokens, mask, blob_id))
+                    if blob_id is not None:
+                        new_blob_ids.append(blob_id)
+                else:
+                    # res is a processed example dict that already includes blob_id
+                    blob_id = res.get("blob_id")
+                    new_raw_tokens.append(res)
+                    if blob_id is not None:
+                        new_blob_ids.append(blob_id)
 
             print(f"Successfully downloaded {len(new_raw_tokens)} new files")
             total_files_scanned = start_from_file + len(futures)
@@ -719,10 +746,18 @@ def create_data_iterator(
                 token_buffer = []
                 mask_buffer = []
 
+                blob_ids_used: list[str] = list(existing_blob_ids)
+
                 for item in all_raw_tokens:
                     if item is None:
                         continue
-                    input_ids, attention_mask = item
+                    if len(item) == 3:
+                        input_ids, attention_mask, blob_id = item
+                    else:
+                        input_ids, attention_mask = item
+                        blob_id = None
+                    if blob_id is not None:
+                        blob_ids_used.append(blob_id)
 
                     # Add separator between documents
                     if token_buffer:
@@ -764,6 +799,7 @@ def create_data_iterator(
                     "chunk_size": chunk_size,
                     "batch_size": batch_size,
                     "skip_examples": skip_examples,
+                    "blob_ids": blob_ids_used,
                 }
 
                 _save_cache_with_metadata(cache_path, cache_data_to_save, metadata)
