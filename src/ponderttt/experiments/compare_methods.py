@@ -11,6 +11,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 from flax import nnx
@@ -420,8 +421,10 @@ def evaluate_model(
             position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
 
-            # Budget Feature
-            budget_rem = (total_budget - current_spend) / total_budget if total_budget > 0 else 0.0
+            # Budget Feature: Use 1.0 to match training (training hardcoded budget_remaining=1.0)
+            # Note: The gating network was trained with budget_remaining=1.0 constant,
+            # so evaluation must use the same value to avoid distribution shift.
+            budget_rem = 1.0  # Match training
 
             assert isinstance(ttt_model, TTTTransformerLM)
             # 1. Extract Features (using JIT)
@@ -498,6 +501,11 @@ def evaluate_model(
                 # to avoid JIT caching issues with updated gating_net weights
                 gating_scale, _, soft_probs, decision = gating_net(features, train=False)
                 decision_val = int(decision[0])
+
+                # Collect update probability for diagnostics
+                if "update_probs" not in results:
+                    results["update_probs"] = []
+                results["update_probs"].append(float(soft_probs[0, 1]))
 
                 if decision_val == 0:
                     # SKIP
@@ -597,29 +605,28 @@ def main():
             vocab_size=vocab_size,
         )
 
-        class TrainableSystem(nnx.Module):
-            def __init__(self, ttt_model, gating_net):
-                self.fast_layer = ttt_model.fast_layer
-                self.fast_norm = ttt_model.fast_norm
-                self.gating_net = gating_net
-                if hasattr(ttt_model, 'lm_head'):
-                    self.lm_head = ttt_model.lm_head
-                else:
-                    self.lm_head = None
-
-        trainable_system = TrainableSystem(diff_ttt_model, diff_net)
         ckpt = load_checkpoint(args.diff_checkpoint, target=None)
 
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
-            nnx.update(trainable_system, model_state)
-            # IMPORTANT: Reassign all updated components
-            # nnx.update may replace Variable objects, breaking original references
-            diff_net = trainable_system.gating_net
-            diff_ttt_model.fast_layer = trainable_system.fast_layer
-            diff_ttt_model.fast_norm = trainable_system.fast_norm
-            if trainable_system.lm_head is not None:
-                diff_ttt_model.lm_head = trainable_system.lm_head
+
+            # Direct component updates (avoid wrapper indirection issues)
+            if "gating_net" in model_state:
+                nnx.update(diff_net, model_state["gating_net"])
+                print("  - gating_net updated")
+
+            if "fast_layer" in model_state:
+                nnx.update(diff_ttt_model.fast_layer, model_state["fast_layer"])
+                print("  - fast_layer updated")
+
+            if "fast_norm" in model_state:
+                nnx.update(diff_ttt_model.fast_norm, model_state["fast_norm"])
+                print("  - fast_norm updated")
+
+            if "lm_head" in model_state and hasattr(diff_ttt_model, 'lm_head'):
+                nnx.update(diff_ttt_model.lm_head, model_state["lm_head"])
+                print("  - lm_head updated")
+
             print("Differentiable Gating and TTT weights loaded.")
         else:
             print("Warning: Could not find 'state.model' in checkpoint.")
@@ -645,30 +652,40 @@ def main():
             vocab_size=vocab_size,
         )
 
-        class TrainableSystemBinary(nnx.Module):
-            def __init__(self, ttt_model, gating_net):
-                self.fast_layer = ttt_model.fast_layer
-                self.fast_norm = ttt_model.fast_norm
-                self.gating_net = gating_net
-                if hasattr(ttt_model, 'lm_head'):
-                    self.lm_head = ttt_model.lm_head
-                else:
-                    self.lm_head = None
-
-        trainable_system_binary = TrainableSystemBinary(binary_ttt_model, binary_net)
         ckpt = load_checkpoint(args.binary_gating_checkpoint, target=None)
 
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
-            nnx.update(trainable_system_binary, model_state)
-            # IMPORTANT: Reassign all updated components
-            # nnx.update may replace Variable objects, breaking original references
-            binary_net = trainable_system_binary.gating_net
-            binary_ttt_model.fast_layer = trainable_system_binary.fast_layer
-            binary_ttt_model.fast_norm = trainable_system_binary.fast_norm
-            if trainable_system_binary.lm_head is not None:
-                binary_ttt_model.lm_head = trainable_system_binary.lm_head
+            print(f"  Checkpoint keys: {list(model_state.keys())}")
+
+            # Verify weights change by capturing before/after
+            fast_layer_before = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W_k.value)))
+
+            # Direct component updates (avoid wrapper indirection issues)
+            # Update each trainable component directly from checkpoint state
+            if "gating_net" in model_state:
+                nnx.update(binary_net, model_state["gating_net"])
+                print(f"  - gating_net updated (bias: {binary_net.head.bias.value})")
+
+            if "fast_layer" in model_state:
+                nnx.update(binary_ttt_model.fast_layer, model_state["fast_layer"])
+                fast_layer_after = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W_k.value)))
+                print(f"  - fast_layer updated (W_k mean abs: {fast_layer_before:.6f} -> {fast_layer_after:.6f})")
+
+            if "fast_norm" in model_state:
+                nnx.update(binary_ttt_model.fast_norm, model_state["fast_norm"])
+                print("  - fast_norm updated")
+
+            if "lm_head" in model_state and hasattr(binary_ttt_model, 'lm_head'):
+                nnx.update(binary_ttt_model.lm_head, model_state["lm_head"])
+                print("  - lm_head updated")
+
             print("Binary Gating (Hard Skip) and TTT weights loaded.")
+
+            # Quick sanity check: run inference on dummy data
+            dummy_features = jnp.zeros((1, 32))
+            _, _, soft_probs_zero, _ = binary_net(dummy_features, train=False)
+            print(f"  Sanity check (zero features): UPDATE prob = {float(soft_probs_zero[0, 1]):.4f}")
         else:
             print("Warning: Could not find 'state.model' in checkpoint.")
     else:
@@ -771,6 +788,14 @@ def main():
         # Calculate actual update rate from Binary Gating
         binary_update_rate = (df_binary["decision"] == "UPDATE").mean()
         print(f"\n=== Binary Gating Update Rate: {binary_update_rate:.2%} ===")
+
+        # Print diagnostic info about gating predictions
+        if "update_probs" in df_binary.columns:
+            probs = df_binary["update_probs"].values
+            print(f"    UPDATE prob distribution: min={np.min(probs):.4f}, max={np.max(probs):.4f}, "
+                  f"mean={np.mean(probs):.4f}, std={np.std(probs):.4f}")
+            print(f"    Prob percentiles: 10th={np.percentile(probs, 10):.4f}, "
+                  f"50th={np.percentile(probs, 50):.4f}, 90th={np.percentile(probs, 90):.4f}")
 
     # 6. Evaluate Random Skip Baseline (same update rate as Binary Gating)
     # IMPORTANT: Use binary_ttt_model (same TTT weights as Binary Gating) for fair comparison

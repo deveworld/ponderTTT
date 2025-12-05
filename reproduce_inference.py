@@ -62,13 +62,13 @@ def main():
     
     # Inject History Features (Indices 22-25)
     # 22: difficulty (EMA of loss) -> Set to ~2.0 (Mean CE from training logs)
-    dummy_features = dummy_features.at[:, 22].set(2.0) 
+    dummy_features = dummy_features.at[:, 22].set(2.0)
     # 23: difficulty_std -> Set to ~0.5
     dummy_features = dummy_features.at[:, 23].set(0.5)
     # 24: cost_ema -> Set to ~2.0 (Mix of 1.0 and 3.0)
     dummy_features = dummy_features.at[:, 24].set(2.0)
-    # 25: budget_rem (0.0 to 1.0) -> Set to 0.5
-    dummy_features = dummy_features.at[:, 25].set(0.5)
+    # 25: budget_rem (0.0 to 1.0) -> Set to 1.0 (matches training which uses budget_remaining=1.0)
+    dummy_features = dummy_features.at[:, 25].set(1.0)
     
     _, _, probs_ema, _ = net(dummy_features, train=False)
     print("Update Probs (with EMA ~2.0):", probs_ema[:, 1])
