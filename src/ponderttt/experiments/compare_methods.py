@@ -220,7 +220,7 @@ def evaluate_oracle(
         num_chunks = chunks.shape[1]
 
         # Step 1: Compute advantage for all chunks in this batch
-    chunk_data = []
+        chunk_data = []
 
         for c_idx in range(num_chunks):
             chunk_batch = {
