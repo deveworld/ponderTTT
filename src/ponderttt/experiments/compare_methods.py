@@ -513,22 +513,23 @@ def evaluate_model(
                 # Binary decision
                 gating_scale = None
 
-                # Get soft probabilities first
+                # Get soft probabilities
                 _, _, soft_probs, _ = gating_net(features, train=False)
                 update_probs = soft_probs[:, 1]  # [batch]
 
-                # Determine threshold:
-                # 1) If target_update_rate is set, choose quantile to hit that rate per-batch
-                # 2) Else if user supplied a threshold (or came from checkpoint), use it
-                # 3) Else fallback to argmax
-                threshold_to_use: Optional[float] = None
-                if target_update_rate is not None:
-                    threshold_to_use = float(np.percentile(np.asarray(update_probs), 100 * (1 - target_update_rate)))
-                elif binary_threshold is not None:
-                    threshold_to_use = binary_threshold
-
-                if threshold_to_use is not None:
-                    decision = (update_probs >= threshold_to_use).astype(jnp.int32)
+                # Decide path
+                # Priority:
+                # 1) User/ckpt threshold (probability)
+                # 2) Budget-calibrated stochastic decision (keeps expected update rate near target)
+                # 3) Argmax fallback
+                decision: jax.Array
+                if binary_threshold is not None:
+                    decision = (update_probs >= binary_threshold).astype(jnp.int32)
+                elif target_update_rate is not None:
+                    # Stochastic: probability scaled by both model confidence and target rate
+                    prob = float(update_probs[0]) * target_update_rate
+                    rng_key, subkey = jax.random.split(rng_key)
+                    decision = jnp.array([jax.random.bernoulli(subkey, prob=prob).astype(jnp.int32)])
                 else:
                     decision = jnp.argmax(soft_probs, axis=-1)
 
