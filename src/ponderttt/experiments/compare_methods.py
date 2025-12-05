@@ -419,6 +419,8 @@ def evaluate_model(
         current_spend = 0.0
 
         feature_extractor.reset_history()
+        # Buffer to defer binary gating decisions until we choose a threshold for this sequence
+        binary_chunk_buffer: list[dict] = []
 
         for c_idx in range(num_chunks):
             chunk_batch = {
