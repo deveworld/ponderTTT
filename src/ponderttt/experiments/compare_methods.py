@@ -334,7 +334,7 @@ def evaluate_model(
     num_workers: int = 32,
     hard_skip_threshold: float = 0.1,
     binary_threshold: Optional[float] = None,  # Optional probability threshold; None -> auto from budget
-    random_update_rate: Optional[float] = None,  # For Random Skip baseline (0.0-1.0); None -> auto from budget
+    random_update_rate: Optional[float] = None,  # For Random Skip baseline (0.0-1.0); set explicitly
 ):
     # Convert budget (cost multiplier) to target update rate using cost model:
     # cost = 1 + 2 * update_rate => update_rate = (budget - 1) / 2
@@ -343,9 +343,9 @@ def evaluate_model(
         target_update_rate = (budget_target - 1.0) / 2.0
         target_update_rate = float(min(max(target_update_rate, 0.0), 1.0))
 
-    # If random baseline didn't receive a rate, align it to the target budget
-    if random_update_rate is None and target_update_rate is not None:
-        random_update_rate = target_update_rate
+    # NOTE: random_update_rate should only be set explicitly by callers.
+    # Leaving it untouched avoids accidentally turning fixed-action baselines
+    # (e.g., UPDATE_1) into random-skip evaluations when a budget is provided.
 
     if gating_net is not None:
         assert batch_size == 1, "Batch size must be 1 for dynamic gating evaluation (mixed SKIP/TTT strategies)."
@@ -468,6 +468,9 @@ def evaluate_model(
 
             if gating_net is None:
                 if random_update_rate is not None:
+                    if fixed_action != "SKIP":
+                        raise ValueError("random_update_rate is only supported for SKIP/random baselines")
+
                     # Random Skip Baseline: randomly decide SKIP/UPDATE based on update_rate
                     rng_key, subkey = jax.random.split(rng_key)
                     do_update = jax.random.uniform(subkey) < random_update_rate
