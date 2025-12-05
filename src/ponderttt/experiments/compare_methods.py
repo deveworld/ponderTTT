@@ -653,6 +653,12 @@ def main():
 
         ckpt = load_checkpoint(args.binary_gating_checkpoint, target=None)
 
+        # Load threshold_ema from metadata (for logging/debugging)
+        threshold_ema = None
+        if "metadata" in ckpt and "threshold_ema" in ckpt["metadata"]:
+            threshold_ema = float(ckpt["metadata"]["threshold_ema"])
+            print(f"  Loaded threshold_ema from metadata: {threshold_ema:.4f}")
+
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
             print(f"  Checkpoint keys: {list(model_state.keys())}")

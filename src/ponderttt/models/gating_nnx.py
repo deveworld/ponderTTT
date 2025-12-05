@@ -257,8 +257,10 @@ class BinaryGatingNetwork(nnx.Module):
             # During training, BCE loss uses softmax(logits) without temperature,
             # so evaluation should be consistent.
             decision_probs_soft = jax.nn.softmax(logits, axis=-1)
-            decision_probs_hard = jax.nn.one_hot(jnp.argmax(decision_probs_soft, axis=-1), 2)
-            decision_hard = (decision_probs_soft[:, 1] > 0.5).astype(jnp.int32)  # [batch]
+            # IMPORTANT: Use argmax for BOTH decision_probs_hard and decision_hard
+            # to ensure gating_scale and branch decision are consistent
+            decision_hard = jnp.argmax(decision_probs_soft, axis=-1)  # [batch]
+            decision_probs_hard = jax.nn.one_hot(decision_hard, 2)
 
         # Gating scale: 0 for SKIP, scale_when_update for UPDATE
         # Use HARD probabilities for the actual TTT update mask
