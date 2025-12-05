@@ -332,7 +332,7 @@ def evaluate_model(
     skip_examples: int = 0,
     num_workers: int = 32,
     hard_skip_threshold: float = 0.1,
-    binary_threshold: Optional[float] = None,  # Threshold for BinaryGatingNetwork (default: 0.5)
+    binary_threshold: Optional[float] = None,  # Optional probability threshold; None -> argmax
     random_update_rate: Optional[float] = None,  # For Random Skip baseline (0.0-1.0)
 ):
     if gating_net is not None:
@@ -355,6 +355,9 @@ def evaluate_model(
         )
     else:
         ttt_model = model
+    # Ensure eval mode for inference (dropout off, deterministic)
+    if hasattr(ttt_model, "eval"):
+        ttt_model.eval()
 
     # Initialize feature extractor
     pad_id = tokenizer.token_to_id("<|pad|>")
@@ -496,14 +499,17 @@ def evaluate_model(
                     raise ValueError(f"Unknown fixed_action: {fixed_action}")
 
             elif isinstance(gating_net, BinaryGatingNetwork):
-                # Binary decision using threshold from training (threshold_ema)
-                # Use get_decision which applies threshold consistently
-                threshold = binary_threshold if binary_threshold is not None else 0.5
-                gating_scale, decision = gating_net.get_decision(features, threshold=threshold)
-                decision_val = int(decision[0])
+                # Binary decision
+                if binary_threshold is None:
+                    # Use argmax (same rule as training supervision)
+                    gating_scale, decision_probs_hard, soft_probs, decision = gating_net(features, train=False)
+                else:
+                    gating_scale, decision = gating_net.get_decision(features, threshold=binary_threshold)
+                    # Also get soft probs for diagnostics
+                    _, _, soft_probs, _ = gating_net(features, train=False)
+                    decision_probs_hard = None  # unused
 
-                # Also get soft probs for diagnostics
-                _, _, soft_probs, _ = gating_net(features, train=False)
+                decision_val = int(decision[0])
                 if "update_probs" not in results:
                     results["update_probs"] = []
                 results["update_probs"].append(float(soft_probs[0, 1]))
@@ -781,9 +787,9 @@ def main():
     # 5. Evaluate Binary Gating (Hard Skip with Gumbel-Softmax)
     binary_update_rate = None
     if binary_net is not None:
-        # Use threshold_ema from checkpoint if in valid range, otherwise use 0.5
-        eval_threshold = binary_threshold_ema if (binary_threshold_ema is not None and 0 <= binary_threshold_ema <= 1) else 0.5
-        print(f"\n=== Using binary_threshold={eval_threshold:.4f} for evaluation ===")
+        # threshold_ema is an advantage threshold (not a probability); for evaluation we use argmax.
+        eval_threshold = None
+        print(f"\n=== Using binary_threshold=argmax for evaluation (threshold_ema logged only) ===")
 
         df_binary = evaluate_model(
             "Binary Gating (Hard Skip)",
