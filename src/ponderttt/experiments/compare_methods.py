@@ -659,7 +659,7 @@ def main():
             print(f"  Checkpoint keys: {list(model_state.keys())}")
 
             # Verify weights change by capturing before/after
-            fast_layer_before = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W_k.value)))
+            fast_layer_before = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W1.value)))
 
             # Direct component updates (avoid wrapper indirection issues)
             # Update each trainable component directly from checkpoint state
@@ -669,8 +669,8 @@ def main():
 
             if "fast_layer" in model_state:
                 nnx.update(binary_ttt_model.fast_layer, model_state["fast_layer"])
-                fast_layer_after = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W_k.value)))
-                print(f"  - fast_layer updated (W_k mean abs: {fast_layer_before:.6f} -> {fast_layer_after:.6f})")
+                fast_layer_after = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W1.value)))
+                print(f"  - fast_layer updated (W1 mean abs: {fast_layer_before:.6f} -> {fast_layer_after:.6f})")
 
             if "fast_norm" in model_state:
                 nnx.update(binary_ttt_model.fast_norm, model_state["fast_norm"])
