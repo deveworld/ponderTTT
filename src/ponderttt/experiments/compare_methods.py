@@ -332,7 +332,7 @@ def evaluate_model(
     skip_examples: int = 0,
     num_workers: int = 32,
     hard_skip_threshold: float = 0.1,
-    binary_eval_stochastic: bool = True,  # Use stochastic sampling for BinaryGatingNetwork
+    binary_threshold: Optional[float] = None,  # Threshold for BinaryGatingNetwork (default: 0.5)
     random_update_rate: Optional[float] = None,  # For Random Skip baseline (0.0-1.0)
 ):
     if gating_net is not None:
@@ -496,18 +496,20 @@ def evaluate_model(
                     raise ValueError(f"Unknown fixed_action: {fixed_action}")
 
             elif isinstance(gating_net, BinaryGatingNetwork):
-                # Binary decision - use __call__ directly instead of get_decision
-                # to avoid JIT caching issues with updated gating_net weights
-                gating_scale, _, soft_probs, decision = gating_net(features, train=False)
+                # Binary decision using threshold from training (threshold_ema)
+                # Use get_decision which applies threshold consistently
+                threshold = binary_threshold if binary_threshold is not None else 0.5
+                gating_scale, decision = gating_net.get_decision(features, threshold=threshold)
                 decision_val = int(decision[0])
 
-                # Collect update probability for diagnostics
+                # Also get soft probs for diagnostics
+                _, _, soft_probs, _ = gating_net(features, train=False)
                 if "update_probs" not in results:
                     results["update_probs"] = []
                 results["update_probs"].append(float(soft_probs[0, 1]))
 
                 if decision_val == 0:
-                    # SKIP: gating_scale should be 0 from network
+                    # SKIP
                     cost = 1.0
                     loss = float(jit_loss_from_logits(
                         logits_base,
@@ -516,8 +518,7 @@ def evaluate_model(
                     ))
                     decision_str = "SKIP"
                 else:
-                    # UPDATE: use gating_scale from network (don't overwrite!)
-                    # gating_scale is already set by BinaryGatingNetwork: scale_when_update for UPDATE
+                    # UPDATE: use gating_scale from get_decision
                     loss = float(jit_eval_with_scale(
                         ttt_model,
                         chunk_batch["input_ids"],
@@ -635,6 +636,7 @@ def main():
     # Binary Gating Network (Hard Skip, trained with Gumbel-Softmax)
     binary_net: Optional[BinaryGatingNetwork] = None
     binary_ttt_model = None
+    binary_threshold_ema: Optional[float] = None  # Will be loaded from checkpoint metadata
 
     if args.binary_gating_checkpoint:
         binary_net = BinaryGatingNetwork(
@@ -653,11 +655,15 @@ def main():
 
         ckpt = load_checkpoint(args.binary_gating_checkpoint, target=None)
 
-        # Load threshold_ema from metadata (for logging/debugging)
-        threshold_ema = None
+        # Load threshold_ema from metadata for evaluation
         if "metadata" in ckpt and "threshold_ema" in ckpt["metadata"]:
-            threshold_ema = float(ckpt["metadata"]["threshold_ema"])
-            print(f"  Loaded threshold_ema from metadata: {threshold_ema:.4f}")
+            binary_threshold_ema = float(ckpt["metadata"]["threshold_ema"])
+            print(f"  Loaded threshold_ema from metadata: {binary_threshold_ema:.4f}")
+            # Warn if threshold_ema seems unusual (should be in reasonable range for probabilities)
+            if binary_threshold_ema < 0 or binary_threshold_ema > 1:
+                print(f"  WARNING: threshold_ema={binary_threshold_ema:.4f} is outside [0,1] range.")
+                print(f"           This may be an advantage threshold, not a probability threshold.")
+                print(f"           Will use 0.5 as default probability threshold instead.")
 
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
@@ -775,6 +781,10 @@ def main():
     # 5. Evaluate Binary Gating (Hard Skip with Gumbel-Softmax)
     binary_update_rate = None
     if binary_net is not None:
+        # Use threshold_ema from checkpoint if in valid range, otherwise use 0.5
+        eval_threshold = binary_threshold_ema if (binary_threshold_ema is not None and 0 <= binary_threshold_ema <= 1) else 0.5
+        print(f"\n=== Using binary_threshold={eval_threshold:.4f} for evaluation ===")
+
         df_binary = evaluate_model(
             "Binary Gating (Hard Skip)",
             args.model_scale,
@@ -788,6 +798,7 @@ def main():
             split=args.split,
             skip_examples=args.skip_examples,
             num_workers=args.num_workers,
+            binary_threshold=eval_threshold,
         )
         all_results.append(df_binary)
 
