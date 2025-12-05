@@ -220,9 +220,7 @@ def evaluate_oracle(
         num_chunks = chunks.shape[1]
 
         # Step 1: Compute advantage for all chunks in this batch
-        chunk_data = []
-        # For binary gating we need to collect scores to apply a threshold per-sequence
-        binary_chunk_buffer = []
+    chunk_data = []
 
         for c_idx in range(num_chunks):
             chunk_batch = {
@@ -703,8 +701,8 @@ def main():
             # Warn if threshold_ema seems unusual (should be in reasonable range for probabilities)
             if binary_threshold_ema < 0 or binary_threshold_ema > 1:
                 print(f"  WARNING: threshold_ema={binary_threshold_ema:.4f} is outside [0,1] range.")
-                print(f"           This may be an advantage threshold, not a probability threshold.")
-                print(f"           Will fall back to auto-calibrated threshold from budget.")
+                print("           This may be an advantage threshold, not a probability threshold.")
+                print("           Will fall back to auto-calibrated threshold from budget.")
 
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
@@ -832,7 +830,7 @@ def main():
             eval_threshold = binary_threshold_ema
             print(f"\n=== Using probability threshold from checkpoint: {eval_threshold:.4f} ===")
         else:
-            print(f"\n=== Using auto-calibrated threshold from budget (argmax fallback if needed) ===")
+            print("\n=== Using auto-calibrated threshold from budget (argmax fallback if needed) ===")
 
         df_binary = evaluate_model(
             "Binary Gating (Hard Skip)",
