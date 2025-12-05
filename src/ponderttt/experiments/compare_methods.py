@@ -438,6 +438,9 @@ def evaluate_model(
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
             position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
+            # Determine if this is a real code chunk (>10% valid tokens)
+            valid_ratio = float(jnp.sum(chunk_batch["attention_mask"])) / chunk_len
+            is_real_code = valid_ratio > 0.1
 
             # Budget Feature: Use 1.0 to match training (training hardcoded budget_remaining=1.0)
             # Note: The gating network was trained with budget_remaining=1.0 constant,
@@ -538,7 +541,7 @@ def evaluate_model(
                     "skip_loss": skip_loss,
                     "update_loss": update_loss,
                     "text": text,
-                    "is_real_code": valid_ratio > 0.1,
+                    "is_real_code": is_real_code,
                 })
                 continue  # Defer appending results until after threshold selection
 
@@ -567,10 +570,6 @@ def evaluate_model(
                     ))
                     cost = 3.0
                     decision_str = "UPDATE"
-
-            # Determine if this is a real code chunk (>10% valid tokens)
-            valid_ratio = float(jnp.sum(chunk_batch["attention_mask"])) / chunk_len
-            is_real_code = valid_ratio > 0.1
 
             results["loss"].append(loss)
             results["cost"].append(cost)
