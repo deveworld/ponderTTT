@@ -519,17 +519,18 @@ def evaluate_model(
 
                 # Decide path
                 # Priority:
-                # 1) User/ckpt threshold (probability)
-                # 2) Budget-calibrated stochastic decision (keeps expected update rate near target)
+                # 1) User/ckpt probability threshold (binary_threshold)
+                # 2) Budget target → use that as probability threshold (batch_size=1)
                 # 3) Argmax fallback
                 decision: jax.Array
+                threshold_to_use: Optional[float] = None
                 if binary_threshold is not None:
-                    decision = (update_probs >= binary_threshold).astype(jnp.int32)
+                    threshold_to_use = binary_threshold
                 elif target_update_rate is not None:
-                    # Stochastic: probability scaled by both model confidence and target rate
-                    prob = float(update_probs[0]) * target_update_rate
-                    rng_key, subkey = jax.random.split(rng_key)
-                    decision = jnp.array([jax.random.bernoulli(subkey, prob=prob).astype(jnp.int32)])
+                    threshold_to_use = target_update_rate
+
+                if threshold_to_use is not None:
+                    decision = (update_probs >= threshold_to_use).astype(jnp.int32)
                 else:
                     decision = jnp.argmax(soft_probs, axis=-1)
 
