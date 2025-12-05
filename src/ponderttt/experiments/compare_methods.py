@@ -613,8 +613,13 @@ def main():
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
             nnx.update(trainable_system, model_state)
-            # IMPORTANT: Reassign diff_net to the updated gating_net
+            # IMPORTANT: Reassign all updated components
+            # nnx.update may replace Variable objects, breaking original references
             diff_net = trainable_system.gating_net
+            diff_ttt_model.fast_layer = trainable_system.fast_layer
+            diff_ttt_model.fast_norm = trainable_system.fast_norm
+            if trainable_system.lm_head is not None:
+                diff_ttt_model.lm_head = trainable_system.lm_head
             print("Differentiable Gating and TTT weights loaded.")
         else:
             print("Warning: Could not find 'state.model' in checkpoint.")
@@ -656,9 +661,13 @@ def main():
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
             nnx.update(trainable_system_binary, model_state)
-            # IMPORTANT: Reassign binary_net to the updated gating_net
-            # nnx.update may replace Variable objects, breaking the original reference
+            # IMPORTANT: Reassign all updated components
+            # nnx.update may replace Variable objects, breaking original references
             binary_net = trainable_system_binary.gating_net
+            binary_ttt_model.fast_layer = trainable_system_binary.fast_layer
+            binary_ttt_model.fast_norm = trainable_system_binary.fast_norm
+            if trainable_system_binary.lm_head is not None:
+                binary_ttt_model.lm_head = trainable_system_binary.lm_head
             print("Binary Gating (Hard Skip) and TTT weights loaded.")
         else:
             print("Warning: Could not find 'state.model' in checkpoint.")
