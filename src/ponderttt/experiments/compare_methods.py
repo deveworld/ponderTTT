@@ -494,26 +494,10 @@ def evaluate_model(
                     raise ValueError(f"Unknown fixed_action: {fixed_action}")
 
             elif isinstance(gating_net, BinaryGatingNetwork):
-                # Binary decision
-                if binary_eval_stochastic:
-                    # Stochastic sampling: use rng_key
-                    rng_key, subkey = jax.random.split(rng_key)
-                    hard_scale, decision = jit_binary_decision(gating_net, features, rng_key=subkey)
-                else:
-                    # Deterministic: use threshold 0.5
-                    hard_scale, decision = jit_binary_decision(gating_net, features, threshold=0.5)
+                # Binary decision - use __call__ directly instead of get_decision
+                # to avoid JIT caching issues with updated gating_net weights
+                gating_scale, _, soft_probs, decision = gating_net(features, train=False)
                 decision_val = int(decision[0])
-
-                # DEBUG: Print update probability for first few chunks
-                if i < 2 and c_idx < 5:
-                     _, _, soft_probs, decision_from_call = gating_net(features, train=False)
-                     # Verify: decision from get_decision vs decision from __call__
-                     # soft_probs[:, 1] is UPDATE probability
-                     update_prob = float(soft_probs[0, 1])
-                     expected_decision = 1 if update_prob > 0.5 else 0
-                     print(f"DEBUG Batch {i} Chunk {c_idx}: UpdateProb={update_prob:.4f} "
-                           f"Decision={decision_val} Expected={expected_decision} "
-                           f"CallDecision={int(decision_from_call[0])}")
 
                 if decision_val == 0:
                     # SKIP

@@ -47,6 +47,7 @@ dev = [
     "ty>=0.0.1a26",
 ]
 gpu = ["jax[cuda13]"]
+gpu12 = ["jax[cuda12]"]
 tpu = ["jax[tpu]"]
 
 [tool.pyright]
