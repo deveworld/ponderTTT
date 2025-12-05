@@ -332,9 +332,20 @@ def evaluate_model(
     skip_examples: int = 0,
     num_workers: int = 32,
     hard_skip_threshold: float = 0.1,
-    binary_threshold: Optional[float] = None,  # Optional probability threshold; None -> argmax
-    random_update_rate: Optional[float] = None,  # For Random Skip baseline (0.0-1.0)
+    binary_threshold: Optional[float] = None,  # Optional probability threshold; None -> auto from budget
+    random_update_rate: Optional[float] = None,  # For Random Skip baseline (0.0-1.0); None -> auto from budget
 ):
+    # Convert budget (cost multiplier) to target update rate using cost model:
+    # cost = 1 + 2 * update_rate => update_rate = (budget - 1) / 2
+    target_update_rate: Optional[float] = None
+    if budget_target is not None:
+        target_update_rate = (budget_target - 1.0) / 2.0
+        target_update_rate = float(min(max(target_update_rate, 0.0), 1.0))
+
+    # If random baseline didn't receive a rate, align it to the target budget
+    if random_update_rate is None and target_update_rate is not None:
+        random_update_rate = target_update_rate
+
     if gating_net is not None:
         assert batch_size == 1, "Batch size must be 1 for dynamic gating evaluation (mixed SKIP/TTT strategies)."
 
@@ -500,19 +511,31 @@ def evaluate_model(
 
             elif isinstance(gating_net, BinaryGatingNetwork):
                 # Binary decision
-                if binary_threshold is None:
-                    # Use argmax (same rule as training supervision)
-                    gating_scale, decision_probs_hard, soft_probs, decision = gating_net(features, train=False)
+                gating_scale = None
+
+                # Get soft probabilities first
+                _, _, soft_probs, _ = gating_net(features, train=False)
+                update_probs = soft_probs[:, 1]  # [batch]
+
+                # Determine threshold:
+                # 1) If target_update_rate is set, choose quantile to hit that rate per-batch
+                # 2) Else if user supplied a threshold (or came from checkpoint), use it
+                # 3) Else fallback to argmax
+                threshold_to_use: Optional[float] = None
+                if target_update_rate is not None:
+                    threshold_to_use = float(np.percentile(np.asarray(update_probs), 100 * (1 - target_update_rate)))
+                elif binary_threshold is not None:
+                    threshold_to_use = binary_threshold
+
+                if threshold_to_use is not None:
+                    decision = (update_probs >= threshold_to_use).astype(jnp.int32)
                 else:
-                    gating_scale, decision = gating_net.get_decision(features, threshold=binary_threshold)
-                    # Also get soft probs for diagnostics
-                    _, _, soft_probs, _ = gating_net(features, train=False)
-                    decision_probs_hard = None  # unused
+                    decision = jnp.argmax(soft_probs, axis=-1)
 
                 decision_val = int(decision[0])
                 if "update_probs" not in results:
                     results["update_probs"] = []
-                results["update_probs"].append(float(soft_probs[0, 1]))
+                results["update_probs"].append(float(update_probs[0]))
 
                 if decision_val == 0:
                     # SKIP
@@ -524,6 +547,7 @@ def evaluate_model(
                     ))
                     decision_str = "SKIP"
                 else:
+                    gating_scale = jnp.array([[1.0]], dtype=jnp.float32)
                     # UPDATE: use gating_scale from get_decision
                     loss = float(jit_eval_with_scale(
                         ttt_model,
@@ -669,7 +693,7 @@ def main():
             if binary_threshold_ema < 0 or binary_threshold_ema > 1:
                 print(f"  WARNING: threshold_ema={binary_threshold_ema:.4f} is outside [0,1] range.")
                 print(f"           This may be an advantage threshold, not a probability threshold.")
-                print(f"           Will use 0.5 as default probability threshold instead.")
+                print(f"           Will fall back to auto-calibrated threshold from budget.")
 
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
@@ -729,6 +753,10 @@ def main():
 
     all_results = []
 
+    # Convert budget to target update rate (cost = 1 + 2 * update_rate)
+    target_update_rate = max(0.0, min(1.0, (args.budget - 1.0) / 2.0))
+    print(f"\nTarget update rate from budget={args.budget:.2f}: {target_update_rate*100:.1f}%")
+
     # 2. Evaluate Baselines (SKIP)
     df_skip = evaluate_model(
         "SKIP (Baseline)",
@@ -787,9 +815,13 @@ def main():
     # 5. Evaluate Binary Gating (Hard Skip with Gumbel-Softmax)
     binary_update_rate = None
     if binary_net is not None:
-        # threshold_ema is an advantage threshold (not a probability); for evaluation we use argmax.
+        # Prefer checkpoint threshold if it looks like a probability; otherwise auto-calibrate from budget
         eval_threshold = None
-        print(f"\n=== Using binary_threshold=argmax for evaluation (threshold_ema logged only) ===")
+        if binary_threshold_ema is not None and 0.0 <= binary_threshold_ema <= 1.0:
+            eval_threshold = binary_threshold_ema
+            print(f"\n=== Using probability threshold from checkpoint: {eval_threshold:.4f} ===")
+        else:
+            print(f"\n=== Using auto-calibrated threshold from budget (argmax fallback if needed) ===")
 
         df_binary = evaluate_model(
             "Binary Gating (Hard Skip)",
@@ -820,13 +852,13 @@ def main():
             print(f"    Prob percentiles: 10th={np.percentile(probs, 10):.4f}, "
                   f"50th={np.percentile(probs, 50):.4f}, 90th={np.percentile(probs, 90):.4f}")
 
-    # 6. Evaluate Random Skip Baseline (same update rate as Binary Gating)
+    # 6. Evaluate Random Skip Baseline (same target update rate as budget)
     # IMPORTANT: Use binary_ttt_model (same TTT weights as Binary Gating) for fair comparison
     if binary_update_rate is not None and binary_ttt_model is not None:
-        print(f"\n=== Running Random Skip Baseline (update_rate={binary_update_rate:.2%}) ===")
+        print(f"\n=== Running Random Skip Baseline (target update_rate={target_update_rate:.2%}) ===")
         print("    (Using same TTT weights as Binary Gating for fair comparison)")
         df_random = evaluate_model(
-            f"Random Skip ({binary_update_rate:.0%} update)",
+            f"Random Skip ({target_update_rate:.0%} update)",
             args.model_scale,
             args.budget,
             args.num_eval_batches,
@@ -838,17 +870,17 @@ def main():
             split=args.split,
             skip_examples=args.skip_examples,
             num_workers=args.num_workers,
-            random_update_rate=binary_update_rate,
+            random_update_rate=target_update_rate,
         )
         all_results.append(df_random)
 
         # 6b. Evaluate Oracle Baseline (upper bound)
-        print(f"\n=== Running Oracle Baseline (update_rate={binary_update_rate:.2%}) ===")
+        print(f"\n=== Running Oracle Baseline (update_rate={target_update_rate:.2%}) ===")
         print("    (Using same TTT weights as Binary Gating for fair comparison)")
         df_oracle = evaluate_oracle(
-            f"Oracle ({binary_update_rate:.0%} update)",
+            f"Oracle ({target_update_rate:.0%} update)",
             args.model_scale,
-            update_rate=binary_update_rate,
+            update_rate=target_update_rate,
             num_batches=args.num_eval_batches,
             batch_size=args.batch_size,
             seed=args.seed,
