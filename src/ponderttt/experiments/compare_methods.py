@@ -507,7 +507,7 @@ def evaluate_model(
                 results["update_probs"].append(float(soft_probs[0, 1]))
 
                 if decision_val == 0:
-                    # SKIP
+                    # SKIP: gating_scale should be 0 from network
                     cost = 1.0
                     loss = float(jit_loss_from_logits(
                         logits_base,
@@ -516,8 +516,8 @@ def evaluate_model(
                     ))
                     decision_str = "SKIP"
                 else:
-                    # UPDATE: run TTT with scale (JIT)
-                    gating_scale = jnp.array([[1.0]], dtype=jnp.float32)
+                    # UPDATE: use gating_scale from network (don't overwrite!)
+                    # gating_scale is already set by BinaryGatingNetwork: scale_when_update for UPDATE
                     loss = float(jit_eval_with_scale(
                         ttt_model,
                         chunk_batch["input_ids"],
