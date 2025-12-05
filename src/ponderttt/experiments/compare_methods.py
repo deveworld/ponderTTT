@@ -399,7 +399,6 @@ def evaluate_model(
         chunks = batch["chunks"]
         masks = batch["chunk_attention_mask"]
         num_chunks = chunks.shape[1]
-        total_budget = budget_target * num_chunks
         current_spend = 0.0
 
         feature_extractor.reset_history()
@@ -659,17 +658,18 @@ def main():
             print(f"  Checkpoint keys: {list(model_state.keys())}")
 
             # Verify weights change by capturing before/after
-            fast_layer_before = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W1.value)))
+            fast_layer_before = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W1[...])))
 
             # Direct component updates (avoid wrapper indirection issues)
             # Update each trainable component directly from checkpoint state
             if "gating_net" in model_state:
                 nnx.update(binary_net, model_state["gating_net"])
-                print(f"  - gating_net updated (bias: {binary_net.head.bias.value})")
+                bias_val = binary_net.head.bias[...] if binary_net.head.bias is not None else "None"
+                print(f"  - gating_net updated (bias: {bias_val})")
 
             if "fast_layer" in model_state:
                 nnx.update(binary_ttt_model.fast_layer, model_state["fast_layer"])
-                fast_layer_after = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W1.value)))
+                fast_layer_after = float(jnp.mean(jnp.abs(binary_ttt_model.fast_layer.W1[...])))
                 print(f"  - fast_layer updated (W1 mean abs: {fast_layer_before:.6f} -> {fast_layer_after:.6f})")
 
             if "fast_norm" in model_state:
@@ -883,7 +883,6 @@ def main():
             oracle_loss = float(summary.loc[oracle_name, "loss"])
             oracle_cost = float(summary.loc[oracle_name, "cost"])
             improvement_oracle = (random_loss - oracle_loss) / random_loss * 100
-            improvement_binary_vs_oracle = (binary_loss - oracle_loss) / (random_loss - oracle_loss) * 100 if random_loss != oracle_loss else 0
 
             print(f"{'Oracle (Upper Bound)':<25} {oracle_loss:>10.4f} {oracle_cost:>10.2f}x {improvement_oracle:>+11.2f}%")
             print("-" * 70)

@@ -199,7 +199,7 @@ class CodeDataset:
 
     def _create_sequence_from_buffer(
         self, token_buffer: np.ndarray, mask_buffer: np.ndarray
-    ) -> dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray | str | None]:
         """
         Create a training sequence from the token buffer.
 
@@ -225,7 +225,7 @@ class CodeDataset:
             "chunk_attention_mask": chunk_attention,
         }
 
-    def _process_example(self, example: dict) -> dict[str, np.ndarray] | None:
+    def _process_example(self, example: dict) -> dict[str, np.ndarray | str | None] | None:
         """
         Process a single example (legacy method for compatibility).
         Now uses concatenation internally but still processes one file at a time.
@@ -626,7 +626,8 @@ def create_data_iterator(
             existing_blob_ids = []
 
         # Download data (either fresh or extending existing cache)
-        if not existing_cache or existing_metadata.get("total_sequences", 0) < total_needed:
+        existing_seq_count = existing_metadata.get("total_sequences", 0) if existing_metadata else 0
+        if not existing_cache or existing_seq_count < total_needed:
             print(f"Downloading with {num_workers} parallel workers...")
             if concatenate_documents:
                 print("Using document concatenation (no padding)")
@@ -896,5 +897,7 @@ def create_data_iterator(
 
                 print(f"Created {len(cached_batches)} batches ready for training")
                 return iter(cached_batches)
+        # Fallback: should not reach here, but return empty iterator for type safety
+        return iter([])
     else:
         return _batch_generator()

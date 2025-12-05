@@ -1,6 +1,5 @@
 
 import jax
-import jax.numpy as jnp
 from flax import nnx
 from ponderttt.models.gating_nnx import BinaryGatingConfig, BinaryGatingNetwork
 from ponderttt.utils.checkpointing import load_checkpoint
@@ -41,7 +40,10 @@ def main():
                 print("Weights updated successfully.")
                 
                 # Inspect bias
-                print("Head Bias:", net.head.bias.value)
+                if net.head.bias is not None:
+                    print("Head Bias:", net.head.bias[...])
+                else:
+                    print("Head Bias: None")
             else:
                 print("ERROR: 'gating_net' not found in model state.")
                 print("Available keys:", full_model_state.keys())

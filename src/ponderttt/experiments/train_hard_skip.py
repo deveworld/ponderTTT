@@ -361,7 +361,6 @@ def main():
     # Data Iterator
     chunk_size = args.chunk_size
     seq_length = 1024
-    chunks_per_sequence = max(1, seq_length // chunk_size)
     # Each iteration processes one batch of batch_size sequences
     # So we need num_iterations * batch_size sequences total
     examples_needed = args.num_iterations * args.batch_size
