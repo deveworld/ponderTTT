@@ -377,9 +377,13 @@ def main():
     # Random key for Gumbel sampling
     rng_key = jax.random.PRNGKey(args.seed + 100)
 
-    # Threshold EMA for inference
+    # Threshold EMAs for inference
+    # threshold_ema: advantage-space threshold (legacy)
+    # prob_threshold_ema: probability-space threshold for update_prob soft outputs
     threshold_ema = 0.0
     threshold_ema_initialized = False
+    prob_threshold_ema = 0.5
+    prob_threshold_initialized = False
 
     # Training Step
     def train_step(
@@ -580,18 +584,67 @@ def main():
             # Top-k match rate: how well does gating match the STABLE target?
             topk_match_rate = jnp.mean((decision_hard == training_targets.astype(jnp.int32)).astype(jnp.float32))
 
-            return total_loss, (ce_loss, l_ttt, gating_quality_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, gating_bce_loss, batch_threshold, topk_match_rate, advantage_std)
+            # Probability-space threshold (UPDATE prob percentile) matching target_update_rate
+            prob_threshold = jnp.percentile(update_prob_soft, 100.0 * (1.0 - target_update_rate))
+
+            return total_loss, (
+                ce_loss,
+                l_ttt,
+                gating_quality_loss,
+                avg_update_prob,
+                hard_cost,
+                decision_hard,
+                skip_on_real,
+                num_real_code,
+                advantage,
+                gating_bce_loss,
+                batch_threshold,
+                topk_match_rate,
+                advantage_std,
+                prob_threshold,
+            )
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
         (loss, aux), grads = grad_fn(trainable_sys, rng_key)
-        ce_loss, l_ttt, gating_loss, avg_update_prob, hard_cost, decision_hard, skip_on_real, num_real_code, advantage, bce_loss, batch_threshold, topk_match, adv_std = aux
+        (
+            ce_loss,
+            l_ttt,
+            gating_loss,
+            avg_update_prob,
+            hard_cost,
+            decision_hard,
+            skip_on_real,
+            num_real_code,
+            advantage,
+            bce_loss,
+            batch_threshold,
+            topk_match,
+            adv_std,
+            prob_threshold,
+        ) = aux
 
         optimizer.update(trainable_sys, grads)
 
         # Compute skip rate from hard decisions (overall)
         skip_rate = jnp.mean(decision_hard == 0)
 
-        return loss, ce_loss, l_ttt, gating_loss, avg_update_prob, hard_cost, skip_rate, skip_on_real, num_real_code, advantage, bce_loss, batch_threshold, topk_match, adv_std
+        return (
+            loss,
+            ce_loss,
+            l_ttt,
+            gating_loss,
+            avg_update_prob,
+            hard_cost,
+            skip_rate,
+            skip_on_real,
+            num_real_code,
+            advantage,
+            bce_loss,
+            batch_threshold,
+            topk_match,
+            adv_std,
+            prob_threshold,
+        )
 
     # JIT compile training step
     train_step_jit = nnx.jit(
@@ -646,6 +699,7 @@ def main():
         total_threshold = 0.0
         total_topk_match = 0.0
         total_adv_std = 0.0
+        total_prob_threshold = 0.0
         valid_chunks = 0
 
         feature_extractor.reset_history()
@@ -669,7 +723,23 @@ def main():
             # Get new random key
             rng_key, subkey = jax.random.split(rng_key)
 
-            loss, ce, l_ttt, gate_loss, update_prob, hard_cost, skip_rate, skip_on_real, num_real, adv, bce_loss, batch_thresh, topk_match, adv_std = train_step_jit(
+            (
+                loss,
+                ce,
+                l_ttt,
+                gate_loss,
+                update_prob,
+                hard_cost,
+                skip_rate,
+                skip_on_real,
+                num_real,
+                adv,
+                bce_loss,
+                batch_thresh,
+                topk_match,
+                adv_std,
+                prob_thresh,
+            ) = train_step_jit(
                 trainable_system,
                 optimizer,
                 cast(GPT2Model, ttt_model.base_model),  # train_hard_skip is GPT2-specific
@@ -695,6 +765,11 @@ def main():
                 threshold_ema_initialized = True
             else:
                 threshold_ema = args.threshold_ema_decay * threshold_ema + (1 - args.threshold_ema_decay) * float(batch_thresh)
+            if not prob_threshold_initialized:
+                prob_threshold_ema = float(prob_thresh)
+                prob_threshold_initialized = True
+            else:
+                prob_threshold_ema = args.threshold_ema_decay * prob_threshold_ema + (1 - args.threshold_ema_decay) * float(prob_thresh)
 
             total_loss += float(loss)
             total_ce_loss += float(ce)
@@ -710,6 +785,7 @@ def main():
             total_threshold += float(batch_thresh)
             total_topk_match += float(topk_match)
             total_adv_std += float(adv_std)
+            total_prob_threshold += float(prob_thresh)
             valid_chunks += 1
 
             feature_extractor.update_history(float(ce), float(hard_cost))
@@ -732,6 +808,7 @@ def main():
         avg_threshold = total_threshold / valid_chunks
         avg_topk_match = total_topk_match / valid_chunks
         avg_adv_std = total_adv_std / valid_chunks
+        avg_prob_threshold = total_prob_threshold / valid_chunks
         perplexity = math.exp(min(avg_ce_loss, 10.0))  # Cap to avoid overflow
 
         warmup_status = " [WARMUP]" if is_warmup else ""
@@ -740,7 +817,9 @@ def main():
             f"CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
             f"SkipRate={avg_skip_rate:.2%}, TopkMatch={avg_topk_match:.2%}, "
             f"Cost={avg_hard_cost:.2f}x, Adv={avg_advantage:.4f}±{avg_adv_std:.4f}, "
-            f"Thresh={avg_threshold:.4f} (EMA:{threshold_ema:.4f}), Temp={temperature:.3f}"
+            f"Thresh={avg_threshold:.4f} (EMA:{threshold_ema:.4f}), "
+            f"ProbThresh={avg_prob_threshold:.4f} (EMA:{prob_threshold_ema:.4f}), "
+            f"Temp={temperature:.3f}"
         )
 
         # WandB Logging
@@ -765,6 +844,8 @@ def main():
                 "advantage_std": avg_adv_std,
                 "batch_threshold": avg_threshold,
                 "threshold_ema": threshold_ema,
+                "prob_threshold": avg_prob_threshold,
+                "prob_threshold_ema": prob_threshold_ema,
             })
 
         history.append({
@@ -781,6 +862,8 @@ def main():
             "temperature": temperature,
             "is_warmup": is_warmup,
             "threshold_ema": threshold_ema,
+            "prob_threshold": avg_prob_threshold,
+            "prob_threshold_ema": prob_threshold_ema,
         })
 
         # Periodic Checkpoint
@@ -795,6 +878,7 @@ def main():
                     "target_update_rate": args.target_update_rate,
                     "temperature": temperature,
                     "threshold_ema": threshold_ema,
+                    "prob_threshold_ema": prob_threshold_ema,
                 }
             )
 
@@ -815,6 +899,7 @@ def main():
             "target_update_rate": args.target_update_rate,
             "final_temperature": temperature,
             "threshold_ema": threshold_ema,
+            "prob_threshold_ema": prob_threshold_ema,
         }
     )
     finalize_checkpointing()
@@ -832,6 +917,7 @@ def main():
         print(f"Final Cost: {final_stats['hard_cost']:.2f}x")
         print(f"Final Perplexity: {final_stats['perplexity']:.2f}")
         print(f"Threshold EMA (for inference): {threshold_ema:.4f}")
+        print(f"Prob Threshold EMA (for inference): {prob_threshold_ema:.4f}")
 
     if args.wandb_project:
         wandb.finish()

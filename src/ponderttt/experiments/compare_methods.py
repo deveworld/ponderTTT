@@ -678,7 +678,8 @@ def main():
     # Binary Gating Network (Hard Skip, trained with Gumbel-Softmax)
     binary_net: Optional[BinaryGatingNetwork] = None
     binary_ttt_model = None
-    binary_threshold_ema: Optional[float] = None  # Will be loaded from checkpoint metadata
+    binary_threshold_ema: Optional[float] = None  # Advantage/prob threshold saved during training
+    binary_prob_threshold_ema: Optional[float] = None  # Preferred probability threshold if available
 
     if args.binary_gating_checkpoint:
         binary_net = BinaryGatingNetwork(
@@ -697,15 +698,15 @@ def main():
 
         ckpt = load_checkpoint(args.binary_gating_checkpoint, target=None)
 
-        # Load threshold_ema from metadata for evaluation
-        if "metadata" in ckpt and "threshold_ema" in ckpt["metadata"]:
-            binary_threshold_ema = float(ckpt["metadata"]["threshold_ema"])
-            print(f"  Loaded threshold_ema from metadata: {binary_threshold_ema:.4f}")
-            # Warn if threshold_ema seems unusual (should be in reasonable range for probabilities)
-            if binary_threshold_ema < 0 or binary_threshold_ema > 1:
-                print(f"  WARNING: threshold_ema={binary_threshold_ema:.4f} is outside [0,1] range.")
-                print("           This may be an advantage threshold, not a probability threshold.")
-                print("           Will fall back to auto-calibrated threshold from budget.")
+        # Load thresholds from metadata for evaluation
+        if "metadata" in ckpt:
+            meta = ckpt["metadata"]
+            if "prob_threshold_ema" in meta:
+                binary_prob_threshold_ema = float(meta["prob_threshold_ema"])
+                print(f"  Loaded prob_threshold_ema from metadata: {binary_prob_threshold_ema:.4f}")
+            if "threshold_ema" in meta:
+                binary_threshold_ema = float(meta["threshold_ema"])
+                print(f"  Loaded threshold_ema from metadata (advantage space): {binary_threshold_ema:.4f}")
 
         if "state" in ckpt and "model" in ckpt["state"]:
             model_state = unwrap_state(ckpt["state"]["model"])
@@ -827,11 +828,14 @@ def main():
     # 5. Evaluate Binary Gating (Hard Skip with Gumbel-Softmax)
     binary_update_rate = None
     if binary_net is not None:
-        # Prefer checkpoint threshold if it looks like a probability; otherwise auto-calibrate from budget
+        # Prefer probability-space threshold from checkpoint; otherwise auto-calibrate from budget
         eval_threshold = None
-        if binary_threshold_ema is not None and 0.0 <= binary_threshold_ema <= 1.0:
-            eval_threshold = binary_threshold_ema
+        if binary_prob_threshold_ema is not None and 0.0 <= binary_prob_threshold_ema <= 1.0:
+            eval_threshold = binary_prob_threshold_ema
             print(f"\n=== Using probability threshold from checkpoint: {eval_threshold:.4f} ===")
+        elif binary_threshold_ema is not None and 0.0 <= binary_threshold_ema <= 1.0:
+            eval_threshold = binary_threshold_ema
+            print(f"\n=== Using probability threshold from checkpoint (legacy): {eval_threshold:.4f} ===")
         else:
             print("\n=== Using auto-calibrated threshold from budget (argmax fallback if needed) ===")
 
