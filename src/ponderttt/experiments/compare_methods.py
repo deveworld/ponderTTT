@@ -221,6 +221,9 @@ def evaluate_oracle(
 
         # Step 1: Compute advantage for all chunks in this batch
         chunk_data = []
+        # For binary gating we need to collect scores to apply a threshold per-sequence
+        binary_chunk_buffer = []
+
         for c_idx in range(num_chunks):
             chunk_batch = {
                 "input_ids": chunks[:, c_idx],
@@ -510,56 +513,32 @@ def evaluate_model(
                     raise ValueError(f"Unknown fixed_action: {fixed_action}")
 
             elif isinstance(gating_net, BinaryGatingNetwork):
-                # Binary decision
-                gating_scale = None
-
-                # Get soft probabilities
+                # Defer decision until we know the threshold for this sequence
                 _, _, soft_probs, _ = gating_net(features, train=False)
-                update_probs = soft_probs[:, 1]  # [batch]
+                update_prob_val = float(soft_probs[0, 1])
 
-                # Decide path
-                # Priority:
-                # 1) User/ckpt probability threshold (binary_threshold)
-                # 2) Budget target → use that as probability threshold (batch_size=1)
-                # 3) Argmax fallback
-                decision: jax.Array
-                threshold_to_use: Optional[float] = None
-                if binary_threshold is not None:
-                    threshold_to_use = binary_threshold
-                elif target_update_rate is not None:
-                    threshold_to_use = target_update_rate
+                # Precompute both paths
+                skip_loss = float(jit_loss_from_logits(
+                    logits_base,
+                    chunk_batch["input_ids"],
+                    chunk_batch["attention_mask"]
+                ))
+                update_loss = float(jit_eval_with_scale(
+                    ttt_model,
+                    chunk_batch["input_ids"],
+                    chunk_batch["attention_mask"],
+                    position_ids,
+                    jnp.array([[1.0]], dtype=jnp.float32),
+                ))
 
-                if threshold_to_use is not None:
-                    decision = (update_probs >= threshold_to_use).astype(jnp.int32)
-                else:
-                    decision = jnp.argmax(soft_probs, axis=-1)
-
-                decision_val = int(decision[0])
-                if "update_probs" not in results:
-                    results["update_probs"] = []
-                results["update_probs"].append(float(update_probs[0]))
-
-                if decision_val == 0:
-                    # SKIP
-                    cost = 1.0
-                    loss = float(jit_loss_from_logits(
-                        logits_base,
-                        chunk_batch["input_ids"],
-                        chunk_batch["attention_mask"]
-                    ))
-                    decision_str = "SKIP"
-                else:
-                    gating_scale = jnp.array([[1.0]], dtype=jnp.float32)
-                    # UPDATE: use gating_scale from get_decision
-                    loss = float(jit_eval_with_scale(
-                        ttt_model,
-                        chunk_batch["input_ids"],
-                        chunk_batch["attention_mask"],
-                        position_ids,
-                        gating_scale
-                    ))
-                    cost = 3.0
-                    decision_str = "UPDATE"
+                binary_chunk_buffer.append({
+                    "update_prob": update_prob_val,
+                    "skip_loss": skip_loss,
+                    "update_loss": update_loss,
+                    "text": text,
+                    "is_real_code": valid_ratio > 0.1,
+                })
+                continue  # Defer appending results until after threshold selection
 
             elif isinstance(gating_net, GatingNetwork):
                 # Continuous scale
@@ -600,6 +579,35 @@ def evaluate_model(
 
             current_spend += cost
             feature_extractor.update_history(loss, cost)
+
+        # If we deferred binary gating decisions, finalize them now
+        if isinstance(gating_net, BinaryGatingNetwork) and binary_chunk_buffer:
+            update_probs = [c["update_prob"] for c in binary_chunk_buffer]
+
+            # Choose threshold
+            threshold_to_use: float
+            if binary_threshold is not None and 0.0 <= binary_threshold <= 1.0:
+                threshold_to_use = binary_threshold
+            elif target_update_rate is not None:
+                threshold_to_use = float(np.percentile(np.asarray(update_probs), 100 * (1 - target_update_rate)))
+            else:
+                threshold_to_use = 0.5
+
+            for c in binary_chunk_buffer:
+                decision = c["update_prob"] >= threshold_to_use
+                loss = c["update_loss"] if decision else c["skip_loss"]
+                cost = 3.0 if decision else 1.0
+                decision_str = "UPDATE" if decision else "SKIP"
+
+                results["loss"].append(loss)
+                results["cost"].append(cost)
+                results["method"].append(method_name)
+                results["decision"].append(decision_str)
+                results["text"].append(c["text"])
+                results["is_real_code"].append(c["is_real_code"])
+
+                current_spend += cost
+                feature_extractor.update_history(loss, cost)
 
     return pd.DataFrame(results)
 
