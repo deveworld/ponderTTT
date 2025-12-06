@@ -509,6 +509,11 @@ def main():
             ce_per_sample_update = per_sample_cross_entropy_loss(
                 logits_update[:, :-1], labels[:, 1:], attention_mask[:, 1:]
             )
+
+            # Debug: track raw loss values
+            loss_skip_mean = jnp.mean(ce_per_sample_skip)
+            loss_update_mean = jnp.mean(ce_per_sample_update)
+
             advantage_per_sample = ce_per_sample_skip - ce_per_sample_update  # [B]
 
             # Clip advantage to prevent outliers from destabilizing training
@@ -610,6 +615,8 @@ def main():
                 prob_threshold,
                 advantage_min_raw,
                 advantage_max_raw,
+                loss_skip_mean,
+                loss_update_mean,
             )
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
@@ -631,6 +638,8 @@ def main():
             prob_threshold,
             adv_min_raw,
             adv_max_raw,
+            loss_skip_mean,
+            loss_update_mean,
         ) = aux
 
         optimizer.update(trainable_sys, grads)
@@ -656,6 +665,8 @@ def main():
             prob_threshold,
             adv_min_raw,
             adv_max_raw,
+            loss_skip_mean,
+            loss_update_mean,
         )
 
     # JIT compile training step
@@ -714,6 +725,8 @@ def main():
         total_prob_threshold = 0.0
         min_adv_raw = float('inf')
         max_adv_raw = float('-inf')
+        total_loss_skip = 0.0
+        total_loss_update = 0.0
         valid_chunks = 0
 
         feature_extractor.reset_history()
@@ -755,6 +768,8 @@ def main():
                 prob_thresh,
                 adv_min,
                 adv_max,
+                loss_skip,
+                loss_update,
             ) = train_step_jit(
                 trainable_system,
                 optimizer,
@@ -804,6 +819,8 @@ def main():
             total_prob_threshold += float(prob_thresh)
             min_adv_raw = min(min_adv_raw, float(adv_min))
             max_adv_raw = max(max_adv_raw, float(adv_max))
+            total_loss_skip += float(loss_skip)
+            total_loss_update += float(loss_update)
             valid_chunks += 1
 
             feature_extractor.update_history(float(ce), float(hard_cost))
@@ -827,6 +844,8 @@ def main():
         avg_topk_match = total_topk_match / valid_chunks
         avg_adv_std = total_adv_std / valid_chunks
         avg_prob_threshold = total_prob_threshold / valid_chunks
+        avg_loss_skip = total_loss_skip / valid_chunks
+        avg_loss_update = total_loss_update / valid_chunks
         perplexity = math.exp(min(avg_ce_loss, 10.0))  # Cap to avoid overflow
 
         warmup_status = " [WARMUP]" if is_warmup else ""
@@ -834,9 +853,10 @@ def main():
             f"Iter {iter_count+1}{warmup_status}: Loss={avg_loss:.4f}, "
             f"CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
             f"SkipRate={avg_skip_rate:.2%}, TopkMatch={avg_topk_match:.2%}, "
-            f"Cost={avg_hard_cost:.2f}x, Adv={avg_advantage:.4f}±{avg_adv_std:.4f} [{min_adv_raw:.2f},{max_adv_raw:.2f}], "
-            f"Thresh={avg_threshold:.4f} (EMA:{threshold_ema:.4f}), "
-            f"ProbThresh={avg_prob_threshold:.4f} (EMA:{prob_threshold_ema:.4f}), "
+            f"Cost={avg_hard_cost:.2f}x, "
+            f"LossSkip={avg_loss_skip:.2f}, LossUpdate={avg_loss_update:.2f}, "
+            f"Adv=[{min_adv_raw:.2f},{max_adv_raw:.2f}], "
+            f"Thresh={avg_threshold:.4f}, ProbThresh={avg_prob_threshold:.4f}, "
             f"Temp={temperature:.3f}"
         )
 
@@ -862,6 +882,8 @@ def main():
                 "advantage_std": avg_adv_std,
                 "advantage_min_raw": min_adv_raw,
                 "advantage_max_raw": max_adv_raw,
+                "loss_skip": avg_loss_skip,
+                "loss_update": avg_loss_update,
                 "batch_threshold": avg_threshold,
                 "threshold_ema": threshold_ema,
                 "prob_threshold": avg_prob_threshold,
@@ -886,6 +908,8 @@ def main():
             "prob_threshold_ema": prob_threshold_ema,
             "advantage_min_raw": min_adv_raw,
             "advantage_max_raw": max_adv_raw,
+            "loss_skip": avg_loss_skip,
+            "loss_update": avg_loss_update,
         })
 
         # Periodic Checkpoint

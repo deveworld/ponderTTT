@@ -326,6 +326,7 @@ def per_sample_cross_entropy_loss(
     logits: jnp.ndarray,
     labels: jnp.ndarray,
     mask: jnp.ndarray | None = None,
+    min_valid_tokens: int = 16,
 ) -> jnp.ndarray:
     """
     Compute per-sample cross-entropy loss.
@@ -334,6 +335,9 @@ def per_sample_cross_entropy_loss(
         logits: Shape (batch, seq_len, vocab_size)
         labels: Shape (batch, seq_len)
         mask: Optional mask, shape (batch, seq_len)
+        min_valid_tokens: Minimum valid tokens per sample; samples with fewer
+            valid tokens will have their loss set to 0.0 to avoid numerical
+            instability from division by small numbers.
 
     Returns:
         Per-sample loss, shape (batch,)
@@ -345,7 +349,13 @@ def per_sample_cross_entropy_loss(
     mask = mask.astype(jnp.float32)
 
     # Valid sequence length per sample
-    valid_length = jnp.maximum(jnp.sum(mask, axis=-1), 1e-10)
+    valid_length = jnp.sum(mask, axis=-1)
+
+    # Mask for samples with sufficient valid tokens
+    valid_sample_mask = valid_length >= min_valid_tokens
+
+    # Avoid division by zero
+    safe_valid_length = jnp.maximum(valid_length, 1.0)
 
     # Log probabilities
     logits = logits.astype(jnp.float32)
@@ -358,7 +368,10 @@ def per_sample_cross_entropy_loss(
 
     # Mask and compute per-sample loss
     token_log_probs = jnp.where(mask > 0, token_log_probs, 0.0)
-    per_sample_loss = -jnp.sum(token_log_probs, axis=-1) / valid_length
+    per_sample_loss = -jnp.sum(token_log_probs, axis=-1) / safe_valid_length
+
+    # Zero out loss for samples with too few valid tokens
+    per_sample_loss = jnp.where(valid_sample_mask, per_sample_loss, 0.0)
 
     return per_sample_loss
 
