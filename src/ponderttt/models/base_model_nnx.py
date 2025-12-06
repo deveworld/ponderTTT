@@ -242,7 +242,11 @@ class TTTTransformerLM(nnx.Module):
             if self.tie_word_embeddings:
                 # Use shared embedding weights for LM head
                 # Following official TTT-LM-JAX implementation
-                embedding_kernel = self.base_model.wte.embedding[...]  # [vocab_size, n_embd]
+                # CRITICAL: Apply stop_gradient to embedding kernel to prevent it from being
+                # co-trained with TTT. This ensures SKIP path (hidden_states @ embedding.T)
+                # remains valid as a baseline. Without this, embedding weights drift to align
+                # with (hidden_states + fast_output) rather than raw hidden_states.
+                embedding_kernel = jax.lax.stop_gradient(self.base_model.wte.embedding[...])  # [vocab_size, n_embd]
                 logits = adapted_hidden @ embedding_kernel.T  # [batch, seq_len, vocab_size]
             else:
                 logits = self.lm_head(adapted_hidden)

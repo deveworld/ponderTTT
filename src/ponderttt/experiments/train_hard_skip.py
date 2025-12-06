@@ -275,6 +275,13 @@ def main():
         vocab_size=tokenizer.get_vocab_size(),
     )
 
+    # CRITICAL: Save original HuggingFace embedding weights BEFORE loading checkpoint
+    # During Phase 1 baseline training, embedding weights were co-trained with TTT,
+    # making them incompatible with raw hidden states (SKIP path).
+    # We need to preserve the original embeddings for accurate SKIP path loss computation.
+    original_embedding_weights = jnp.array(ttt_model.base_model.wte.embedding[...])
+    print(f"Saved original embedding weights: shape={original_embedding_weights.shape}")
+
     # Initialize Binary Gating Network
     print("Initializing Binary Gating Network...")
     gating_config = BinaryGatingConfig(
@@ -330,6 +337,15 @@ def main():
                 # Update only the model parameters, not optimizer state
                 nnx.update(ttt_model, model_state)
                 print(f"Loaded TTT checkpoint from step {ckpt.get('step', 'unknown')}")
+
+                # CRITICAL: Restore original HuggingFace embedding weights
+                # The checkpoint's embeddings were co-trained with TTT during Phase 1,
+                # which corrupts the SKIP path (hidden_states @ embedding.T gives garbage).
+                # By restoring original embeddings, we ensure:
+                # - SKIP path: uses embeddings aligned with raw hidden states
+                # - UPDATE path: uses same embeddings (TTT output adapts the hidden states)
+                ttt_model.base_model.wte.embedding.value = original_embedding_weights
+                print("Restored original HuggingFace embedding weights for accurate SKIP path")
             else:
                 print("Warning: Could not find 'state.model' in TTT checkpoint.")
         except Exception as e:

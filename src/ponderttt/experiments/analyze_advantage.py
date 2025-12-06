@@ -85,6 +85,12 @@ def main():
         vocab_size=tokenizer.get_vocab_size(),
     )
 
+    # CRITICAL: Save original HuggingFace embedding weights BEFORE loading checkpoint
+    # During Phase 1 baseline training, embedding weights were co-trained with TTT,
+    # making them incompatible with raw hidden states (SKIP path).
+    original_embedding_weights = jnp.array(ttt_model.base_model.wte.embedding[...])
+    print(f"Saved original embedding weights: shape={original_embedding_weights.shape}")
+
     # Load checkpoint if provided
     if args.checkpoint:
         print(f"Loading checkpoint from {args.checkpoint}...")
@@ -94,6 +100,12 @@ def main():
                 model_state = unwrap_state(ckpt["state"]["model"])
                 nnx.update(ttt_model, model_state)
                 print(f"Loaded checkpoint from step {ckpt.get('step', 'unknown')}")
+
+                # CRITICAL: Restore original HuggingFace embedding weights
+                # The checkpoint's embeddings were co-trained with TTT during Phase 1,
+                # which corrupts the SKIP path (hidden_states @ embedding.T gives garbage).
+                ttt_model.base_model.wte.embedding.value = original_embedding_weights
+                print("Restored original HuggingFace embedding weights for accurate SKIP path")
             else:
                 print("Warning: Could not find 'state.model' in checkpoint.")
         except Exception as e:
