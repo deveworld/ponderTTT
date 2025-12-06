@@ -511,6 +511,12 @@ def main():
             )
             advantage_per_sample = ce_per_sample_skip - ce_per_sample_update  # [B]
 
+            # Clip advantage to prevent outliers from destabilizing training
+            # Normal range should be approximately -2 to +2 for mean-normalized CE loss
+            advantage_min_raw = jnp.min(advantage_per_sample)
+            advantage_max_raw = jnp.max(advantage_per_sample)
+            advantage_per_sample = jnp.clip(advantage_per_sample, -10.0, 10.0)
+
             # 2. Compute Top-k targets (batch-relative) for threshold tracking
             # This is used to update the EMA threshold outside the loop
             _, batch_threshold = compute_topk_targets(
@@ -602,6 +608,8 @@ def main():
                 topk_match_rate,
                 advantage_std,
                 prob_threshold,
+                advantage_min_raw,
+                advantage_max_raw,
             )
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
@@ -621,6 +629,8 @@ def main():
             topk_match,
             adv_std,
             prob_threshold,
+            adv_min_raw,
+            adv_max_raw,
         ) = aux
 
         optimizer.update(trainable_sys, grads)
@@ -644,6 +654,8 @@ def main():
             topk_match,
             adv_std,
             prob_threshold,
+            adv_min_raw,
+            adv_max_raw,
         )
 
     # JIT compile training step
@@ -700,6 +712,8 @@ def main():
         total_topk_match = 0.0
         total_adv_std = 0.0
         total_prob_threshold = 0.0
+        min_adv_raw = float('inf')
+        max_adv_raw = float('-inf')
         valid_chunks = 0
 
         feature_extractor.reset_history()
@@ -739,6 +753,8 @@ def main():
                 topk_match,
                 adv_std,
                 prob_thresh,
+                adv_min,
+                adv_max,
             ) = train_step_jit(
                 trainable_system,
                 optimizer,
@@ -786,6 +802,8 @@ def main():
             total_topk_match += float(topk_match)
             total_adv_std += float(adv_std)
             total_prob_threshold += float(prob_thresh)
+            min_adv_raw = min(min_adv_raw, float(adv_min))
+            max_adv_raw = max(max_adv_raw, float(adv_max))
             valid_chunks += 1
 
             feature_extractor.update_history(float(ce), float(hard_cost))
@@ -816,7 +834,7 @@ def main():
             f"Iter {iter_count+1}{warmup_status}: Loss={avg_loss:.4f}, "
             f"CE={avg_ce_loss:.4f}, PPL={perplexity:.2f}, "
             f"SkipRate={avg_skip_rate:.2%}, TopkMatch={avg_topk_match:.2%}, "
-            f"Cost={avg_hard_cost:.2f}x, Adv={avg_advantage:.4f}±{avg_adv_std:.4f}, "
+            f"Cost={avg_hard_cost:.2f}x, Adv={avg_advantage:.4f}±{avg_adv_std:.4f} [{min_adv_raw:.2f},{max_adv_raw:.2f}], "
             f"Thresh={avg_threshold:.4f} (EMA:{threshold_ema:.4f}), "
             f"ProbThresh={avg_prob_threshold:.4f} (EMA:{prob_threshold_ema:.4f}), "
             f"Temp={temperature:.3f}"
@@ -842,6 +860,8 @@ def main():
                 "real_code_chunks": total_real_code_chunks,
                 "advantage": avg_advantage,
                 "advantage_std": avg_adv_std,
+                "advantage_min_raw": min_adv_raw,
+                "advantage_max_raw": max_adv_raw,
                 "batch_threshold": avg_threshold,
                 "threshold_ema": threshold_ema,
                 "prob_threshold": avg_prob_threshold,
@@ -864,6 +884,8 @@ def main():
             "threshold_ema": threshold_ema,
             "prob_threshold": avg_prob_threshold,
             "prob_threshold_ema": prob_threshold_ema,
+            "advantage_min_raw": min_adv_raw,
+            "advantage_max_raw": max_adv_raw,
         })
 
         # Periodic Checkpoint
