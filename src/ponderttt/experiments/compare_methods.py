@@ -315,6 +315,7 @@ def parse_args():
     parser.add_argument("--skip_examples", type=int, default=0, help="Number of examples to skip (for held-out evaluation).")
     parser.add_argument("--num_workers", type=int, default=32, help="Number of parallel workers for data downloading")
     parser.add_argument("--hard_skip_threshold", type=float, default=0.1, help="Hard Skip threshold: skip TTT if gating scale < threshold (default: 0.1)")
+    parser.add_argument("--use_checkpoint_threshold", action="store_true", help="Use probability threshold from checkpoint; otherwise auto-calibrate from budget")
     return parser.parse_args()
 
 
@@ -828,16 +829,19 @@ def main():
     # 5. Evaluate Binary Gating (Hard Skip with Gumbel-Softmax)
     binary_update_rate = None
     if binary_net is not None:
-        # Prefer probability-space threshold from checkpoint; otherwise auto-calibrate from budget
+        # Prefer probability-space threshold from checkpoint only if explicitly requested.
         eval_threshold = None
-        if binary_prob_threshold_ema is not None and 0.0 <= binary_prob_threshold_ema <= 1.0:
-            eval_threshold = binary_prob_threshold_ema
-            print(f"\n=== Using probability threshold from checkpoint: {eval_threshold:.4f} ===")
-        elif binary_threshold_ema is not None and 0.0 <= binary_threshold_ema <= 1.0:
-            eval_threshold = binary_threshold_ema
-            print(f"\n=== Using probability threshold from checkpoint (legacy): {eval_threshold:.4f} ===")
+        if args.use_checkpoint_threshold:
+            if binary_prob_threshold_ema is not None and 0.0 <= binary_prob_threshold_ema <= 1.0:
+                eval_threshold = binary_prob_threshold_ema
+                print(f"\n=== Using probability threshold from checkpoint: {eval_threshold:.4f} ===")
+            elif binary_threshold_ema is not None and 0.0 <= binary_threshold_ema <= 1.0:
+                eval_threshold = binary_threshold_ema
+                print(f"\n=== Using probability threshold from checkpoint (legacy): {eval_threshold:.4f} ===")
+            else:
+                print("\n=== No valid probability threshold in checkpoint; falling back to auto-calibrated threshold from budget ===")
         else:
-            print("\n=== Using auto-calibrated threshold from budget (argmax fallback if needed) ===")
+            print("\n=== Using auto-calibrated threshold from budget (per-sequence percentile) ===")
 
         df_binary = evaluate_model(
             "Binary Gating (Hard Skip)",
