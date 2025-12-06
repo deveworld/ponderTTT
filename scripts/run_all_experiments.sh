@@ -33,6 +33,9 @@ RUN_350M=false
 # Configuration - Common
 NUM_WORKERS=128
 
+# Evaluation flags
+USE_CKPT_THRESHOLD=false
+
 # Configuration - 125M Model
 BATCH_SIZE_125M=16
 # For 100k chunks: 3125 iters * 16 batch * 2 chunks/seq = 100,000 chunks
@@ -287,7 +290,8 @@ phase3_eval_id() {
                     --num_eval_batches $NUM_EVAL_BATCHES_125M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/125m_python
+                    --output_dir outputs/eval/125m_python \
+                    $( $USE_CKPT_THRESHOLD && echo --use_checkpoint_threshold )
         fi
     fi
 
@@ -308,7 +312,8 @@ phase3_eval_id() {
                     --num_eval_batches $NUM_EVAL_BATCHES_350M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/350m_python
+                    --output_dir outputs/eval/350m_python \
+                    $( $USE_CKPT_THRESHOLD && echo --use_checkpoint_threshold )
         fi
     fi
 
@@ -337,11 +342,12 @@ phase4_eval_ood() {
                 run_experiment "Eval 125M $lang (Table 2)" \
                     python -m ponderttt.experiments.compare_methods \
                         --model_scale 125m \
-                        --binary_gating_checkpoint "$ckpt_125m" \
-                        --update1_checkpoint "$ckpt_125m_update1" \
-                        --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
-                        --language "$lang" \
-                        --output_dir "outputs/eval/125m_${lang_lower}"
+                    --binary_gating_checkpoint "$ckpt_125m" \
+                    --update1_checkpoint "$ckpt_125m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
+                    --language "$lang" \
+                    --output_dir "outputs/eval/125m_${lang_lower}" \
+                    $( $USE_CKPT_THRESHOLD && echo --use_checkpoint_threshold )
             done
         fi
     fi
@@ -359,11 +365,12 @@ phase4_eval_ood() {
                 run_experiment "Eval 350M $lang (Appendix OOD)" \
                     python -m ponderttt.experiments.compare_methods \
                         --model_scale 350m \
-                        --binary_gating_checkpoint "$ckpt_350m" \
-                        --update1_checkpoint "$ckpt_350m_update1" \
-                        --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
-                        --language "$lang" \
-                        --output_dir "outputs/eval/350m_${lang_lower}"
+                    --binary_gating_checkpoint "$ckpt_350m" \
+                    --update1_checkpoint "$ckpt_350m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
+                    --language "$lang" \
+                    --output_dir "outputs/eval/350m_${lang_lower}" \
+                    $( $USE_CKPT_THRESHOLD && echo --use_checkpoint_threshold )
             done
         fi
     fi
@@ -554,6 +561,9 @@ for arg in "$@"; do
             ;; 
         --350m)
             RUN_350M=true
+            ;; 
+        --use_checkpoint_threshold)
+            USE_CKPT_THRESHOLD=true
             ;; 
         *)
             PHASES+=("$arg")
