@@ -404,6 +404,10 @@ def evaluate_model(
         "is_real_code": [],  # True if chunk has >10% valid tokens
     }
 
+    # For aggregate correlation analysis (Binary Gating only)
+    all_update_probs: list[float] = []
+    all_advantages: list[float] = []
+
     # RNG key for stochastic evaluation
     rng_key = jax.random.PRNGKey(seed)
 
@@ -586,6 +590,19 @@ def evaluate_model(
         # If we deferred binary gating decisions, finalize them now
         if isinstance(gating_net, BinaryGatingNetwork) and binary_chunk_buffer:
             update_probs = [c["update_prob"] for c in binary_chunk_buffer]
+            advantages = [c["skip_loss"] - c["update_loss"] for c in binary_chunk_buffer]
+
+            # Collect for aggregate analysis
+            all_update_probs.extend(update_probs)
+            all_advantages.extend(advantages)
+
+            # Diagnostic: Check correlation between update_prob and advantage
+            if len(update_probs) > 1:
+                corr = np.corrcoef(update_probs, advantages)[0, 1]
+                if i == 0:  # Print only for first batch
+                    print(f"\n  [Diagnostic] Batch {i}: update_prob vs advantage correlation = {corr:.4f}")
+                    print(f"    update_prob: min={min(update_probs):.4f}, max={max(update_probs):.4f}, mean={np.mean(update_probs):.4f}")
+                    print(f"    advantage:   min={min(advantages):.4f}, max={max(advantages):.4f}, mean={np.mean(advantages):.4f}")
 
             # Choose threshold
             threshold_to_use: float
@@ -611,6 +628,20 @@ def evaluate_model(
 
                 current_spend += cost
                 feature_extractor.update_history(loss, cost)
+
+    # Print aggregate correlation for Binary Gating
+    if all_update_probs and all_advantages and len(all_update_probs) > 1:
+        agg_corr = np.corrcoef(all_update_probs, all_advantages)[0, 1]
+        print(f"\n  [AGGREGATE] update_prob vs advantage correlation = {agg_corr:.4f} (n={len(all_update_probs)})")
+        print(f"    update_prob: min={min(all_update_probs):.4f}, max={max(all_update_probs):.4f}, mean={np.mean(all_update_probs):.4f}, std={np.std(all_update_probs):.4f}")
+        print(f"    advantage:   min={min(all_advantages):.4f}, max={max(all_advantages):.4f}, mean={np.mean(all_advantages):.4f}, std={np.std(all_advantages):.4f}")
+
+        # Check ranking quality: what fraction of top-k by update_prob are also top-k by advantage?
+        k = len(all_update_probs) // 2  # Top 50%
+        prob_topk_indices = set(np.argsort(all_update_probs)[-k:])
+        adv_topk_indices = set(np.argsort(all_advantages)[-k:])
+        overlap = len(prob_topk_indices & adv_topk_indices) / k
+        print(f"    Top-50% ranking overlap (gating vs oracle): {overlap:.2%}")
 
     return pd.DataFrame(results)
 
