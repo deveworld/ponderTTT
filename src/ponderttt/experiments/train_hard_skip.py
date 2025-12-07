@@ -275,12 +275,13 @@ def main():
         vocab_size=tokenizer.get_vocab_size(),
     )
 
-    # CRITICAL: Save original HuggingFace embedding weights BEFORE loading checkpoint
-    # During Phase 1 baseline training, embedding weights were co-trained with TTT,
-    # making them incompatible with raw hidden states (SKIP path).
-    # We need to preserve the original embeddings for accurate SKIP path loss computation.
-    original_embedding_weights = jnp.array(ttt_model.base_model.wte.embedding[...])
-    print(f"Saved original embedding weights: shape={original_embedding_weights.shape}")
+    # CRITICAL: Save original HuggingFace base_model state BEFORE loading checkpoint
+    # During Phase 1 baseline training, even though stop_gradient was used on hidden_states,
+    # the checkpoint still contains all model parameters. When loaded, base_model weights
+    # may have drifted or been corrupted. We need to restore the ENTIRE base_model
+    # (not just embedding) to ensure SKIP path produces correct hidden states.
+    original_base_model_state = nnx.state(ttt_model.base_model)
+    print(f"Saved original HuggingFace base_model state (for SKIP path restoration)")
 
     # Initialize Binary Gating Network
     print("Initializing Binary Gating Network...")
@@ -338,27 +339,17 @@ def main():
                 nnx.update(ttt_model, model_state)
                 print(f"Loaded TTT checkpoint from step {ckpt.get('step', 'unknown')}")
 
-                # CRITICAL: Restore original HuggingFace embedding weights
-                # The checkpoint's embeddings were co-trained with TTT during Phase 1,
-                # which corrupts the SKIP path (hidden_states @ embedding.T gives garbage).
-                # By restoring original embeddings, we ensure:
-                # - SKIP path: uses embeddings aligned with raw hidden states
-                # - UPDATE path: uses same embeddings (TTT output adapts the hidden states)
+                # CRITICAL: Restore ENTIRE original HuggingFace base_model
+                # The checkpoint contains all model parameters including base_model.
+                # Even with stop_gradient, parameters may have drifted or been saved
+                # with unexpected values. We restore the ENTIRE base_model to ensure:
+                # - Hidden states are computed correctly (proper LayerNorm, etc.)
+                # - SKIP path uses embeddings aligned with raw hidden states
+                # - Only TTT-specific layers (fast_layer, fast_norm) come from checkpoint
 
-                # DEBUG: Check embedding values before/after restoration
-                ckpt_embedding = jnp.array(ttt_model.base_model.wte.embedding[...])
-                print(f"DEBUG: Checkpoint embedding stats: mean={float(jnp.mean(ckpt_embedding)):.6f}, std={float(jnp.std(ckpt_embedding)):.6f}")
-                print(f"DEBUG: Original embedding stats: mean={float(jnp.mean(original_embedding_weights)):.6f}, std={float(jnp.std(original_embedding_weights)):.6f}")
-                print(f"DEBUG: Embedding diff norm: {float(jnp.linalg.norm(ckpt_embedding - original_embedding_weights)):.6f}")
-
-                ttt_model.base_model.wte.embedding.value = original_embedding_weights
-
-                # Verify restoration
-                restored_embedding = jnp.array(ttt_model.base_model.wte.embedding[...])
-                print(f"DEBUG: After restoration: mean={float(jnp.mean(restored_embedding)):.6f}, std={float(jnp.std(restored_embedding)):.6f}")
-                print(f"DEBUG: Restoration diff norm: {float(jnp.linalg.norm(restored_embedding - original_embedding_weights)):.6f}")
-
-                print("Restored original HuggingFace embedding weights for accurate SKIP path")
+                print("Restoring original HuggingFace base_model state...")
+                nnx.update(ttt_model.base_model, original_base_model_state)
+                print("✓ Restored original HuggingFace base_model (all layers including embeddings)")
             else:
                 print("Warning: Could not find 'state.model' in TTT checkpoint.")
         except Exception as e:
@@ -406,14 +397,8 @@ def main():
     # Random key for Gumbel sampling
     rng_key = jax.random.PRNGKey(args.seed + 100)
 
-    # DEBUG: Verify that jnp.asarray() returns the restored embedding
-    base_model_ref = ttt_model.base_model
-    emb_via_asarray = jnp.asarray(base_model_ref.wte.embedding)
-    emb_via_index = base_model_ref.wte.embedding[...]
-    emb_via_value = base_model_ref.wte.embedding.value
-    print(f"DEBUG (before training): jnp.asarray diff from original: {float(jnp.linalg.norm(emb_via_asarray - original_embedding_weights)):.6f}")
-    print(f"DEBUG (before training): [...] diff from original: {float(jnp.linalg.norm(emb_via_index - original_embedding_weights)):.6f}")
-    print(f"DEBUG (before training): .value diff from original: {float(jnp.linalg.norm(emb_via_value - original_embedding_weights)):.6f}")
+    # DEBUG: Verify base_model state looks correct
+    print(f"DEBUG (before training): embedding mean={float(jnp.mean(ttt_model.base_model.wte.embedding[...])):.6f}, std={float(jnp.std(ttt_model.base_model.wte.embedding[...])):.6f}")
 
     # Threshold EMAs for inference
     # threshold_ema: advantage-space threshold (legacy)
@@ -741,19 +726,21 @@ def main():
     # History tracking
     history = []
 
-    # DEBUG: Final verification of embedding state right before training starts
+    # DEBUG: Final verification of base_model state right before training starts
     print("\n" + "=" * 60)
-    print("DEBUG: FINAL EMBEDDING VERIFICATION BEFORE TRAINING")
+    print("DEBUG: FINAL BASE_MODEL VERIFICATION BEFORE TRAINING")
     print("=" * 60)
     final_emb = jnp.asarray(ttt_model.base_model.wte.embedding)
-    print(f"  Current embedding: mean={float(jnp.mean(final_emb)):.6f}, std={float(jnp.std(final_emb)):.6f}")
-    print(f"  Original embedding: mean={float(jnp.mean(original_embedding_weights)):.6f}, std={float(jnp.std(original_embedding_weights)):.6f}")
-    diff_norm = float(jnp.linalg.norm(final_emb - original_embedding_weights))
-    print(f"  Diff norm from original: {diff_norm:.6f}")
-    if diff_norm < 1e-5:
-        print("  ✓ Embedding MATCHES original HuggingFace weights")
+    final_ln_scale = jnp.asarray(ttt_model.base_model.ln_f.scale)
+    print(f"  Embedding: mean={float(jnp.mean(final_emb)):.6f}, std={float(jnp.std(final_emb)):.6f}")
+    print(f"  Final LayerNorm scale: mean={float(jnp.mean(final_ln_scale)):.6f}, std={float(jnp.std(final_ln_scale)):.6f}")
+    # Expected HuggingFace GPT2 values: embedding mean~0, std~0.14; ln_f.scale~1.0
+    emb_ok = abs(float(jnp.mean(final_emb))) < 0.01 and 0.1 < float(jnp.std(final_emb)) < 0.2
+    ln_ok = 0.9 < float(jnp.mean(final_ln_scale)) < 1.1
+    if emb_ok and ln_ok:
+        print("  ✓ Base model looks like original HuggingFace weights")
     else:
-        print("  ✗ WARNING: Embedding DIFFERS from original! Restoration may have failed.")
+        print("  ✗ WARNING: Base model stats look unusual!")
     print("=" * 60 + "\n")
 
     print("Starting training...")
