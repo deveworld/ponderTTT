@@ -275,21 +275,9 @@ def main():
         vocab_size=tokenizer.get_vocab_size(),
     )
 
-    # CRITICAL: Save original HuggingFace base_model state BEFORE loading checkpoint
-    # During Phase 1 baseline training, even though stop_gradient was used on hidden_states,
-    # the checkpoint still contains all model parameters. When loaded, base_model weights
-    # may have drifted or been corrupted. We need to restore the ENTIRE base_model
-    # (not just embedding) to ensure SKIP path produces correct hidden states.
-    #
-    # IMPORTANT: We must make a DEEP COPY of the state values, not just get references.
-    # nnx.state() returns State objects with references that get modified when we
-    # call nnx.update(). Using jax.tree_util.tree_map to copy all arrays ensures
-    # we have independent copies that won't be affected by checkpoint loading.
-    original_base_model_state = jax.tree_util.tree_map(
-        lambda x: jnp.array(x) if hasattr(x, 'shape') else x,
-        nnx.state(ttt_model.base_model)
-    )
-    print(f"Saved original HuggingFace base_model state (deep copy for SKIP path restoration)")
+    # NOTE: We no longer need to save/restore base_model state because we now do
+    # SELECTIVE LOADING - only TTT parts (fast_layer, fast_norm) are loaded from checkpoint.
+    # The base_model remains untouched as original HuggingFace weights.
 
     # Initialize Binary Gating Network
     print("Initializing Binary Gating Network...")
@@ -337,27 +325,38 @@ def main():
     )
 
     # Load pre-trained TTT checkpoint if provided (AFTER optimizer creation)
+    # IMPORTANT: We only load TTT-specific parts (fast_layer, fast_norm), NOT base_model.
+    # The base_model should remain as original HuggingFace weights to ensure:
+    # - Hidden states are computed correctly (proper LayerNorm, etc.)
+    # - SKIP path uses embeddings aligned with raw hidden states
     if args.ttt_checkpoint:
         print(f"Loading TTT checkpoint from {args.ttt_checkpoint}...")
         try:
             ckpt = load_checkpoint(args.ttt_checkpoint, target=None)
             if "state" in ckpt and "model" in ckpt["state"]:
                 model_state = unwrap_state(ckpt["state"]["model"])
-                # Update only the model parameters, not optimizer state
-                nnx.update(ttt_model, model_state)
-                print(f"Loaded TTT checkpoint from step {ckpt.get('step', 'unknown')}")
+                print(f"Checkpoint from step {ckpt.get('step', 'unknown')}")
 
-                # CRITICAL: Restore ENTIRE original HuggingFace base_model
-                # The checkpoint contains all model parameters including base_model.
-                # Even with stop_gradient, parameters may have drifted or been saved
-                # with unexpected values. We restore the ENTIRE base_model to ensure:
-                # - Hidden states are computed correctly (proper LayerNorm, etc.)
-                # - SKIP path uses embeddings aligned with raw hidden states
-                # - Only TTT-specific layers (fast_layer, fast_norm) come from checkpoint
+                # SELECTIVE LOADING: Only load TTT-specific parts, NOT base_model
+                # This preserves original HuggingFace weights for correct SKIP path
+                ttt_parts_loaded = []
 
-                print("Restoring original HuggingFace base_model state...")
-                nnx.update(ttt_model.base_model, original_base_model_state)
-                print("✓ Restored original HuggingFace base_model (all layers including embeddings)")
+                # Load fast_layer if present
+                if "fast_layer" in model_state:
+                    nnx.update(ttt_model.fast_layer, model_state["fast_layer"])
+                    ttt_parts_loaded.append("fast_layer")
+
+                # Load fast_norm if present
+                if "fast_norm" in model_state:
+                    nnx.update(ttt_model.fast_norm, model_state["fast_norm"])
+                    ttt_parts_loaded.append("fast_norm")
+
+                # Skip base_model intentionally - keep original HuggingFace weights
+                if "base_model" in model_state:
+                    print("  ⚠ Skipping base_model from checkpoint (keeping original HuggingFace weights)")
+
+                print(f"✓ Loaded TTT parts: {ttt_parts_loaded}")
+                print("✓ base_model preserved as original HuggingFace (for correct SKIP path)")
             else:
                 print("Warning: Could not find 'state.model' in TTT checkpoint.")
         except Exception as e:
