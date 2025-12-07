@@ -344,7 +344,20 @@ def main():
                 # By restoring original embeddings, we ensure:
                 # - SKIP path: uses embeddings aligned with raw hidden states
                 # - UPDATE path: uses same embeddings (TTT output adapts the hidden states)
+
+                # DEBUG: Check embedding values before/after restoration
+                ckpt_embedding = jnp.array(ttt_model.base_model.wte.embedding[...])
+                print(f"DEBUG: Checkpoint embedding stats: mean={float(jnp.mean(ckpt_embedding)):.6f}, std={float(jnp.std(ckpt_embedding)):.6f}")
+                print(f"DEBUG: Original embedding stats: mean={float(jnp.mean(original_embedding_weights)):.6f}, std={float(jnp.std(original_embedding_weights)):.6f}")
+                print(f"DEBUG: Embedding diff norm: {float(jnp.linalg.norm(ckpt_embedding - original_embedding_weights)):.6f}")
+
                 ttt_model.base_model.wte.embedding.value = original_embedding_weights
+
+                # Verify restoration
+                restored_embedding = jnp.array(ttt_model.base_model.wte.embedding[...])
+                print(f"DEBUG: After restoration: mean={float(jnp.mean(restored_embedding)):.6f}, std={float(jnp.std(restored_embedding)):.6f}")
+                print(f"DEBUG: Restoration diff norm: {float(jnp.linalg.norm(restored_embedding - original_embedding_weights)):.6f}")
+
                 print("Restored original HuggingFace embedding weights for accurate SKIP path")
             else:
                 print("Warning: Could not find 'state.model' in TTT checkpoint.")
@@ -392,6 +405,15 @@ def main():
 
     # Random key for Gumbel sampling
     rng_key = jax.random.PRNGKey(args.seed + 100)
+
+    # DEBUG: Verify that jnp.asarray() returns the restored embedding
+    base_model_ref = ttt_model.base_model
+    emb_via_asarray = jnp.asarray(base_model_ref.wte.embedding)
+    emb_via_index = base_model_ref.wte.embedding[...]
+    emb_via_value = base_model_ref.wte.embedding.value
+    print(f"DEBUG (before training): jnp.asarray diff from original: {float(jnp.linalg.norm(emb_via_asarray - original_embedding_weights)):.6f}")
+    print(f"DEBUG (before training): [...] diff from original: {float(jnp.linalg.norm(emb_via_index - original_embedding_weights)):.6f}")
+    print(f"DEBUG (before training): .value diff from original: {float(jnp.linalg.norm(emb_via_value - original_embedding_weights)):.6f}")
 
     # Threshold EMAs for inference
     # threshold_ema: advantage-space threshold (legacy)
@@ -481,7 +503,24 @@ def main():
             embedding_kernel = None
             if tie_word_embeddings:
                 embedding_kernel = jnp.asarray(base_model.wte.embedding)
+                # DEBUG: Print embedding stats at runtime (only first call)
+                jax.debug.print(
+                    "DEBUG (inside JIT): embedding mean={m:.6f}, std={s:.6f}, shape={sh}",
+                    m=jnp.mean(embedding_kernel),
+                    s=jnp.std(embedding_kernel),
+                    sh=embedding_kernel.shape,
+                )
                 logits_skip = hidden_states @ embedding_kernel.T
+                # DEBUG: Print hidden_states and logits_skip stats
+                jax.debug.print(
+                    "DEBUG (inside JIT): hidden mean={hm:.6f}, std={hs:.6f}, logits_skip mean={lm:.6f}, std={ls:.6f}, min={lmin:.2f}, max={lmax:.2f}",
+                    hm=jnp.mean(hidden_states),
+                    hs=jnp.std(hidden_states),
+                    lm=jnp.mean(logits_skip),
+                    ls=jnp.std(logits_skip),
+                    lmin=jnp.min(logits_skip),
+                    lmax=jnp.max(logits_skip),
+                )
             elif sys.lm_head:
                 logits_skip = sys.lm_head(hidden_states)
             else:
@@ -500,6 +539,14 @@ def main():
 
             if tie_word_embeddings and embedding_kernel is not None:
                 logits_update = adapted_hidden @ embedding_kernel.T
+                # DEBUG: Print logits_update stats for comparison
+                jax.debug.print(
+                    "DEBUG (inside JIT): logits_update mean={lm:.6f}, std={ls:.6f}, min={lmin:.2f}, max={lmax:.2f}",
+                    lm=jnp.mean(logits_update),
+                    ls=jnp.std(logits_update),
+                    lmin=jnp.min(logits_update),
+                    lmax=jnp.max(logits_update),
+                )
             elif sys.lm_head:
                 logits_update = sys.lm_head(adapted_hidden)
             else:
@@ -693,6 +740,21 @@ def main():
 
     # History tracking
     history = []
+
+    # DEBUG: Final verification of embedding state right before training starts
+    print("\n" + "=" * 60)
+    print("DEBUG: FINAL EMBEDDING VERIFICATION BEFORE TRAINING")
+    print("=" * 60)
+    final_emb = jnp.asarray(ttt_model.base_model.wte.embedding)
+    print(f"  Current embedding: mean={float(jnp.mean(final_emb)):.6f}, std={float(jnp.std(final_emb)):.6f}")
+    print(f"  Original embedding: mean={float(jnp.mean(original_embedding_weights)):.6f}, std={float(jnp.std(original_embedding_weights)):.6f}")
+    diff_norm = float(jnp.linalg.norm(final_emb - original_embedding_weights))
+    print(f"  Diff norm from original: {diff_norm:.6f}")
+    if diff_norm < 1e-5:
+        print("  ✓ Embedding MATCHES original HuggingFace weights")
+    else:
+        print("  ✗ WARNING: Embedding DIFFERS from original! Restoration may have failed.")
+    print("=" * 60 + "\n")
 
     print("Starting training...")
     if start_iteration > 0:
