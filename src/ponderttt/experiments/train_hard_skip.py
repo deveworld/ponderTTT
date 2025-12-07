@@ -404,9 +404,6 @@ def main():
     # Random key for Gumbel sampling
     rng_key = jax.random.PRNGKey(args.seed + 100)
 
-    # DEBUG: Verify base_model state looks correct
-    print(f"DEBUG (before training): embedding mean={float(jnp.mean(ttt_model.base_model.wte.embedding[...])):.6f}, std={float(jnp.std(ttt_model.base_model.wte.embedding[...])):.6f}")
-
     # Threshold EMAs for inference
     # threshold_ema: advantage-space threshold (legacy)
     # prob_threshold_ema: probability-space threshold for update_prob soft outputs
@@ -717,23 +714,6 @@ def main():
 
     # History tracking
     history = []
-
-    # DEBUG: Final verification of base_model state right before training starts
-    print("\n" + "=" * 60)
-    print("DEBUG: FINAL BASE_MODEL VERIFICATION BEFORE TRAINING")
-    print("=" * 60)
-    final_emb = jnp.asarray(ttt_model.base_model.wte.embedding)
-    final_ln_scale = jnp.asarray(ttt_model.base_model.ln_f.scale)
-    print(f"  Embedding: mean={float(jnp.mean(final_emb)):.6f}, std={float(jnp.std(final_emb)):.6f}")
-    print(f"  Final LayerNorm scale: mean={float(jnp.mean(final_ln_scale)):.6f}, std={float(jnp.std(final_ln_scale)):.6f}")
-    # Expected HuggingFace GPT2 values: embedding mean~0, std~0.14; ln_f.scale~1.0
-    emb_ok = abs(float(jnp.mean(final_emb))) < 0.01 and 0.1 < float(jnp.std(final_emb)) < 0.2
-    ln_ok = 0.9 < float(jnp.mean(final_ln_scale)) < 1.1
-    if emb_ok and ln_ok:
-        print("  ✓ Base model looks like original HuggingFace weights")
-    else:
-        print("  ✗ WARNING: Base model stats look unusual!")
-    print("=" * 60 + "\n")
 
     print("Starting training...")
     if start_iteration > 0:
