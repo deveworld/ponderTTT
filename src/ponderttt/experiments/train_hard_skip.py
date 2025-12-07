@@ -493,26 +493,17 @@ def main():
             # 3. Compute both SKIP and UPDATE outputs
             # SKIP output: use base hidden states directly
             embedding_kernel = None
+            pad_token_id = None
+
             if tie_word_embeddings:
                 embedding_kernel = jnp.asarray(base_model.wte.embedding)
-                # DEBUG: Print embedding stats at runtime (only first call)
-                jax.debug.print(
-                    "DEBUG (inside JIT): embedding mean={m:.6f}, std={s:.6f}, shape={sh}",
-                    m=jnp.mean(embedding_kernel),
-                    s=jnp.std(embedding_kernel),
-                    sh=embedding_kernel.shape,
-                )
+                # Pad token is the last token (added when extending vocab from 50257 to 50258)
+                # Its embedding is all zeros, causing logit=0 to dominate softmax
+                pad_token_id = embedding_kernel.shape[0] - 1
+
                 logits_skip = hidden_states @ embedding_kernel.T
-                # DEBUG: Print hidden_states and logits_skip stats
-                jax.debug.print(
-                    "DEBUG (inside JIT): hidden mean={hm:.6f}, std={hs:.6f}, logits_skip mean={lm:.6f}, std={ls:.6f}, min={lmin:.2f}, max={lmax:.2f}",
-                    hm=jnp.mean(hidden_states),
-                    hs=jnp.std(hidden_states),
-                    lm=jnp.mean(logits_skip),
-                    ls=jnp.std(logits_skip),
-                    lmin=jnp.min(logits_skip),
-                    lmax=jnp.max(logits_skip),
-                )
+                # Mask padding token to -inf (it has zero embedding, causing logit=0 to dominate)
+                logits_skip = logits_skip.at[..., pad_token_id].set(-1e10)
             elif sys.lm_head:
                 logits_skip = sys.lm_head(hidden_states)
             else:
@@ -531,14 +522,8 @@ def main():
 
             if tie_word_embeddings and embedding_kernel is not None:
                 logits_update = adapted_hidden @ embedding_kernel.T
-                # DEBUG: Print logits_update stats for comparison
-                jax.debug.print(
-                    "DEBUG (inside JIT): logits_update mean={lm:.6f}, std={ls:.6f}, min={lmin:.2f}, max={lmax:.2f}",
-                    lm=jnp.mean(logits_update),
-                    ls=jnp.std(logits_update),
-                    lmin=jnp.min(logits_update),
-                    lmax=jnp.max(logits_update),
-                )
+                # Mask padding token
+                logits_update = logits_update.at[..., pad_token_id].set(-1e10)
             elif sys.lm_head:
                 logits_update = sys.lm_head(adapted_hidden)
             else:
