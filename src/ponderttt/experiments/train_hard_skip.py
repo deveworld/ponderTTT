@@ -280,8 +280,16 @@ def main():
     # the checkpoint still contains all model parameters. When loaded, base_model weights
     # may have drifted or been corrupted. We need to restore the ENTIRE base_model
     # (not just embedding) to ensure SKIP path produces correct hidden states.
-    original_base_model_state = nnx.state(ttt_model.base_model)
-    print(f"Saved original HuggingFace base_model state (for SKIP path restoration)")
+    #
+    # IMPORTANT: We must make a DEEP COPY of the state values, not just get references.
+    # nnx.state() returns State objects with references that get modified when we
+    # call nnx.update(). Using jax.tree_util.tree_map to copy all arrays ensures
+    # we have independent copies that won't be affected by checkpoint loading.
+    original_base_model_state = jax.tree_util.tree_map(
+        lambda x: jnp.array(x) if hasattr(x, 'shape') else x,
+        nnx.state(ttt_model.base_model)
+    )
+    print(f"Saved original HuggingFace base_model state (deep copy for SKIP path restoration)")
 
     # Initialize Binary Gating Network
     print("Initializing Binary Gating Network...")
