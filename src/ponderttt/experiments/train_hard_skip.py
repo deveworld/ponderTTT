@@ -480,11 +480,13 @@ def main():
             # - decision_probs_hard: One-hot hard decision (for stats)
             # - decision_probs_soft: Soft probabilities (for BCE loss)
             # - decision_hard: Integer hard decision (for stats)
-            gating_scale, decision_probs_hard, decision_probs_soft, decision_hard = sys.gating_net(
+            # - gating_logits: Raw logits [batch, 2] for ranking loss
+            gating_scale, decision_probs_hard, decision_probs_soft, decision_hard, gating_logits = sys.gating_net(
                 features,
                 train=True,
                 temperature=temperature,
                 rng_key=rng,
+                return_logits=True,
             )
 
             # 3. Compute both SKIP and UPDATE outputs
@@ -566,30 +568,55 @@ def main():
             )
             batch_threshold = jax.lax.stop_gradient(batch_threshold)
 
-            # 3. Compute Training Targets using STABLE threshold
-            # We use the passed-in target_threshold (from EMA) to define the positive class.
-            # This prevents the "moving target" problem where the definition of "top-k"
-            # changes wildly between batches.
+            # 3. Compute Training Targets using STABLE threshold (for logging only)
             training_targets = (advantage_per_sample >= target_threshold).astype(jnp.float32)
             training_targets = jax.lax.stop_gradient(training_targets)
 
             # 4. Per-sample update probability from gating network
             update_prob_soft = decision_probs_soft[:, 1]  # [B]
 
-            # Clamp predictions only (not targets) for numerical stability in BCE
+            # === PAIRWISE RANKING LOSS (RankNet) ===
+            # Goal: Learn to RANK samples by advantage, not just classify them
+            # For pairs (i, j) where advantage_i > advantage_j, we want score_i > score_j
+            #
+            # Loss: L = sum_{a_i > a_j} log(1 + exp(-(s_i - s_j)))
+            # where s is the gating score (UPDATE logit - SKIP logit)
+
+            # Gating score: logit difference (higher = more likely to UPDATE)
+            gating_score = gating_logits[:, 1] - gating_logits[:, 0]  # [B]
+
+            # Pairwise advantage difference: [B, B]
+            # diff_adv[i, j] = advantage[i] - advantage[j]
+            diff_adv = advantage_per_sample[:, None] - advantage_per_sample[None, :]
+
+            # Pairwise score difference: [B, B]
+            # diff_score[i, j] = score[i] - score[j]
+            diff_score = gating_score[:, None] - gating_score[None, :]
+
+            # Valid pairs: where advantage_i > advantage_j by a margin
+            # Using margin avoids learning from noise when advantages are similar
+            ranking_margin = 0.1  # Only consider pairs with >0.1 advantage difference
+            valid_pairs = diff_adv > ranking_margin  # [B, B] boolean mask
+
+            # RankNet loss: -log(sigmoid(s_i - s_j)) = log(1 + exp(-(s_i - s_j)))
+            # = softplus(-diff_score)
+            pairwise_loss = jax.nn.softplus(-diff_score)  # [B, B]
+
+            # Apply mask and compute mean
+            num_valid_pairs = jnp.maximum(jnp.sum(valid_pairs.astype(jnp.float32)), 1.0)
+            ranking_loss = jnp.sum(pairwise_loss * valid_pairs.astype(jnp.float32)) / num_valid_pairs
+
+            # Also compute BCE for comparison/logging (but don't use for training)
             eps = 1e-7
             update_prob_clamped = jnp.clip(update_prob_soft, eps, 1.0 - eps)
-
-            # 5. BCE loss: train gating to predict STABLE targets
             bce_loss = -(
                 training_targets * jnp.log(update_prob_clamped) +
                 (1.0 - training_targets) * jnp.log(1.0 - update_prob_clamped)
             )
             gating_bce_loss = jnp.mean(bce_loss)
 
-            # No skip rate regularizer needed - k directly controls the rate
-            # Combined gating loss (just BCE)
-            gating_quality_loss = gating_bce_loss
+            # Use ranking loss instead of BCE for training
+            gating_quality_loss = ranking_loss
 
             # For logging
             advantage_per_sample = jax.lax.stop_gradient(advantage_per_sample)
@@ -635,6 +662,11 @@ def main():
             # Probability-space threshold (UPDATE prob percentile) matching target_update_rate
             prob_threshold = jnp.percentile(update_prob_soft, 100.0 * (1.0 - target_update_rate))
 
+            # Pairwise ranking accuracy: what fraction of valid pairs are correctly ordered?
+            # correct_pairs[i,j] = 1 if (adv_i > adv_j) implies (score_i > score_j)
+            correct_pairs = (diff_score > 0).astype(jnp.float32) * valid_pairs.astype(jnp.float32)
+            ranking_accuracy = jnp.sum(correct_pairs) / num_valid_pairs
+
             return total_loss, (
                 ce_loss,
                 l_ttt,
@@ -654,6 +686,8 @@ def main():
                 advantage_max_raw,
                 loss_skip_mean,
                 loss_update_mean,
+                ranking_loss,
+                ranking_accuracy,
             )
 
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
@@ -677,6 +711,8 @@ def main():
             adv_max_raw,
             loss_skip_mean,
             loss_update_mean,
+            ranking_loss,
+            ranking_accuracy,
         ) = aux
 
         optimizer.update(trainable_sys, grads)
@@ -704,6 +740,8 @@ def main():
             adv_max_raw,
             loss_skip_mean,
             loss_update_mean,
+            ranking_loss,
+            ranking_accuracy,
         )
 
     # JIT compile training step
@@ -764,6 +802,8 @@ def main():
         max_adv_raw = float('-inf')
         total_loss_skip = 0.0
         total_loss_update = 0.0
+        total_ranking_loss = 0.0
+        total_ranking_acc = 0.0
         valid_chunks = 0
 
         feature_extractor.reset_history()
@@ -807,6 +847,8 @@ def main():
                 adv_max,
                 loss_skip,
                 loss_update,
+                rank_loss,
+                rank_acc,
             ) = train_step_jit(
                 trainable_system,
                 optimizer,
@@ -858,6 +900,8 @@ def main():
             max_adv_raw = max(max_adv_raw, float(adv_max))
             total_loss_skip += float(loss_skip)
             total_loss_update += float(loss_update)
+            total_ranking_loss += float(rank_loss)
+            total_ranking_acc += float(rank_acc)
             valid_chunks += 1
 
             feature_extractor.update_history(float(ce), float(hard_cost))
@@ -883,6 +927,8 @@ def main():
         avg_prob_threshold = total_prob_threshold / valid_chunks
         avg_loss_skip = total_loss_skip / valid_chunks
         avg_loss_update = total_loss_update / valid_chunks
+        avg_ranking_loss = total_ranking_loss / valid_chunks
+        avg_ranking_acc = total_ranking_acc / valid_chunks
         perplexity = math.exp(min(avg_ce_loss, 10.0))  # Cap to avoid overflow
 
         warmup_status = " [WARMUP]" if is_warmup else ""
@@ -893,7 +939,7 @@ def main():
             f"Cost={avg_hard_cost:.2f}x, "
             f"LossSkip={avg_loss_skip:.2f}, LossUpdate={avg_loss_update:.2f}, "
             f"Adv=[{min_adv_raw:.2f},{max_adv_raw:.2f}], "
-            f"Thresh={avg_threshold:.4f}, ProbThresh={avg_prob_threshold:.4f}, "
+            f"RankLoss={avg_ranking_loss:.4f}, RankAcc={avg_ranking_acc:.2%}, "
             f"Temp={temperature:.3f}"
         )
 
@@ -921,6 +967,8 @@ def main():
                 "advantage_max_raw": max_adv_raw,
                 "loss_skip": avg_loss_skip,
                 "loss_update": avg_loss_update,
+                "ranking_loss": avg_ranking_loss,
+                "ranking_accuracy": avg_ranking_acc,
                 "batch_threshold": avg_threshold,
                 "threshold_ema": threshold_ema,
                 "prob_threshold": avg_prob_threshold,
@@ -947,6 +995,8 @@ def main():
             "advantage_max_raw": max_adv_raw,
             "loss_skip": avg_loss_skip,
             "loss_update": avg_loss_update,
+            "ranking_loss": avg_ranking_loss,
+            "ranking_accuracy": avg_ranking_acc,
         })
 
         # Periodic Checkpoint

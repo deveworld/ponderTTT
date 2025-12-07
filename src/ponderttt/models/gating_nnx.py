@@ -191,7 +191,8 @@ class BinaryGatingNetwork(nnx.Module):
         train: bool = False,
         temperature: float | None = None,
         rng_key: jax.Array | None = None,
-    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        return_logits: bool = False,
+    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array] | Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         """
         Forward pass.
 
@@ -200,6 +201,7 @@ class BinaryGatingNetwork(nnx.Module):
             train: Whether in training mode
             temperature: Gumbel-Softmax temperature (uses config default if None)
             rng_key: Random key for Gumbel sampling (required for training)
+            return_logits: If True, also return raw logits for ranking loss
 
         Returns:
             Tuple of:
@@ -207,6 +209,7 @@ class BinaryGatingNetwork(nnx.Module):
             - decision_probs_hard: [batch, 2] - One-hot probabilities from Gumbel-Softmax (for execution path)
             - decision_probs_soft: [batch, 2] - Soft probabilities (for BCE loss)
             - decision_hard: [batch] - Integer hard decisions (0=SKIP, 1=UPDATE)
+            - logits (optional): [batch, 2] - Raw logits if return_logits=True
         """
         B = features.shape[0]
         x = features.astype(jnp.float32).reshape(B, -1)
@@ -267,6 +270,8 @@ class BinaryGatingNetwork(nnx.Module):
         update_prob_hard = decision_probs_hard[:, 1:2]  # [batch, 1]
         gating_scale = update_prob_hard * self.config.scale_when_update
 
+        if return_logits:
+            return gating_scale, decision_probs_hard, decision_probs_soft, decision_hard, logits
         return gating_scale, decision_probs_hard, decision_probs_soft, decision_hard
 
     def get_decision(
