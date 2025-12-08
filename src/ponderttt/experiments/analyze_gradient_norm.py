@@ -111,6 +111,13 @@ def get_model_name(model_scale: str) -> str:
     return {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
 
 
+def get_fast_weight_checksum(model) -> float:
+    """Get checksum of fast weights to detect state leakage."""
+    w1 = model.fast_layer.W1[...]
+    b1 = model.fast_layer.b1[...]
+    return float(jnp.sum(w1) + jnp.sum(b1))
+
+
 @nnx.jit
 def compute_skip_and_update_losses(
     model,
@@ -220,6 +227,11 @@ def main():
     all_loss_skip = []
     all_loss_update = []
 
+    # State leakage detection
+    initial_checksum = get_fast_weight_checksum(ttt_model)
+    print(f"[State Check] Initial fast weight checksum: {initial_checksum:.6f}")
+    state_leaked = False
+
     batch_count = 0
     for batch in tqdm(data_iter, total=args.num_batches, desc="Processing"):
         if batch_count >= args.num_batches:
@@ -263,7 +275,37 @@ def main():
             all_ttt_loss_step_1.append(ttt_step1_scalar)
             all_ttt_improvement.append(ttt_step0_scalar - ttt_step1_scalar)
 
+        # Check for state leakage after first batch
+        if batch_count == 0:
+            checksum_after_batch1 = get_fast_weight_checksum(ttt_model)
+            if abs(checksum_after_batch1 - initial_checksum) > 1e-6:
+                print(f"\n⚠️  [STATE LEAKAGE DETECTED] Fast weights changed after batch 1!")
+                print(f"    Initial: {initial_checksum:.6f}")
+                print(f"    After batch 1: {checksum_after_batch1:.6f}")
+                print(f"    Delta: {checksum_after_batch1 - initial_checksum:.6f}")
+                state_leaked = True
+            else:
+                print(f"\n✓ [State Check] No state leakage after batch 1 (checksum unchanged)")
+
         batch_count += 1
+
+    # Final state check
+    final_checksum = get_fast_weight_checksum(ttt_model)
+    if abs(final_checksum - initial_checksum) > 1e-6:
+        print(f"\n⚠️  [STATE LEAKAGE DETECTED] Fast weights changed after all batches!")
+        print(f"    Initial: {initial_checksum:.6f}")
+        print(f"    Final: {final_checksum:.6f}")
+        print(f"    Delta: {final_checksum - initial_checksum:.6f}")
+        state_leaked = True
+    else:
+        print(f"\n✓ [State Check] No state leakage after all batches (checksum unchanged)")
+
+    if state_leaked:
+        print("\n" + "=" * 60)
+        print("⚠️  WARNING: State leakage detected!")
+        print("Results may be contaminated. TTT forward modifies fast weights.")
+        print("Consider adding state reset between batches.")
+        print("=" * 60)
 
     # Convert to numpy
     ttt_improvement = np.array(all_ttt_improvement)

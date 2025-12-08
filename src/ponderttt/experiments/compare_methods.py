@@ -397,6 +397,14 @@ def evaluate_ttt_improvement_gating(
 
     assert isinstance(ttt_model, TTTTransformerLM)
 
+    # State leakage detection
+    def get_fast_weight_checksum(model) -> float:
+        w1 = model.fast_layer.W1[...]
+        b1 = model.fast_layer.b1[...]
+        return float(jnp.sum(w1) + jnp.sum(b1))
+
+    initial_checksum = get_fast_weight_checksum(ttt_model)
+
     # JIT-compiled functions
     @nnx.jit
     def jit_skip_loss(model, input_ids, attention_mask, position_ids):
@@ -491,6 +499,14 @@ def evaluate_ttt_improvement_gating(
             results["method"].append(method_name)
             results["text"].append(c["text"])
             results["is_real_code"].append(c["is_real_code"])
+
+    # State leakage check
+    final_checksum = get_fast_weight_checksum(ttt_model)
+    if abs(final_checksum - initial_checksum) > 1e-6:
+        print(f"\n  ⚠️  [STATE LEAKAGE] Fast weights changed during evaluation!")
+        print(f"    Initial: {initial_checksum:.6f}, Final: {final_checksum:.6f}")
+    else:
+        print(f"\n  ✓ [State Check] No state leakage (fast weights unchanged)")
 
     # Print correlation analysis
     if all_ttt_improvements and all_advantages:
