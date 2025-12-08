@@ -525,8 +525,16 @@ def evaluate_model(
 
             elif isinstance(gating_net, BinaryGatingNetwork):
                 # Defer decision until we know the threshold for this sequence
-                _, _, soft_probs, _ = gating_net(features, train=False)
+                _, _, soft_probs, _, gating_logits = gating_net(features, train=False, return_logits=True)
                 update_prob_val = float(soft_probs[0, 1])
+
+                # Debug: print first 3 samples' features and outputs
+                if i == 0 and c_idx < 3:
+                    print(f"\n  [DEBUG] Batch {i}, Chunk {c_idx}:")
+                    print(f"    features (first 10): {features[0, :10]}")
+                    print(f"    features (mean, std): ({float(jnp.mean(features)):.4f}, {float(jnp.std(features)):.4f})")
+                    print(f"    gating_logits: [{float(gating_logits[0, 0]):.4f}, {float(gating_logits[0, 1]):.4f}]")
+                    print(f"    update_prob: {update_prob_val:.4f}")
 
                 # Precompute both paths
                 skip_loss = float(jit_loss_from_logits(
@@ -631,17 +639,67 @@ def evaluate_model(
 
     # Print aggregate correlation for Binary Gating
     if all_update_probs and all_advantages and len(all_update_probs) > 1:
-        agg_corr = np.corrcoef(all_update_probs, all_advantages)[0, 1]
+        probs_arr = np.array(all_update_probs)
+        advs_arr = np.array(all_advantages)
+
+        agg_corr = np.corrcoef(probs_arr, advs_arr)[0, 1]
         print(f"\n  [AGGREGATE] update_prob vs advantage correlation = {agg_corr:.4f} (n={len(all_update_probs)})")
-        print(f"    update_prob: min={min(all_update_probs):.4f}, max={max(all_update_probs):.4f}, mean={np.mean(all_update_probs):.4f}, std={np.std(all_update_probs):.4f}")
-        print(f"    advantage:   min={min(all_advantages):.4f}, max={max(all_advantages):.4f}, mean={np.mean(all_advantages):.4f}, std={np.std(all_advantages):.4f}")
+        print(f"    update_prob: min={probs_arr.min():.4f}, max={probs_arr.max():.4f}, mean={probs_arr.mean():.4f}, std={probs_arr.std():.4f}")
+        print(f"    advantage:   min={advs_arr.min():.4f}, max={advs_arr.max():.4f}, mean={advs_arr.mean():.4f}, std={advs_arr.std():.4f}")
 
         # Check ranking quality: what fraction of top-k by update_prob are also top-k by advantage?
         k = len(all_update_probs) // 2  # Top 50%
-        prob_topk_indices = set(np.argsort(all_update_probs)[-k:])
-        adv_topk_indices = set(np.argsort(all_advantages)[-k:])
+        prob_sorted_indices = np.argsort(probs_arr)
+        adv_sorted_indices = np.argsort(advs_arr)
+
+        prob_topk_indices = set(prob_sorted_indices[-k:])  # Top k by prob (highest)
+        adv_topk_indices = set(adv_sorted_indices[-k:])    # Top k by advantage (highest)
         overlap = len(prob_topk_indices & adv_topk_indices) / k
         print(f"    Top-50% ranking overlap (gating vs oracle): {overlap:.2%}")
+
+        # DETAILED DEBUG: Verify the logic is correct
+        print(f"\n    [DEBUG] Sanity check:")
+        print(f"      Total samples: {len(probs_arr)}, k (50%): {k}")
+        print(f"      prob_topk_indices: first 5 = {list(prob_topk_indices)[:5]}, count = {len(prob_topk_indices)}")
+        print(f"      adv_topk_indices:  first 5 = {list(adv_topk_indices)[:5]}, count = {len(adv_topk_indices)}")
+        print(f"      intersection count: {len(prob_topk_indices & adv_topk_indices)}")
+
+        # Verify: for samples in prob top-k, what's their average advantage rank?
+        adv_ranks = np.argsort(np.argsort(advs_arr))  # Rank of each sample by advantage
+        prob_topk_avg_adv_rank = np.mean([adv_ranks[i] for i in prob_topk_indices])
+        print(f"      Avg advantage rank of prob top-k samples: {prob_topk_avg_adv_rank:.1f} (expected > {len(probs_arr)/2:.1f} if working)")
+
+        # Print first 10 samples sorted by prob
+        print(f"\n    [DEBUG] First 10 samples by descending update_prob:")
+        for rank, idx in enumerate(prob_sorted_indices[::-1][:10]):
+            print(f"      rank={rank}, idx={idx}, prob={probs_arr[idx]:.4f}, adv={advs_arr[idx]:.4f}, adv_rank={adv_ranks[idx]}")
+
+        # Print first 10 samples sorted by advantage
+        print(f"\n    [DEBUG] First 10 samples by descending advantage:")
+        for rank, idx in enumerate(adv_sorted_indices[::-1][:10]):
+            print(f"      rank={rank}, idx={idx}, prob={probs_arr[idx]:.4f}, adv={advs_arr[idx]:.4f}")
+
+        # Compute RankAcc with margin (same as training) to verify consistency
+        print(f"\n    [DEBUG] Pairwise ranking accuracy (same metric as training):")
+        ranking_margin = 0.1
+        diff_adv = advs_arr[:, None] - advs_arr[None, :]
+        diff_score = probs_arr[:, None] - probs_arr[None, :]  # Use prob as score
+        valid_pairs = diff_adv > ranking_margin
+        num_valid_pairs = np.maximum(np.sum(valid_pairs), 1)
+        correct_pairs = (diff_score > 0) * valid_pairs
+        ranking_accuracy = np.sum(correct_pairs) / num_valid_pairs
+        total_pairs = len(probs_arr) * (len(probs_arr) - 1)
+        valid_pairs_ratio = num_valid_pairs / total_pairs
+
+        print(f"      RankAcc (margin=0.1): {ranking_accuracy:.2%}")
+        print(f"      Valid pairs ratio: {valid_pairs_ratio:.2%} ({num_valid_pairs}/{total_pairs})")
+
+        # Also compute RankAcc without margin for comparison
+        all_pairs = diff_adv > 0  # All pairs where adv_i > adv_j
+        num_all_pairs = np.maximum(np.sum(all_pairs), 1)
+        correct_all_pairs = (diff_score > 0) * all_pairs
+        ranking_accuracy_no_margin = np.sum(correct_all_pairs) / num_all_pairs
+        print(f"      RankAcc (no margin): {ranking_accuracy_no_margin:.2%}")
 
     return pd.DataFrame(results)
 
@@ -771,8 +829,14 @@ def main():
 
             # Quick sanity check: run inference on dummy data
             dummy_features = jnp.zeros((1, 32))
-            _, _, soft_probs_zero, _ = binary_net(dummy_features, train=False)
+            _, _, soft_probs_zero, _, dummy_logits = binary_net(dummy_features, train=False, return_logits=True)
             print(f"  Sanity check (zero features): UPDATE prob = {float(soft_probs_zero[0, 1]):.4f}")
+            print(f"  Sanity check (zero features): logits = [{float(dummy_logits[0, 0]):.4f}, {float(dummy_logits[0, 1]):.4f}]")
+
+            # Print network weights for debugging
+            print(f"  Gating net head.bias: {binary_net.head.bias[...]}")
+            print(f"  Gating net head.kernel shape: {binary_net.head.kernel[...].shape}")
+            print(f"  Gating net head.kernel mean abs: {float(jnp.mean(jnp.abs(binary_net.head.kernel[...]))):.6f}")
         else:
             print("Warning: Could not find 'state.model' in checkpoint.")
     else:

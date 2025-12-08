@@ -473,6 +473,9 @@ def main():
         )
         features = jax.lax.stop_gradient(features)
 
+        # DEBUG: Print features info (will be printed during JIT trace)
+        # jax.debug.print("features shape: {}, first sample first 10: {}", features.shape, features[0, :10])
+
         def loss_fn(sys, rng):
             # 2. Get binary gating decision (Gumbel-Softmax)
             # Returns:
@@ -685,6 +688,11 @@ def main():
             # correct_pairs[i,j] = 1 if (adv_i > adv_j) implies (score_i > score_j)
             correct_pairs = (diff_score > 0).astype(jnp.float32) * valid_pairs.astype(jnp.float32)
             ranking_accuracy = jnp.sum(correct_pairs) / num_valid_pairs
+
+            # Track valid pairs ratio (for debugging)
+            batch_size = advantage_per_sample.shape[0]
+            total_pairs = batch_size * (batch_size - 1)  # Excluding diagonal
+            valid_pairs_ratio = num_valid_pairs / jnp.maximum(total_pairs, 1.0)
 
             return total_loss, (
                 ce_loss,
