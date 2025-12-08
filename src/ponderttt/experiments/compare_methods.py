@@ -150,22 +150,46 @@ def jit_ttt_forward_with_stats(
     attention_mask: jax.Array,
     position_ids: jax.Array,
 ):
-    """Run TTT forward and return loss + ttt_stats (for TTT Improvement gating)."""
-    out = model(
+    """Run TTT forward and return loss + ttt_stats (for TTT Improvement gating).
+
+    Also computes SKIP loss in the same JIT call for consistent comparison.
+    """
+    # SKIP path (no TTT)
+    out_skip = model(
+        input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_ttt=False,
+    )
+    loss_skip = cross_entropy_loss(
+        out_skip["logits"][:, :-1],
+        input_ids[:, 1:],
+        attention_mask[:, 1:],
+    )
+
+    # UPDATE path (with TTT)
+    out_update = model(
         input_ids,
         attention_mask=attention_mask,
         position_ids=position_ids,
         use_ttt=True,
     )
-    loss = cross_entropy_loss(
-        out["logits"][:, :-1],
+    loss_update = cross_entropy_loss(
+        out_update["logits"][:, :-1],
         input_ids[:, 1:],
         attention_mask[:, 1:],
     )
-    ttt_stats = out.get("ttt_stats", {})
+
+    # TTT internal stats (take mean across heads/batch)
+    ttt_stats = out_update.get("ttt_stats", {})
     ttt_loss_step_0 = ttt_stats.get("ttt_loss_step_0", jnp.array(0.0))
     ttt_loss_step_1 = ttt_stats.get("ttt_loss_step_1", jnp.array(0.0))
-    return loss, ttt_loss_step_0, ttt_loss_step_1
+
+    # Ensure scalars by taking mean (TTT stats are per-head arrays)
+    ttt_loss_step_0 = jnp.mean(ttt_loss_step_0)
+    ttt_loss_step_1 = jnp.mean(ttt_loss_step_1)
+
+    return loss_skip, loss_update, ttt_loss_step_0, ttt_loss_step_1
 
 
 def evaluate_oracle(
@@ -405,12 +429,6 @@ def evaluate_ttt_improvement_gating(
 
     initial_checksum = get_fast_weight_checksum(ttt_model)
 
-    # JIT-compiled functions
-    @nnx.jit
-    def jit_skip_loss(model, input_ids, attention_mask, position_ids):
-        out = model(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=False)
-        return cross_entropy_loss(out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:])
-
     for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
         if i >= num_batches:
             break
@@ -433,25 +451,20 @@ def evaluate_ttt_improvement_gating(
             position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
 
-            # Compute SKIP loss
-            loss_skip = float(jit_skip_loss(
-                ttt_model,
-                chunk_batch["input_ids"],
-                chunk_batch["attention_mask"],
-                position_ids,
-            ))
-
-            # Compute UPDATE loss + TTT stats
-            loss_update, ttt_step_0, ttt_step_1 = jit_ttt_forward_with_stats(
+            # Compute both SKIP and UPDATE losses + TTT stats in one JIT call
+            # This ensures consistent results (same as analyze_gradient_norm.py)
+            loss_skip, loss_update, ttt_step_0, ttt_step_1 = jit_ttt_forward_with_stats(
                 ttt_model,
                 chunk_batch["input_ids"],
                 chunk_batch["attention_mask"],
                 position_ids,
             )
+            loss_skip = float(loss_skip)
             loss_update = float(loss_update)
-            # TTT stats may have batch dimension, take mean
-            ttt_step_0_val = float(jnp.mean(ttt_step_0))
-            ttt_step_1_val = float(jnp.mean(ttt_step_1))
+
+            # TTT improvement: how much did TTT self-supervision loss decrease?
+            ttt_step_0_val = float(ttt_step_0)
+            ttt_step_1_val = float(ttt_step_1)
             ttt_improvement = ttt_step_0_val - ttt_step_1_val
 
             # Oracle advantage (for analysis)
