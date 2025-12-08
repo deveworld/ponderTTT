@@ -449,7 +449,10 @@ def evaluate_ttt_improvement_gating(
                 position_ids,
             )
             loss_update = float(loss_update)
-            ttt_improvement = float(ttt_step_0) - float(ttt_step_1)
+            # TTT stats may have batch dimension, take mean
+            ttt_step_0_val = float(jnp.mean(ttt_step_0))
+            ttt_step_1_val = float(jnp.mean(ttt_step_1))
+            ttt_improvement = ttt_step_0_val - ttt_step_1_val
 
             # Oracle advantage (for analysis)
             advantage = loss_skip - loss_update
