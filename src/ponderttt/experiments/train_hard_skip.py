@@ -222,6 +222,12 @@ def parse_args():
         default=0.1,
         help="Weight for TTT auxiliary loss",
     )
+    parser.add_argument(
+        "--listnet_temp",
+        type=float,
+        default=3.0,
+        help="Temperature for ListNet softmax (higher = more uniform weight across samples)",
+    )
 
     return parser.parse_args()
 
@@ -252,7 +258,8 @@ def main():
     print("=" * 60)
     print(f"Model scale: {args.model_scale}")
     print(f"Target update rate: {args.target_update_rate} (top {args.target_update_rate*100:.0f}%)")
-    print(f"Temperature: {args.initial_temperature} -> {args.min_temperature} over {args.temperature_anneal_steps} steps")
+    print(f"ListNet temperature: {args.listnet_temp} (higher = more uniform weight)")
+    print(f"Gumbel-Softmax temperature: {args.initial_temperature} -> {args.min_temperature} over {args.temperature_anneal_steps} steps")
     print(f"Warmup steps: {args.warmup_steps}")
     if args.ttt_checkpoint:
         print(f"TTT checkpoint: {args.ttt_checkpoint}")
@@ -426,6 +433,7 @@ def main():
         target_update_rate: float = 0.3,
         tie_word_embeddings: bool = True,
         padding_threshold: float = 0.1,
+        listnet_temperature: float = 3.0,
     ):
         """
         Training step with Hard Skip (Top-k discriminative gating).
@@ -596,7 +604,9 @@ def main():
             # Temperature for ListNet softmax (controls sharpness)
             # Lower temp = sharper distribution (more focus on top samples)
             # Higher temp = smoother distribution (more uniform learning)
-            listnet_temp = 1.0
+            # NOTE: temp=1.0 caused over-focus on extreme samples (top 2 correct, rest random)
+            # Higher temp spreads weight more evenly across all samples
+            listnet_temp = listnet_temperature  # Passed as argument
 
             # Target distribution: softmax over advantages
             # High advantage samples get high probability mass
@@ -774,7 +784,7 @@ def main():
     # JIT compile training step
     train_step_jit = nnx.jit(
         train_step,
-        static_argnames=("beta_ttt", "target_update_rate", "tie_word_embeddings", "padding_threshold"),
+        static_argnames=("beta_ttt", "target_update_rate", "tie_word_embeddings", "padding_threshold", "listnet_temperature"),
     )
 
     # History tracking
@@ -889,6 +899,7 @@ def main():
                 target_update_rate=args.target_update_rate,
                 tie_word_embeddings=ttt_model.tie_word_embeddings,
                 padding_threshold=0.1,
+                listnet_temperature=args.listnet_temp,
             )
 
             # Stability check
