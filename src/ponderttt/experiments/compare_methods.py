@@ -143,6 +143,31 @@ def jit_loss_from_logits(
     )
 
 
+@nnx.jit
+def jit_ttt_forward_with_stats(
+    model: TTTTransformerLM,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+    position_ids: jax.Array,
+):
+    """Run TTT forward and return loss + ttt_stats (for TTT Improvement gating)."""
+    out = model(
+        input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_ttt=True,
+    )
+    loss = cross_entropy_loss(
+        out["logits"][:, :-1],
+        input_ids[:, 1:],
+        attention_mask[:, 1:],
+    )
+    ttt_stats = out.get("ttt_stats", {})
+    ttt_loss_step_0 = ttt_stats.get("ttt_loss_step_0", jnp.array(0.0))
+    ttt_loss_step_1 = ttt_stats.get("ttt_loss_step_1", jnp.array(0.0))
+    return loss, ttt_loss_step_0, ttt_loss_step_1
+
+
 def evaluate_oracle(
     method_name: str,
     model_scale: str,
@@ -299,6 +324,199 @@ def evaluate_oracle(
     return pd.DataFrame(results)
 
 
+def evaluate_ttt_improvement_gating(
+    method_name: str,
+    model_scale: str,
+    update_rate: float,
+    num_batches: int,
+    batch_size: int,
+    seed: int,
+    model: Optional[TTTModel] = None,
+    language: str = "Python",
+    split: str = "test",
+    skip_examples: int = 0,
+    num_workers: int = 32,
+):
+    """
+    TTT Improvement-based Gating: Use TTT internal self-supervision loss improvement
+    as the gating signal.
+
+    Key insight: ttt_improvement = ttt_loss_step_0 - ttt_loss_step_1 strongly correlates
+    with oracle advantage (ρ=0.689), so we can use it for threshold-based gating.
+
+    For each chunk:
+    1. Run TTT forward to get ttt_stats
+    2. Compute ttt_improvement = ttt_loss_step_0 - ttt_loss_step_1
+    3. Select top-k% chunks by ttt_improvement for UPDATE, rest SKIP
+
+    Note: This requires running TTT for all chunks to measure improvement,
+    so the decision cost is 3.0x per chunk (same as always-update).
+    The benefit is in the final loss: we only "count" UPDATE loss for selected chunks.
+    """
+    print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}...")
+
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    tokenizer = get_tokenizer(model_name)
+
+    # Load TTT Model if not provided
+    if model is None:
+        ttt_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=seed,
+            load_pretrained=True,
+            vocab_size=tokenizer.get_vocab_size(),
+        )
+    else:
+        ttt_model = model
+
+    data_iter = create_data_iterator(
+        tokenizer=tokenizer,
+        split=split,
+        language=language,
+        batch_size=batch_size,
+        seq_length=1024,
+        chunk_size=512,
+        max_examples=batch_size * num_batches * 2,
+        skip_examples=skip_examples,
+        num_workers=num_workers,
+    )
+
+    results = {
+        "loss": [],
+        "cost": [],
+        "method": [],
+        "decision": [],
+        "text": [],
+        "is_real_code": [],
+    }
+
+    # For correlation analysis
+    all_ttt_improvements: list[float] = []
+    all_advantages: list[float] = []
+
+    assert isinstance(ttt_model, TTTTransformerLM)
+
+    # JIT-compiled functions
+    @nnx.jit
+    def jit_skip_loss(model, input_ids, attention_mask, position_ids):
+        out = model(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=False)
+        return cross_entropy_loss(out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:])
+
+    for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
+        if i >= num_batches:
+            break
+
+        chunks = batch["chunks"]
+        masks = batch["chunk_attention_mask"]
+        num_chunks = chunks.shape[1]
+
+        # Step 1: Compute TTT improvement for all chunks
+        chunk_data = []
+
+        for c_idx in range(num_chunks):
+            chunk_batch = {
+                "input_ids": chunks[:, c_idx],
+                "attention_mask": masks[:, c_idx]
+            }
+
+            chunk_len = chunk_batch["input_ids"].shape[-1]
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
+            position_ids = position_ids + c_idx * chunk_len
+            position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
+
+            # Compute SKIP loss
+            loss_skip = float(jit_skip_loss(
+                ttt_model,
+                chunk_batch["input_ids"],
+                chunk_batch["attention_mask"],
+                position_ids,
+            ))
+
+            # Compute UPDATE loss + TTT stats
+            loss_update, ttt_step_0, ttt_step_1 = jit_ttt_forward_with_stats(
+                ttt_model,
+                chunk_batch["input_ids"],
+                chunk_batch["attention_mask"],
+                position_ids,
+            )
+            loss_update = float(loss_update)
+            ttt_improvement = float(ttt_step_0) - float(ttt_step_1)
+
+            # Oracle advantage (for analysis)
+            advantage = loss_skip - loss_update
+
+            # Decode text
+            try:
+                text = tokenizer.decode(chunk_batch["input_ids"][0], skip_special_tokens=False)
+            except Exception:
+                text = "[Decode Error]"
+
+            # Valid ratio for is_real_code
+            valid_ratio = float(jnp.sum(chunk_batch["attention_mask"])) / chunk_len
+            is_real_code = valid_ratio > 0.1
+
+            chunk_data.append({
+                "c_idx": c_idx,
+                "loss_skip": loss_skip,
+                "loss_update": loss_update,
+                "ttt_improvement": ttt_improvement,
+                "advantage": advantage,
+                "text": text,
+                "is_real_code": is_real_code,
+            })
+
+            all_ttt_improvements.append(ttt_improvement)
+            all_advantages.append(advantage)
+
+        # Step 2: Select top-k% chunks by TTT improvement
+        num_to_update = max(1, int(len(chunk_data) * update_rate))
+        sorted_chunks = sorted(chunk_data, key=lambda x: x["ttt_improvement"], reverse=True)
+
+        update_indices = set(c["c_idx"] for c in sorted_chunks[:num_to_update])
+
+        # Step 3: Record results based on TTT improvement decision
+        for c in chunk_data:
+            if c["c_idx"] in update_indices:
+                # TTT Improvement says UPDATE
+                results["loss"].append(c["loss_update"])
+                results["cost"].append(3.0)
+                results["decision"].append("UPDATE")
+            else:
+                # TTT Improvement says SKIP
+                results["loss"].append(c["loss_skip"])
+                results["cost"].append(1.0)
+                results["decision"].append("SKIP")
+
+            results["method"].append(method_name)
+            results["text"].append(c["text"])
+            results["is_real_code"].append(c["is_real_code"])
+
+    # Print correlation analysis
+    if all_ttt_improvements and all_advantages:
+        from scipy import stats as scipy_stats
+        ttt_arr = np.array(all_ttt_improvements)
+        adv_arr = np.array(all_advantages)
+
+        pearson_r, _ = scipy_stats.pearsonr(ttt_arr, adv_arr)
+        spearman_r, _ = scipy_stats.spearmanr(ttt_arr, adv_arr)
+
+        print(f"\n  [TTT Improvement Gating] Correlation with Oracle:")
+        print(f"    Pearson r:  {pearson_r:.4f}")
+        print(f"    Spearman ρ: {spearman_r:.4f}")
+
+        # Top-k overlap
+        k = len(all_ttt_improvements) // 2
+        ttt_sorted = np.argsort(ttt_arr)
+        adv_sorted = np.argsort(adv_arr)
+        ttt_topk = set(ttt_sorted[-k:])
+        adv_topk = set(adv_sorted[-k:])
+        overlap = len(ttt_topk & adv_topk) / k
+        print(f"    Top-50% overlap with Oracle: {overlap:.2%}")
+
+    return pd.DataFrame(results)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare optimization methods")
     parser.add_argument("--model_scale", type=str, default="125m", choices=["125m", "350m", "1b"])
@@ -316,6 +534,7 @@ def parse_args():
     parser.add_argument("--num_workers", type=int, default=32, help="Number of parallel workers for data downloading")
     parser.add_argument("--hard_skip_threshold", type=float, default=0.1, help="Hard Skip threshold: skip TTT if gating scale < threshold (default: 0.1)")
     parser.add_argument("--use_checkpoint_threshold", action="store_true", help="Use probability threshold from checkpoint; otherwise auto-calibrate from budget")
+    parser.add_argument("--eval_ttt_improvement", action="store_true", help="Evaluate TTT Improvement-based gating (training-free, uses TTT internal loss as signal)")
     return parser.parse_args()
 
 
@@ -1006,6 +1225,28 @@ def main():
             num_workers=args.num_workers,
         )
         all_results.append(df_oracle)
+
+    # 6c. Evaluate TTT Improvement Gating (training-free, measurement-based)
+    if args.eval_ttt_improvement:
+        # Use UPDATE_1 model if available, otherwise Binary Gating model, otherwise fresh model
+        ttt_improvement_model = update1_ttt_model or binary_ttt_model or None
+        model_source = "UPDATE_1" if update1_ttt_model else ("Binary Gating" if binary_ttt_model else "fresh")
+        print(f"\n=== Running TTT Improvement Gating (update_rate={target_update_rate:.2%}) ===")
+        print(f"    (Using {model_source} TTT weights)")
+        df_ttt_improvement = evaluate_ttt_improvement_gating(
+            f"TTT Improvement ({target_update_rate:.0%} update)",
+            args.model_scale,
+            update_rate=target_update_rate,
+            num_batches=args.num_eval_batches,
+            batch_size=args.batch_size,
+            seed=args.seed,
+            model=ttt_improvement_model,
+            language=args.language,
+            split=args.split,
+            skip_examples=args.skip_examples,
+            num_workers=args.num_workers,
+        )
+        all_results.append(df_ttt_improvement)
 
     # 7. Visualize & Report
     full_df = pd.concat(all_results)
