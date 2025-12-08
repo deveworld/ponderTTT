@@ -1113,8 +1113,14 @@ def main():
         )
         ckpt = load_checkpoint(args.update1_checkpoint, target=None)
         if "state" in ckpt and "model" in ckpt["state"]:
-            nnx.update(update1_ttt_model, unwrap_state(ckpt["state"]["model"]))
-            print("UPDATE_1 weights loaded.")
+            model_state = unwrap_state(ckpt["state"]["model"])
+            # Only update fast_layer and fast_norm (same as analyze_gradient_norm.py)
+            if "fast_layer" in model_state:
+                nnx.update(update1_ttt_model.fast_layer, model_state["fast_layer"])
+                print("✓ Loaded fast_layer from UPDATE_1 checkpoint")
+            if "fast_norm" in model_state:
+                nnx.update(update1_ttt_model.fast_norm, model_state["fast_norm"])
+                print("✓ Loaded fast_norm from UPDATE_1 checkpoint")
         else:
             print("Warning: Could not find 'state.model' in UPDATE_1 checkpoint.")
 
