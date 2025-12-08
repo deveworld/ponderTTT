@@ -275,6 +275,13 @@ def main():
             all_ttt_loss_step_1.append(ttt_step1_scalar)
             all_ttt_improvement.append(ttt_step0_scalar - ttt_step1_scalar)
 
+            # Debug: print first 10 samples
+            sample_idx = len(all_ttt_improvement)
+            if sample_idx <= 10:
+                print(f"  [DEBUG Sample {sample_idx}] ttt_step0={ttt_step0_scalar:.6f}, ttt_step1={ttt_step1_scalar:.6f}, "
+                      f"ttt_improvement={ttt_step0_scalar - ttt_step1_scalar:.6f}, loss_skip={float(loss_skip):.4f}, "
+                      f"loss_update={float(loss_update):.4f}, advantage={float(loss_skip - loss_update):.4f}")
+
         # Check for state leakage after first batch
         if batch_count == 0:
             checksum_after_batch1 = get_fast_weight_checksum(ttt_model)

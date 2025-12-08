@@ -493,6 +493,13 @@ def evaluate_ttt_improvement_gating(
             all_ttt_improvements.append(ttt_improvement)
             all_advantages.append(advantage)
 
+            # Debug: print first 10 samples
+            sample_idx = len(all_ttt_improvements)
+            if sample_idx <= 10:
+                print(f"  [DEBUG Sample {sample_idx}] ttt_step0={ttt_step_0_val:.6f}, ttt_step1={ttt_step_1_val:.6f}, "
+                      f"ttt_improvement={ttt_improvement:.6f}, loss_skip={loss_skip:.4f}, loss_update={loss_update:.4f}, "
+                      f"advantage={advantage:.4f}")
+
         # Step 2: Select top-k% chunks by TTT improvement
         num_to_update = max(1, int(len(chunk_data) * update_rate))
         sorted_chunks = sorted(chunk_data, key=lambda x: x["ttt_improvement"], reverse=True)
