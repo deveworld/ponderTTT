@@ -575,39 +575,57 @@ def main():
             # 4. Per-sample update probability from gating network
             update_prob_soft = decision_probs_soft[:, 1]  # [B]
 
-            # === PAIRWISE RANKING LOSS (RankNet) ===
-            # Goal: Learn to RANK samples by advantage, not just classify them
-            # For pairs (i, j) where advantage_i > advantage_j, we want score_i > score_j
+            # === LISTNET LOSS (Listwise Ranking) ===
+            # Reference: Cao et al., "Learning to Rank: From Pairwise Approach to Listwise Approach" (2007)
             #
-            # Loss: L = sum_{a_i > a_j} log(1 + exp(-(s_i - s_j)))
-            # where s is the gating score (UPDATE logit - SKIP logit)
+            # Key insight: Learn the DISTRIBUTION of scores to match the distribution of advantages.
+            # This handles both ranking AND calibration simultaneously:
+            # - Ranking: Higher advantage → higher probability in target distribution
+            # - Calibration: Softmax normalizes scores, preventing all-UPDATE collapse
+            #
+            # Loss: Cross-entropy between softmax(advantages) and softmax(scores)
+            #       L = -sum(P_adv * log(P_score))
+            #       where P_adv = softmax(advantage / temp), P_score = softmax(score / temp)
 
             # Gating score: logit difference (higher = more likely to UPDATE)
             gating_score = gating_logits[:, 1] - gating_logits[:, 0]  # [B]
 
-            # Pairwise advantage difference: [B, B]
-            # diff_adv[i, j] = advantage[i] - advantage[j]
+            # Temperature for ListNet softmax (controls sharpness)
+            # Lower temp = sharper distribution (more focus on top samples)
+            # Higher temp = smoother distribution (more uniform learning)
+            listnet_temp = 1.0
+
+            # Target distribution: softmax over advantages
+            # High advantage samples get high probability mass
+            adv_target_dist = jax.nn.softmax(advantage_per_sample / listnet_temp)  # [B]
+
+            # Predicted distribution: softmax over gating scores
+            score_pred_dist = jax.nn.softmax(gating_score / listnet_temp)  # [B]
+
+            # Cross-entropy loss: -sum(target * log(pred))
+            eps = 1e-7
+            listnet_loss = -jnp.sum(adv_target_dist * jnp.log(score_pred_dist + eps))
+
+            # === CALIBRATION REGULARIZATION ===
+            # ListNet is shift-invariant (adding constant to all scores doesn't change softmax).
+            # We need to anchor the scores to ensure ~50% update rate.
+            #
+            # Method: Penalize deviation of mean UPDATE probability from target rate.
+            # This pushes scores such that top-k have prob > 0.5, bottom-k have prob < 0.5.
+            actual_update_rate = jnp.mean(update_prob_soft)
+            calibration_loss = jnp.square(actual_update_rate - target_update_rate)
+
+            # Weight for calibration loss (balance between ranking and calibration)
+            lambda_calibration = 1.0
+
+            # For pairwise ranking accuracy (logging only)
             diff_adv = advantage_per_sample[:, None] - advantage_per_sample[None, :]
-
-            # Pairwise score difference: [B, B]
-            # diff_score[i, j] = score[i] - score[j]
             diff_score = gating_score[:, None] - gating_score[None, :]
-
-            # Valid pairs: where advantage_i > advantage_j by a margin
-            # Using margin avoids learning from noise when advantages are similar
-            ranking_margin = 0.1  # Only consider pairs with >0.1 advantage difference
-            valid_pairs = diff_adv > ranking_margin  # [B, B] boolean mask
-
-            # RankNet loss: -log(sigmoid(s_i - s_j)) = log(1 + exp(-(s_i - s_j)))
-            # = softplus(-diff_score)
-            pairwise_loss = jax.nn.softplus(-diff_score)  # [B, B]
-
-            # Apply mask and compute mean
+            ranking_margin = 0.1
+            valid_pairs = diff_adv > ranking_margin
             num_valid_pairs = jnp.maximum(jnp.sum(valid_pairs.astype(jnp.float32)), 1.0)
-            ranking_loss = jnp.sum(pairwise_loss * valid_pairs.astype(jnp.float32)) / num_valid_pairs
 
             # Also compute BCE for comparison/logging (but don't use for training)
-            eps = 1e-7
             update_prob_clamped = jnp.clip(update_prob_soft, eps, 1.0 - eps)
             bce_loss = -(
                 training_targets * jnp.log(update_prob_clamped) +
@@ -615,8 +633,9 @@ def main():
             )
             gating_bce_loss = jnp.mean(bce_loss)
 
-            # Use ranking loss instead of BCE for training
-            gating_quality_loss = ranking_loss
+            # Combined loss: ListNet (ranking) + Calibration (absolute scale)
+            ranking_loss = listnet_loss  # For logging compatibility
+            gating_quality_loss = listnet_loss + lambda_calibration * calibration_loss
 
             # For logging
             advantage_per_sample = jax.lax.stop_gradient(advantage_per_sample)
