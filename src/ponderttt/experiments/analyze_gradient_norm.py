@@ -75,6 +75,18 @@ def parse_args():
         help="Programming language for evaluation",
     )
     parser.add_argument(
+        "--split",
+        type=str,
+        default="train",
+        help="Dataset split (The Stack v2 only has 'train')",
+    )
+    parser.add_argument(
+        "--skip_examples",
+        type=int,
+        default=10000,
+        help="Number of examples to skip (for held-out evaluation)",
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default="outputs/gradient_analysis",
@@ -188,12 +200,13 @@ def main():
     chunk_size = 512
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
-        split="test",
+        split=args.split,
         language=args.language,
         batch_size=args.batch_size,
         seq_length=1024,
         chunk_size=chunk_size,
         max_examples=args.batch_size * args.num_batches * 2,
+        skip_examples=args.skip_examples,
         num_workers=args.num_workers,
     )
 
