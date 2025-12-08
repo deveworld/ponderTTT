@@ -250,13 +250,18 @@ def main():
             )
 
             # Store results
+            # TTT stats are per-head arrays, take mean
+            ttt_init_scalar = float(jnp.mean(ttt_init))
+            ttt_step0_scalar = float(jnp.mean(ttt_step0))
+            ttt_step1_scalar = float(jnp.mean(ttt_step1))
+
             all_loss_skip.append(float(loss_skip))
             all_loss_update.append(float(loss_update))
             all_oracle_advantage.append(float(loss_skip - loss_update))
-            all_ttt_loss_init.append(float(ttt_init))
-            all_ttt_loss_step_0.append(float(ttt_step0))
-            all_ttt_loss_step_1.append(float(ttt_step1))
-            all_ttt_improvement.append(float(ttt_step0 - ttt_step1))
+            all_ttt_loss_init.append(ttt_init_scalar)
+            all_ttt_loss_step_0.append(ttt_step0_scalar)
+            all_ttt_loss_step_1.append(ttt_step1_scalar)
+            all_ttt_improvement.append(ttt_step0_scalar - ttt_step1_scalar)
 
         batch_count += 1
 
