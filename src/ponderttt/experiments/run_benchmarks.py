@@ -19,7 +19,7 @@ from tqdm import tqdm
 from ..data import get_tokenizer
 from ..evaluation.benchmarks import BenchmarkSuite, _check_solution
 from ..models import TTTModel, load_ttt_model, TTTConfig
-from ..utils.checkpointing import load_checkpoint
+from ..utils.checkpointing import load_checkpoint, unwrap_state
 
 
 @nnx.jit(static_argnames=("use_ttt",))
@@ -275,22 +275,6 @@ class SimpleGenerator:
             completions.append(self._clean_completion(completion, prompts[i]))
 
         return completions
-
-
-def unwrap_state(state):
-    """Unwrap NNX state dictionary if it contains 'value' keys.
-
-    Also converts integer keys to strings to ensure consistent key types,
-    which is required for NNX state sorting during optimizer creation.
-    """
-    if isinstance(state, dict):
-        # Check if this dict represents a Variable (has 'value' key)
-        # Note: NNX variables serialized by Orbax might appear as {'value': array}
-        if "value" in state and len(state) == 1:
-            return state["value"]
-        # Convert integer keys to strings for consistency (nnx.List indices)
-        return {str(k) if isinstance(k, int) else k: unwrap_state(v) for k, v in state.items()}
-    return state
 
 
 def main():

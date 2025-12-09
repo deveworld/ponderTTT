@@ -2,8 +2,7 @@
 Utility functions for PonderTTT.
 """
 
-from .checkpointing import load_checkpoint, save_checkpoint
-from .features import FeatureExtractor, extract_features
+from .checkpointing import load_checkpoint, save_checkpoint, unwrap_state
 from .jax_utils import (
     JaxRNG,
     create_data_sharding,
@@ -23,15 +22,13 @@ from .jax_utils import (
 from .statistics import bootstrap_ci, compute_iqm
 
 __all__ = [
-    # Features
-    "extract_features",
-    "FeatureExtractor",
     # Statistics
     "bootstrap_ci",
     "compute_iqm",
     # Checkpointing
     "save_checkpoint",
     "load_checkpoint",
+    "unwrap_state",
     # JAX distributed utilities
     "JaxRNG",
     "initialize_jax_distributed",

@@ -296,7 +296,7 @@ def make_train_step(ssl_weight: float) -> Callable:
                 ssl_values = [x.mean() for x in ssl_terms if x is not None]
                 if ssl_values:
                     ssl_loss = sum(ssl_values) / len(ssl_values)
-                    aux_loss = ssl_weight * ssl_loss
+                    aux_loss = jnp.asarray(ssl_weight * ssl_loss)
 
             total_loss = ce_loss + aux_loss
             return total_loss, (ce_loss, aux_loss, ttt_stats)

@@ -26,16 +26,7 @@ from tqdm import tqdm
 from ..data import create_data_iterator, get_tokenizer
 from ..models import load_ttt_model
 from ..utils import cross_entropy_loss
-from ..utils.checkpointing import load_checkpoint
-
-
-def unwrap_state(state):
-    """Recursively unwrap Orbax-serialized NNX state dicts."""
-    if isinstance(state, dict):
-        if "value" in state and len(state) == 1:
-            return state["value"]
-        return {str(k) if isinstance(k, int) else k: unwrap_state(v) for k, v in state.items()}
-    return state
+from ..utils.checkpointing import load_checkpoint, unwrap_state
 
 
 def parse_args():
@@ -318,28 +309,32 @@ def main():
     n_samples = len(oracle_advantage)
     print(f"\nCollected {n_samples} samples")
 
-    # === 상관관계 분석 ===
+    # === Correlation Analysis ===
     print("\n" + "=" * 60)
     print("Correlation Analysis")
     print("=" * 60)
 
     # 1. TTT Improvement vs Oracle Advantage
-    pearson_r, pearson_p = stats.pearsonr(ttt_improvement, oracle_advantage)
-    spearman_r, spearman_p = stats.spearmanr(ttt_improvement, oracle_advantage)
+    pearson_result = stats.pearsonr(ttt_improvement, oracle_advantage)
+    spearman_result = stats.spearmanr(ttt_improvement, oracle_advantage)
+    pearson_r, pearson_p = pearson_result.statistic, pearson_result.pvalue  # type: ignore[attr-defined]
+    spearman_r, spearman_p = spearman_result.statistic, spearman_result.pvalue  # type: ignore[attr-defined]
     print("\n[TTT Improvement vs Oracle Advantage]")
     print(f"  Pearson r:  {pearson_r:.4f} (p={pearson_p:.2e})")
     print(f"  Spearman ρ: {spearman_r:.4f} (p={spearman_p:.2e})")
 
     # 2. TTT Loss Step 0 vs Oracle Advantage
-    pearson_r2, _ = stats.pearsonr(ttt_loss_step_0, oracle_advantage)
-    spearman_r2, _ = stats.spearmanr(ttt_loss_step_0, oracle_advantage)
+    pr2 = stats.pearsonr(ttt_loss_step_0, oracle_advantage)
+    sr2 = stats.spearmanr(ttt_loss_step_0, oracle_advantage)
+    pearson_r2, spearman_r2 = pr2.statistic, sr2.statistic  # type: ignore[attr-defined]
     print("\n[TTT Loss Step 0 (before update) vs Oracle Advantage]")
     print(f"  Pearson r:  {pearson_r2:.4f}")
     print(f"  Spearman ρ: {spearman_r2:.4f}")
 
     # 3. TTT Loss Init vs Oracle Advantage
-    pearson_r3, _ = stats.pearsonr(ttt_loss_init, oracle_advantage)
-    spearman_r3, _ = stats.spearmanr(ttt_loss_init, oracle_advantage)
+    pr3 = stats.pearsonr(ttt_loss_init, oracle_advantage)
+    sr3 = stats.spearmanr(ttt_loss_init, oracle_advantage)
+    pearson_r3, spearman_r3 = pr3.statistic, sr3.statistic  # type: ignore[attr-defined]
     print("\n[TTT Loss Init vs Oracle Advantage]")
     print(f"  Pearson r:  {pearson_r3:.4f}")
     print(f"  Spearman ρ: {spearman_r3:.4f}")
@@ -466,7 +461,7 @@ def main():
     print(f"Saved plot to {plot_path}")
     plt.close()
 
-    # === 결론 ===
+    # === CONCLUSION ===
     print("\n" + "=" * 60)
     print("CONCLUSION")
     print("=" * 60)

@@ -19,23 +19,9 @@ from tqdm import tqdm
 from typing import Optional, cast
 
 from ..data import create_data_iterator, get_tokenizer
-from ..models import load_ttt_model, TTTTransformerLM, TTTModel
+from ..models import TTTLayer, load_ttt_model, TTTTransformerLM, TTTModel
 from ..utils import cross_entropy_loss
-from ..utils.checkpointing import load_checkpoint
-
-
-def unwrap_state(state):
-    """Recursively unwrap Orbax-serialized NNX state dicts (remove 'value' wrappers).
-
-    Also converts integer keys to strings to ensure consistent key types,
-    which is required for NNX state sorting during optimizer creation.
-    """
-    if isinstance(state, dict):
-        if "value" in state and len(state) == 1:
-            return state["value"]
-        # Convert integer keys to strings for consistency (nnx.List indices)
-        return {str(k) if isinstance(k, int) else k: unwrap_state(v) for k, v in state.items()}
-    return state
+from ..utils.checkpointing import load_checkpoint, unwrap_state
 
 
 # --- JIT-compiled Helpers ---
@@ -91,6 +77,8 @@ def jit_ttt_forward_with_stats(
 
 def get_fast_weight_checksum(model: TTTTransformerLM) -> float:
     """Compute checksum of fast weights to detect state leakage."""
+    if not isinstance(model.fast_layer, TTTLayer):
+        raise TypeError(f"Expected TTTLayer, got {type(model.fast_layer)}")
     w1 = model.fast_layer.W1[...]
     b1 = model.fast_layer.b1[...]
     return float(jnp.sum(w1) + jnp.sum(b1))
@@ -457,7 +445,7 @@ def evaluate_threshold_gating(
     split: str,
     skip_examples: int,
     num_workers: int,
-    model: TTTTransformerLM | None = None,
+    model: TTTModel | None = None,
     threshold_mode: str = "fixed",  # "fixed", "ema", "prob"
     initial_threshold: float | None = None,  # If None, calibrate from first batch
     ema_alpha: float = 0.1,
@@ -1021,6 +1009,7 @@ def main():
     random_method = [m for m in summary.index if m.startswith("Random Skip")]
     oracle_method = [m for m in summary.index if m.startswith("Oracle")]
     ttt_imp_method = [m for m in summary.index if m.startswith("TTT Improvement")]
+    ttt_imp_loss = 0.0  # Initialize for pyright
 
     if random_method and oracle_method:
         random_name = random_method[0]

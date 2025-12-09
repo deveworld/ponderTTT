@@ -18,7 +18,16 @@ from .base_model_nnx import (
 from .gpt2_nnx import GPT2Config, GPT2LMHeadModel, GPT2Model, load_gpt2_model
 from .lora_layer_nnx import LoRAConfig, LoRALayer, count_lora_parameters
 from .ttt_layer_nnx import TTTConfig, TTTLayer
-from .gating_nnx import GatingConfig, GatingNetwork
+from .advanced_gating import (
+    AdvancedGatingConfig,
+    AdvancedGatingNetwork,
+    SignalExtractor,
+    BudgetTracker,
+    LearnedSignalCombiner,
+    create_advanced_gating,
+    compute_entropy,
+    compute_token_confidence,
+)
 
 # Legacy Linen implementations (deprecated, kept for compatibility)
 # These will be removed in future versions
@@ -43,6 +52,13 @@ __all__ = [
     "GPT2LMHeadModel",
     "GPT2Config",
     "load_gpt2_model",
-    "GatingNetwork",
-    "GatingConfig",
+    # Advanced gating (Run phase)
+    "AdvancedGatingConfig",
+    "AdvancedGatingNetwork",
+    "SignalExtractor",
+    "BudgetTracker",
+    "LearnedSignalCombiner",
+    "create_advanced_gating",
+    "compute_entropy",
+    "compute_token_confidence",
 ]

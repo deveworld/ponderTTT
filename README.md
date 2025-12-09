@@ -1,37 +1,72 @@
 # PonderTTT
 
-[[Preprint]](./PonderTTT_preprint.pdf)
+[Preprint on Web](https://ponderttt.worldsw.dev)
 
 Adaptive, budget-aware Test-Time Training (TTT) for code generation models built with JAX/Flax NNX.
 
-## Core Idea: Binary Gating via Gumbel-Softmax
+## Core Idea: Training-Free Adaptive Gating
 
-PonderTTT introduces **Adaptive Test-Time Training** with learned SKIP/UPDATE decisions. Instead of applying TTT updates uniformly to all input chunks, we learn **when** to update using a binary gating mechanism trained via Gumbel-Softmax.
+PonderTTT introduces **Adaptive Test-Time Training** with learned SKIP/UPDATE decisions. We developed a **Crawl-Walk-Run** approach that achieves 80% of oracle performance without any additional training:
 
-| Feature | Fixed TTT | PonderTTT (Binary Gating) |
-| :--- | :--- | :--- |
-| **Decision** | Always UPDATE | SKIP or UPDATE per chunk |
-| **Training** | N/A | Gumbel-Softmax (differentiable) |
-| **Inference** | Fixed cost | True computational savings |
-| **Cost** | 3.0x (UPDATE_1) | 2.67x (83% update rate) |
+| Phase | Method | Oracle Capture | Online | Training |
+|-------|--------|----------------|--------|----------|
+| Crawl | Top-k TTT Improvement | 80.5% | No | None |
+| Walk | Fixed Threshold | 69.3% | Yes | None |
+| Run | Multi-signal + Budget-aware | TBD | Yes | Optional |
 
-**Key Results (GPT-2 125M on Python):**
-- 4.5x perplexity improvement over non-adaptive baseline (26.36 → 5.85)
-- Strong OOD generalization: JavaScript (2.5x), Java (6.2x), Go (70x)
-- Learned policy captures universal "when to adapt" patterns
+**Key Insight**: TTT's internal self-supervision loss directly measures "how much the model wants to learn" from the current context (Spearman ρ = 0.63 with oracle).
+
+### Key Results (GPT-2 125M on Python)
+
+| Method | Loss | Cost | vs Random |
+|--------|------|------|-----------|
+| Random Skip (50%) | 3.619 | 2.0x | baseline |
+| **TTT Improvement** | **3.307** | **2.0x** | **+8.6%** |
+| UPDATE_1 (always) | 3.328 | 3.0x | - |
+| Oracle (upper bound) | 3.231 | 2.0x | +10.7% |
+
+**TTT Improvement gating beats always-UPDATE with 33% less compute!**
+
+### OOD Generalization (trained on Python, evaluated on 1000 chunks)
+
+| Language | Baseline (SKIP) | UPDATE_1 | Improvement |
+|----------|-----------------|----------|-------------|
+| JavaScript | PPL 120 | PPL 56 | 2.1x |
+| Java | PPL 162 | PPL 63 | 2.6x |
+| Go | PPL 13,243 | PPL 1,672 | 7.9x |
+
+Note: Go's high baseline PPL reflects GPT-2's weak performance on Go syntax.
 
 ## Technical Architecture
 
-This project is a pure JAX/Flax NNX rewrite of the official TTT-LM, enhanced with adaptive gating.
+Pure JAX/Flax NNX implementation with multi-scale model support.
 
-- **Base Model**: Pretrained GPT-2 (125M, 350M) with frozen backbone weights
-- **Fast-Weight Layer (`TTTLayer`)**: TTT-Linear with causal convolutions and dual-form updates
-- **Binary Gating Network**: Lightweight MLP that makes SKIP/UPDATE decisions via Gumbel-Softmax
-- **End-to-End Loss**:
-  $$L_{total} = L_{CE} + \beta \cdot L_{TTT} + \gamma \cdot L_{cost}$$
-  - $L_{CE}$: Main task cross-entropy
-  - $L_{TTT}$: TTT reconstruction loss
-  - $L_{cost}$: Penalty for computational budget (encourages skipping)
+### Supported Models
+
+| Model | Parameters | Status |
+|-------|------------|--------|
+| GPT-2 125M | 125M | Validated |
+| GPT-2 350M | 350M | Validated |
+| Gemma 3 1B | 1B | In Progress |
+| Gemma 3 4B | 4B | In Progress |
+| Gemma 3 12B | 12B | In Progress (TPU) |
+
+### Components
+
+- **Base Model**: Pretrained backbone with frozen weights
+- **TTT Layer**: Fast-weight adapter with self-supervised updates
+- **Gating**: Training-free (TTT Improvement) or learned (Multi-signal)
+  - TTT Improvement signal (ρ = 0.63 correlation with oracle)
+  - Prediction entropy
+  - Token confidence
+  - Budget-aware threshold adjustment
+
+### Loss Function
+
+$$L_{total} = L_{CE} + \beta \cdot L_{TTT}$$
+
+- $L_{CE}$: Main task cross-entropy (next-token prediction)
+- $L_{TTT}$: TTT reconstruction loss (self-supervised adaptation signal)
 
 ## Installation
 
@@ -39,56 +74,132 @@ This project is a pure JAX/Flax NNX rewrite of the official TTT-LM, enhanced wit
 # Install uv if you do not have it yet
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install the project in editable mode (CPU only)
+# Install the project (CPU)
 uv pip install -e .
-# GPU
+
+# GPU (CUDA)
 uv pip install -e . --group gpu
+
 # TPU
 uv pip install -e . --group tpu
 
-# Optional extras
-uv pip install -e . --dev
+# Development
+uv pip install -e . --group dev
 ```
 
 ## Quick Start
 
+### Training-Free Gating (Recommended)
+
+```python
+from ponderttt.models import create_advanced_gating
+
+# Create gating network
+gating = create_advanced_gating(
+    mode="threshold",  # or "budget_aware", "learned"
+    use_entropy=True,
+    use_token_confidence=True,
+    target_update_rate=0.5,
+)
+
+# Get gating decision
+result = gating(
+    ttt_improvement=ttt_stats["ttt_loss_step_0"] - ttt_stats["ttt_loss_step_1"],
+    logits=model_output["logits"],
+)
+should_update = result["decision"]
+```
+
 ### Reproduce Paper Results
-To run the full suite of experiments (Training, OOD Evaluation, Latency, Ablations) as described in the paper, simply execute the provided shell script. This script also validates the setup before running experiments.
 
 ```bash
 chmod +x scripts/run_all_experiments.sh
 ./scripts/run_all_experiments.sh
 ```
 
-This script automates the entire pipeline:
-1.  **Phase 1:** Train fixed baselines (UPDATE_1/2/4)
-2.  **Phase 2:** Train PonderTTT (Hard Skip)
-3.  **Phase 3:** Evaluate on Python (In-Distribution)
-4.  **Phase 4:** Evaluate on OOD languages (JS, Java, Go)
-5.  **Phase 5:** Measure Latency
-6.  **Phase 6 & 7:** Run Shuffled Input Test & Causal Ablations
+### Evaluate Gating Methods
 
-### 4. Evaluation (Benchmarks)
-Use `ponderttt.evaluation.benchmarks` for HumanEval/MBPP. Code execution is unsafe and gated by `PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS=1`. Only set this in a sandboxed environment.
+```bash
+# Compare TTT-only vs Multi-signal vs Budget-aware
+python -m ponderttt.experiments.evaluate_advanced_gating \
+    --checkpoint outputs/baselines/125m_update1/checkpoints/checkpoint_100000/ \
+    --num_batches 1000
+```
 
-### 5. Checkpointing
-Models are saved using [Orbax](https://github.com/google/orbax). Checkpoints capture the full NNX state, including the Gating Network, TTT parameters, and optimizer state.
+### Train Fixed Baselines
+
+```bash
+python -m ponderttt.experiments.train_hard_skip \
+    --model_scale 125m \
+    --target_update_rate 0.5 \
+    --num_iterations 10000 \
+    --output_dir outputs/hard_skip
+```
+
+### Gemma 3 (TPU)
+
+```python
+from ponderttt.models.gemma3 import (
+    Gemma3Config,
+    Gemma3TTTModel,
+    load_gemma3_from_huggingface,
+    create_device_mesh,
+    ShardingConfig,
+)
+
+# Initialize
+config = Gemma3Config.gemma3_4b()
+model = Gemma3TTTModel(config, ttt_config, rngs=rngs)
+
+# Load pretrained weights
+model = load_gemma3_from_huggingface(model, "google/gemma-3-4b-pt")
+
+# Setup TPU sharding
+mesh = create_device_mesh(ShardingConfig())
+```
 
 ## Project Status
 
-### Phase 1: Complete (Preprint, arXiv TBD)
-- Pure NNX GPT-2, TTT Layer with Binary Gating
+### Phase 1: Complete (Preprint)
+
+- Pure NNX GPT-2, TTT Layer implementation
 - Gumbel-Softmax training for SKIP/UPDATE decisions
 - End-to-End differentiable training with budget constraints
 - Results on GPT-2 (125M, 350M) with OOD evaluation
 
-### Phase 2: Planned (Conference Submission)
-- Scale to Gemma 3 (4B, 12B)
-- LoRA-TTT for efficiency
-- Reasoning benchmarks: MATH500, GSM8K, LiveCodeBench, GPQA-Diamond
-- Advanced gating features: Entropy, VOG, Attention Dispersion
+### Phase 2: In Progress
 
-See `PLAN.md` for the detailed research roadmap.
+| Component | Status |
+|-----------|--------|
+| Crawl Phase (TTT Improvement gating) | Complete |
+| Walk Phase (Fixed threshold, online) | Complete |
+| Run Phase (Multi-signal + budget-aware) | In Progress |
+| Gemma 3 Integration (1B, 4B, 12B) | In Progress |
+| TPU Pod Sharding | In Progress |
+| LoRA-TTT | Planned |
+| Reasoning Benchmarks (MATH500, GSM8K, etc.) | Planned |
+
+## Repository Structure
+
+```
+ponderttt/
+└── src/ponderttt/
+    ├── models/
+    │   ├── gpt2_nnx.py          # GPT-2 implementation
+    │   ├── ttt_layer_nnx.py     # TTT layer
+    │   ├── advanced_gating.py   # Multi-signal gating (Run phase)
+    │   └── gemma3/              # Gemma 3 (1B, 4B, 12B)
+    │       ├── model.py         # Gemma3Model, Gemma3TTTModel
+    │       ├── config.py        # Model configurations
+    │       ├── checkpoint.py    # Weight loading
+    │       └── sharding.py      # TPU Pod sharding
+    ├── experiments/
+    │   ├── train_hard_skip.py   # Main training script
+    │   ├── compare_methods.py   # Baseline comparison
+    │   └── evaluate_advanced_gating.py  # Run phase evaluation
+    └── data/
+        └── pipeline.py          # Streaming data pipeline
+```
 
 ## Citation
 
@@ -99,3 +210,7 @@ See `PLAN.md` for the detailed research roadmap.
   year={2025}
 }
 ```
+
+## License
+
+MIT License

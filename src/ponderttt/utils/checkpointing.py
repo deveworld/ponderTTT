@@ -2,6 +2,8 @@
 Checkpointing utilities using Orbax with multi-host support and async saving.
 """
 
+from __future__ import annotations
+
 import copy
 import threading
 from pathlib import Path
@@ -99,6 +101,38 @@ def save_checkpoint(
         print(f" Checkpoint saved at step {step}")
 
 
+def get_latest_checkpoint_step(checkpoint_dir: str | Path) -> int | None:
+    """Get the step number of the latest checkpoint.
+
+    Args:
+        checkpoint_dir: Directory containing checkpoints
+
+    Returns:
+        Latest checkpoint step, or None if no checkpoints exist
+    """
+    checkpoint_dir = Path(checkpoint_dir).resolve()
+
+    # Find all checkpoint directories (exclude temporary files)
+    checkpoints = [
+        cp for cp in checkpoint_dir.glob("checkpoint_*")
+        if not cp.name.endswith(".orbax-checkpoint-tmp") and cp.is_dir()
+    ]
+
+    if not checkpoints:
+        return None
+
+    # Extract step numbers and return the maximum
+    steps = []
+    for cp in checkpoints:
+        try:
+            step = int(cp.name.split("_")[1])
+            steps.append(step)
+        except (IndexError, ValueError):
+            continue
+
+    return max(steps) if steps else None
+
+
 def wait_for_checkpoints():
     """Wait for all pending checkpoint saves to complete."""
     global _save_threads
@@ -113,11 +147,6 @@ def wait_for_checkpoints():
         if _save_errors:
             errors, _save_errors[:] = list(_save_errors), []
             raise RuntimeError(f"Checkpointing failed with errors: {errors}")
-
-
-def finalize_checkpointing():
-    """Finalize all checkpointing operations and cleanup."""
-    wait_for_checkpoints()
 
 
 def load_checkpoint(
@@ -169,26 +198,21 @@ def load_checkpoint(
     return checkpoint
 
 
-def get_latest_checkpoint_step(checkpoint_dir: str | Path) -> int | None:
-    """
-    Get the step number of the latest checkpoint.
+def unwrap_state(state: Any) -> Any:
+    """Recursively unwrap Orbax-serialized NNX state dicts (remove 'value' wrappers).
+
+    Also converts integer keys to strings to ensure consistent key types,
+    which is required for NNX state sorting during optimizer creation.
 
     Args:
-        checkpoint_dir: Directory containing checkpoints
+        state: Orbax checkpoint state (possibly nested dict with 'value' wrappers)
 
     Returns:
-        Latest step number, or None if no checkpoints
+        Unwrapped state suitable for NNX update operations
     """
-    checkpoint_dir = Path(checkpoint_dir).resolve()
-
-    # Exclude temporary files
-    checkpoints = [
-        cp for cp in checkpoint_dir.glob("checkpoint_*")
-        if not cp.name.endswith(".orbax-checkpoint-tmp")
-    ]
-    if not checkpoints:
-        return None
-
-    # Extract step numbers
-    steps = [int(cp.name.split("_")[1]) for cp in checkpoints]
-    return max(steps)
+    if isinstance(state, dict):
+        if "value" in state and len(state) == 1:
+            return state["value"]
+        # Convert integer keys to strings for consistency (nnx.List indices)
+        return {str(k) if isinstance(k, int) else k: unwrap_state(v) for k, v in state.items()}
+    return state

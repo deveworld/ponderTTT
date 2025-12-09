@@ -18,7 +18,6 @@ from ponderttt.models import (
     TTTConfig,
     load_ttt_model,
 )
-from ponderttt.utils import FeatureExtractor
 
 print("=" * 60)
 print("PonderTTT JAX/Flax NNX Quick Test")
@@ -120,27 +119,35 @@ except Exception as e:
     traceback.print_exc()
     tests_failed += 1
 
-# Test 4: Feature Extraction
-print("\n[4/5] Testing feature extraction...")
+# Test 4: Advanced Gating
+print("\n[4/5] Testing advanced gating...")
 try:
-    assert tokenizer is not None, "Tokenizer not initialized"
-    vocab_size = tokenizer.get_vocab_size()
-    extractor = FeatureExtractor(
-        vocab_size=vocab_size,
-        pad_token_id=tokenizer.token_to_id("<|pad|>"),
-        seq_length_norm=64,
+    from ponderttt.models import create_advanced_gating
+
+    gating = create_advanced_gating(
+        mode="threshold",
+        use_entropy=True,
+        use_token_confidence=True,
+        target_update_rate=0.5,
     )
 
-    test_ids = jnp.array([[1, 2, 3, 4, 5]])
-    test_logits = jnp.ones((1, 5, vocab_size))
+    # Test with dummy inputs
+    test_ttt_improvement = jnp.array([0.05, 0.01, 0.08])
+    test_logits = jnp.ones((3, 64, vocab_size))
 
-    features = extractor.extract(test_ids, test_logits)
-    print(f"OK Feature extraction works, shape: {features.shape}")
-    assert features.shape[-1] == 32, "Features should be 32-dimensional"
+    result = gating(
+        ttt_improvement=test_ttt_improvement,
+        logits=test_logits,
+        return_signals=True,
+    )
+
+    print("OK Advanced gating works")
+    print(f"  Decisions: {result['decision']}")
+    print(f"  Signals: {list(result['signals'].keys())}")
     tests_passed += 1
 
 except Exception as e:
-    print(f"[FAIL] Feature extraction test failed: {e}")
+    print(f"[FAIL] Advanced gating test failed: {e}")
     traceback.print_exc()
     tests_failed += 1
 

@@ -240,11 +240,7 @@ class CodeDataset:
         if result is None:
             return None
 
-        blob_id = None
-        if len(result) == 3:
-            input_ids, attention_mask, blob_id = result
-        else:
-            input_ids, attention_mask = result
+        input_ids, attention_mask, blob_id = result
 
         # Truncate if longer than seq_length
         if len(input_ids) > self.seq_length:
@@ -730,9 +726,10 @@ def create_data_iterator(
                         new_blob_ids.append(blob_id)
                 else:
                     # res is a processed example dict that already includes blob_id
+                    assert isinstance(res, dict), f"Expected dict, got {type(res)}"
                     blob_id = res.get("blob_id")
                     new_raw_tokens.append(res)
-                    if blob_id is not None:
+                    if blob_id is not None and isinstance(blob_id, str):
                         new_blob_ids.append(blob_id)
 
             print(f"Successfully downloaded {len(new_raw_tokens)} new files")
