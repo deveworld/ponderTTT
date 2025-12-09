@@ -89,6 +89,13 @@ def jit_ttt_forward_with_stats(
     return loss_skip, loss_update, ttt_loss_step_0, ttt_loss_step_1
 
 
+def get_fast_weight_checksum(model: TTTTransformerLM) -> float:
+    """Compute checksum of fast weights to detect state leakage."""
+    w1 = model.fast_layer.W1[...]
+    b1 = model.fast_layer.b1[...]
+    return float(jnp.sum(w1) + jnp.sum(b1))
+
+
 def evaluate_oracle(
     method_name: str,
     model_scale: str,
@@ -318,12 +325,6 @@ def evaluate_ttt_improvement_gating(
 
     assert isinstance(ttt_model, TTTTransformerLM)
 
-    # State leakage detection
-    def get_fast_weight_checksum(model) -> float:
-        w1 = model.fast_layer.W1[...]
-        b1 = model.fast_layer.b1[...]
-        return float(jnp.sum(w1) + jnp.sum(b1))
-
     initial_checksum = get_fast_weight_checksum(ttt_model)
 
     for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
@@ -416,10 +417,10 @@ def evaluate_ttt_improvement_gating(
     # State leakage check
     final_checksum = get_fast_weight_checksum(ttt_model)
     if abs(final_checksum - initial_checksum) > 1e-6:
-        print(f"\n  ⚠️  [STATE LEAKAGE] Fast weights changed during evaluation!")
+        print("\n  ⚠️  [STATE LEAKAGE] Fast weights changed during evaluation!")
         print(f"    Initial: {initial_checksum:.6f}, Final: {final_checksum:.6f}")
     else:
-        print(f"\n  ✓ [State Check] No state leakage (fast weights unchanged)")
+        print("\n  ✓ [State Check] No state leakage (fast weights unchanged)")
 
     # Print correlation analysis
     if all_ttt_improvements and all_advantages:
@@ -430,7 +431,7 @@ def evaluate_ttt_improvement_gating(
         pearson_r, _ = scipy_stats.pearsonr(ttt_arr, adv_arr)
         spearman_r, _ = scipy_stats.spearmanr(ttt_arr, adv_arr)
 
-        print(f"\n  [TTT Improvement Gating] Correlation with Oracle:")
+        print("\n  [TTT Improvement Gating] Correlation with Oracle:")
         print(f"    Pearson r:  {pearson_r:.4f}")
         print(f"    Spearman ρ: {spearman_r:.4f}")
 
@@ -632,7 +633,7 @@ def evaluate_threshold_gating(
     # Verify no state leakage
     final_checksum = get_fast_weight_checksum(ttt_model)
     if abs(final_checksum - initial_checksum) < 1e-6:
-        print(f"\n  ✓ [State Check] No state leakage (fast weights unchanged)")
+        print("\n  ✓ [State Check] No state leakage (fast weights unchanged)")
     else:
         print(f"\n  ✗ [State Check] WARNING: Fast weights changed! ({initial_checksum:.6f} → {final_checksum:.6f})")
 

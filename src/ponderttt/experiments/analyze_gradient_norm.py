@@ -14,7 +14,6 @@ Usage:
 
 import argparse
 from pathlib import Path
-from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -25,7 +24,7 @@ from scipy import stats
 from tqdm import tqdm
 
 from ..data import create_data_iterator, get_tokenizer
-from ..models import load_ttt_model, TTTModel
+from ..models import load_ttt_model
 from ..utils import cross_entropy_loss
 from ..utils.checkpointing import load_checkpoint
 
@@ -279,26 +278,26 @@ def main():
         if batch_count == 0:
             checksum_after_batch1 = get_fast_weight_checksum(ttt_model)
             if abs(checksum_after_batch1 - initial_checksum) > 1e-6:
-                print(f"\n⚠️  [STATE LEAKAGE DETECTED] Fast weights changed after batch 1!")
+                print("\n⚠️  [STATE LEAKAGE DETECTED] Fast weights changed after batch 1!")
                 print(f"    Initial: {initial_checksum:.6f}")
                 print(f"    After batch 1: {checksum_after_batch1:.6f}")
                 print(f"    Delta: {checksum_after_batch1 - initial_checksum:.6f}")
                 state_leaked = True
             else:
-                print(f"\n✓ [State Check] No state leakage after batch 1 (checksum unchanged)")
+                print("\n✓ [State Check] No state leakage after batch 1 (checksum unchanged)")
 
         batch_count += 1
 
     # Final state check
     final_checksum = get_fast_weight_checksum(ttt_model)
     if abs(final_checksum - initial_checksum) > 1e-6:
-        print(f"\n⚠️  [STATE LEAKAGE DETECTED] Fast weights changed after all batches!")
+        print("\n⚠️  [STATE LEAKAGE DETECTED] Fast weights changed after all batches!")
         print(f"    Initial: {initial_checksum:.6f}")
         print(f"    Final: {final_checksum:.6f}")
         print(f"    Delta: {final_checksum - initial_checksum:.6f}")
         state_leaked = True
     else:
-        print(f"\n✓ [State Check] No state leakage after all batches (checksum unchanged)")
+        print("\n✓ [State Check] No state leakage after all batches (checksum unchanged)")
 
     if state_leaked:
         print("\n" + "=" * 60)
@@ -327,21 +326,21 @@ def main():
     # 1. TTT Improvement vs Oracle Advantage
     pearson_r, pearson_p = stats.pearsonr(ttt_improvement, oracle_advantage)
     spearman_r, spearman_p = stats.spearmanr(ttt_improvement, oracle_advantage)
-    print(f"\n[TTT Improvement vs Oracle Advantage]")
+    print("\n[TTT Improvement vs Oracle Advantage]")
     print(f"  Pearson r:  {pearson_r:.4f} (p={pearson_p:.2e})")
     print(f"  Spearman ρ: {spearman_r:.4f} (p={spearman_p:.2e})")
 
     # 2. TTT Loss Step 0 vs Oracle Advantage
     pearson_r2, _ = stats.pearsonr(ttt_loss_step_0, oracle_advantage)
     spearman_r2, _ = stats.spearmanr(ttt_loss_step_0, oracle_advantage)
-    print(f"\n[TTT Loss Step 0 (before update) vs Oracle Advantage]")
+    print("\n[TTT Loss Step 0 (before update) vs Oracle Advantage]")
     print(f"  Pearson r:  {pearson_r2:.4f}")
     print(f"  Spearman ρ: {spearman_r2:.4f}")
 
     # 3. TTT Loss Init vs Oracle Advantage
     pearson_r3, _ = stats.pearsonr(ttt_loss_init, oracle_advantage)
     spearman_r3, _ = stats.spearmanr(ttt_loss_init, oracle_advantage)
-    print(f"\n[TTT Loss Init vs Oracle Advantage]")
+    print("\n[TTT Loss Init vs Oracle Advantage]")
     print(f"  Pearson r:  {pearson_r3:.4f}")
     print(f"  Spearman ρ: {spearman_r3:.4f}")
 
@@ -349,21 +348,21 @@ def main():
     print("\n" + "=" * 60)
     print("Distribution Statistics")
     print("=" * 60)
-    print(f"\nOracle Advantage (loss_skip - loss_update):")
+    print("\nOracle Advantage (loss_skip - loss_update):")
     print(f"  Mean:   {oracle_advantage.mean():.4f}")
     print(f"  Std:    {oracle_advantage.std():.4f}")
     print(f"  Min:    {oracle_advantage.min():.4f}")
     print(f"  Max:    {oracle_advantage.max():.4f}")
     print(f"  Positive rate: {(oracle_advantage > 0).mean():.2%}")
 
-    print(f"\nTTT Improvement (step_0 - step_1):")
+    print("\nTTT Improvement (step_0 - step_1):")
     print(f"  Mean:   {ttt_improvement.mean():.4f}")
     print(f"  Std:    {ttt_improvement.std():.4f}")
     print(f"  Min:    {ttt_improvement.min():.4f}")
     print(f"  Max:    {ttt_improvement.max():.4f}")
     print(f"  Positive rate: {(ttt_improvement > 0).mean():.2%}")
 
-    print(f"\nLoss Statistics:")
+    print("\nLoss Statistics:")
     print(f"  Loss Skip:   {loss_skip.mean():.4f} ± {loss_skip.std():.4f}")
     print(f"  Loss Update: {loss_update.mean():.4f} ± {loss_update.std():.4f}")
 
