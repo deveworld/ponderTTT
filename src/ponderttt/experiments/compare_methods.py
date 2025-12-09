@@ -482,8 +482,8 @@ def evaluate_threshold_gating(
     """
     print(f"\nEvaluating {method_name} (mode={threshold_mode}) on {language}...")
 
-    tokenizer = Tokenizer()
-    model_name = f"gpt2{'-medium' if model_scale == '350m' else ''}"
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    tokenizer = get_tokenizer(model_name)
 
     if model is None:
         ttt_model, _ = load_ttt_model(
