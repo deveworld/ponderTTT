@@ -446,6 +446,215 @@ def evaluate_ttt_improvement_gating(
     return pd.DataFrame(results)
 
 
+def evaluate_threshold_gating(
+    method_name: str,
+    model_scale: str,
+    update_rate: float,
+    num_batches: int,
+    batch_size: int,
+    language: str,
+    split: str,
+    skip_examples: int,
+    num_workers: int,
+    model: TTTTransformerLM | None = None,
+    threshold_mode: str = "fixed",  # "fixed", "ema", "prob"
+    initial_threshold: float | None = None,  # If None, calibrate from first batch
+    ema_alpha: float = 0.1,
+    prob_temperature: float = 1.0,
+    seed: int = 42,
+):
+    """
+    Walk Phase: Threshold-based online gating.
+
+    Unlike top-k selection (Crawl phase), this makes per-chunk decisions
+    using an adaptive threshold - suitable for streaming inference.
+
+    Modes:
+    - "fixed": Use a fixed threshold (calibrated from first batch or specified)
+    - "ema": Exponential moving average threshold that adapts to target update rate
+    - "prob": Probability-space threshold using sigmoid mapping
+
+    Args:
+        threshold_mode: Gating strategy ("fixed", "ema", "prob")
+        initial_threshold: Starting threshold (if None, calibrate from first batch)
+        ema_alpha: EMA decay rate for threshold adaptation
+        prob_temperature: Temperature for sigmoid in probability mode
+    """
+    print(f"\nEvaluating {method_name} (mode={threshold_mode}) on {language}...")
+
+    tokenizer = Tokenizer()
+    model_name = f"gpt2{'-medium' if model_scale == '350m' else ''}"
+
+    if model is None:
+        ttt_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=seed,
+            load_pretrained=True,
+            vocab_size=tokenizer.get_vocab_size(),
+        )
+    else:
+        ttt_model = model
+
+    assert isinstance(ttt_model, TTTTransformerLM)
+
+    # Create data iterator
+    data_iter = create_data_iterator(
+        tokenizer=tokenizer,
+        split=split,
+        language=language,
+        batch_size=batch_size,
+        seq_length=1024,
+        chunk_size=512,
+        skip_examples=skip_examples,
+        max_examples=batch_size * num_batches * 2,
+        num_workers=num_workers,
+    )
+
+    initial_checksum = get_fast_weight_checksum(ttt_model)
+    rng_key = jax.random.PRNGKey(seed)
+
+    results: dict[str, list] = {
+        "loss": [],
+        "cost": [],
+        "decision": [],
+        "is_real_code": [],
+        "method": [],
+        "ttt_improvement": [],
+        "advantage": [],
+        "threshold_used": [],
+    }
+
+    # Threshold state
+    threshold = initial_threshold
+    update_count = 0
+    total_count = 0
+
+    # Calibration buffer (for fixed mode when threshold not specified)
+    calibration_buffer: list[float] = []
+    calibration_done = False
+
+    for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
+        if i >= num_batches:
+            break
+
+        chunks = batch["input_ids"]
+        masks = batch["attention_mask"]
+        num_chunks = chunks.shape[1]
+
+        for c_idx in range(num_chunks):
+            chunk_batch = {
+                "input_ids": chunks[:, c_idx],
+                "attention_mask": masks[:, c_idx],
+            }
+            chunk_len = chunk_batch["input_ids"].shape[-1]
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
+            position_ids = position_ids + c_idx * chunk_len
+            position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
+
+            # Valid ratio for is_real_code
+            valid_ratio = float(jnp.sum(chunk_batch["attention_mask"])) / chunk_len
+            is_real_code = valid_ratio > 0.1
+
+            # Compute TTT stats for gating decision
+            loss_skip, loss_update, ttt_step_0, ttt_step_1 = jit_ttt_forward_with_stats(
+                ttt_model,
+                chunk_batch["input_ids"],
+                chunk_batch["attention_mask"],
+                position_ids,
+            )
+
+            loss_skip = float(loss_skip)
+            loss_update = float(loss_update)
+            ttt_step_0_val = float(ttt_step_0)
+            ttt_step_1_val = float(ttt_step_1)
+            ttt_improvement = ttt_step_0_val - ttt_step_1_val
+            advantage = loss_skip - loss_update
+
+            # Calibration phase (first batch only)
+            if threshold is None and not calibration_done:
+                calibration_buffer.append(ttt_improvement)
+                if len(calibration_buffer) >= num_chunks * 2:  # Use first 2 batches
+                    # Set threshold to achieve target update rate
+                    sorted_improvements = sorted(calibration_buffer, reverse=True)
+                    target_idx = int(len(sorted_improvements) * update_rate)
+                    threshold = sorted_improvements[min(target_idx, len(sorted_improvements) - 1)]
+                    calibration_done = True
+                    print(f"  [Calibrated threshold: {threshold:.6f}]")
+
+            # Make gating decision based on mode
+            if threshold is None:
+                # Still calibrating - use UPDATE for now
+                do_update = True
+            elif threshold_mode == "fixed":
+                do_update = ttt_improvement > threshold
+            elif threshold_mode == "ema":
+                do_update = ttt_improvement > threshold
+                # Adapt threshold to maintain target update rate
+                total_count += 1
+                if do_update:
+                    update_count += 1
+                actual_rate = update_count / total_count if total_count > 0 else update_rate
+                # Adjust threshold: increase if updating too much, decrease if too little
+                if actual_rate > update_rate:
+                    threshold = threshold * (1 + ema_alpha * 0.1)
+                else:
+                    threshold = threshold * (1 - ema_alpha * 0.1)
+            elif threshold_mode == "prob":
+                # Probability-space gating
+                rng_key, subkey = jax.random.split(rng_key)
+                # Sigmoid mapping: higher improvement -> higher probability
+                logit = (ttt_improvement - threshold) / prob_temperature
+                p_update = 1.0 / (1.0 + np.exp(-logit * 100))  # Scale for sensitivity
+                do_update = float(jax.random.uniform(subkey)) < p_update
+                total_count += 1
+                if do_update:
+                    update_count += 1
+            else:
+                raise ValueError(f"Unknown threshold_mode: {threshold_mode}")
+
+            # Record result
+            if do_update:
+                results["loss"].append(loss_update)
+                results["cost"].append(3.0)
+                results["decision"].append("UPDATE")
+            else:
+                results["loss"].append(loss_skip)
+                results["cost"].append(1.0)
+                results["decision"].append("SKIP")
+
+            results["is_real_code"].append(is_real_code)
+            results["method"].append(method_name)
+            results["ttt_improvement"].append(ttt_improvement)
+            results["advantage"].append(advantage)
+            results["threshold_used"].append(threshold if threshold is not None else 0.0)
+
+    # Verify no state leakage
+    final_checksum = get_fast_weight_checksum(ttt_model)
+    if abs(final_checksum - initial_checksum) < 1e-6:
+        print(f"\n  ✓ [State Check] No state leakage (fast weights unchanged)")
+    else:
+        print(f"\n  ✗ [State Check] WARNING: Fast weights changed! ({initial_checksum:.6f} → {final_checksum:.6f})")
+
+    # Report statistics
+    actual_update_rate = sum(1 for d in results["decision"] if d == "UPDATE") / len(results["decision"])
+    print(f"  Actual update rate: {actual_update_rate:.2%} (target: {update_rate:.2%})")
+    if threshold is not None:
+        print(f"  Final threshold: {threshold:.6f}")
+
+    # Correlation analysis
+    ttt_arr = np.array(results["ttt_improvement"])
+    adv_arr = np.array(results["advantage"])
+    decisions = np.array([1 if d == "UPDATE" else 0 for d in results["decision"]])
+
+    # Compare decisions with oracle
+    oracle_decisions = (adv_arr > np.median(adv_arr)).astype(int)
+    decision_accuracy = np.mean(decisions == oracle_decisions)
+    print(f"  Decision accuracy vs Oracle: {decision_accuracy:.2%}")
+
+    return pd.DataFrame(results)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare optimization methods")
     parser.add_argument("--model_scale", type=str, default="125m", choices=["125m", "350m", "1b"])
@@ -460,6 +669,9 @@ def parse_args():
     parser.add_argument("--skip_examples", type=int, default=0, help="Number of examples to skip (for held-out evaluation).")
     parser.add_argument("--num_workers", type=int, default=32, help="Number of parallel workers for data downloading")
     parser.add_argument("--eval_ttt_improvement", action="store_true", help="Evaluate TTT Improvement-based gating (training-free, uses TTT internal loss as signal)")
+    parser.add_argument("--eval_threshold", action="store_true", help="Evaluate threshold-based gating (Walk phase)")
+    parser.add_argument("--threshold_mode", type=str, default="ema", choices=["fixed", "ema", "prob"], help="Threshold gating mode")
+    parser.add_argument("--initial_threshold", type=float, default=None, help="Initial threshold (if None, calibrate from data)")
     return parser.parse_args()
 
 
@@ -769,7 +981,29 @@ def main():
         )
         all_results.append(df_ttt_improvement)
 
-    # 6. Visualize & Report
+    # 6. Evaluate Threshold Gating (Walk phase - online decision making)
+    if args.eval_threshold:
+        model_source = "UPDATE_1" if update1_ttt_model else "fresh"
+        print(f"\n=== Running Threshold Gating (mode={args.threshold_mode}, update_rate={target_update_rate:.2%}) ===")
+        print(f"    (Using {model_source} TTT weights)")
+        df_threshold = evaluate_threshold_gating(
+            f"Threshold-{args.threshold_mode} ({target_update_rate:.0%} update)",
+            args.model_scale,
+            update_rate=target_update_rate,
+            num_batches=args.num_eval_batches,
+            batch_size=args.batch_size,
+            seed=args.seed,
+            model=update1_ttt_model,
+            language=args.language,
+            split=args.split,
+            skip_examples=args.skip_examples,
+            num_workers=args.num_workers,
+            threshold_mode=args.threshold_mode,
+            initial_threshold=args.initial_threshold,
+        )
+        all_results.append(df_threshold)
+
+    # 7. Visualize & Report
     full_df = pd.concat(all_results)
 
     print("\n=== Final Results (All Chunks) ===")
