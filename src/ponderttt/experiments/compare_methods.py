@@ -539,8 +539,8 @@ def evaluate_threshold_gating(
         if i >= num_batches:
             break
 
-        chunks = batch["input_ids"]
-        masks = batch["attention_mask"]
+        chunks = batch["chunks"]
+        masks = batch["chunk_attention_mask"]
         num_chunks = chunks.shape[1]
 
         for c_idx in range(num_chunks):
