@@ -644,7 +644,7 @@ def evaluate_threshold_gating(
         print(f"  Final threshold: {threshold:.6f}")
 
     # Correlation analysis
-    ttt_arr = np.array(results["ttt_improvement"])
+    _ttt_arr = np.array(results["ttt_improvement"])  # noqa: F841
     adv_arr = np.array(results["advantage"])
     decisions = np.array([1 if d == "UPDATE" else 0 for d in results["decision"]])
 

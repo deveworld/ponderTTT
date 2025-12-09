@@ -313,7 +313,7 @@ def main():
     loss_update = np.array(all_loss_update)
     ttt_loss_init = np.array(all_ttt_loss_init)
     ttt_loss_step_0 = np.array(all_ttt_loss_step_0)
-    ttt_loss_step_1 = np.array(all_ttt_loss_step_1)
+    _ttt_loss_step_1 = np.array(all_ttt_loss_step_1)  # noqa: F841
 
     n_samples = len(oracle_advantage)
     print(f"\nCollected {n_samples} samples")
