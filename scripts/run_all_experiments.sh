@@ -1,6 +1,5 @@
 #!/bin/bash
 # PonderTTT Full Experiment Pipeline
-# Runs ALL experiments from paper/main.tex
 #
 # Usage:
 #   ./scripts/run_all_experiments.sh                    # Run all phases, all models
@@ -15,14 +14,9 @@
 #   (default) Run both 125M and 350M
 #
 # Paper Tables Covered:
-#   - Table 1 (Main Results): Phase 3
-#   - Table 2 (OOD): Phase 4
-#   - Table 3 (Latency): Phase 5
-#   - Appendix Training Dynamics: Phase 2 outputs
-#   - Appendix Baseline Results: Phase 1 outputs
-#   - Appendix OOD Full: Phase 4
-#   - Table 8 (Shuffled Input): Phase 6
-#   - Table 9 (Causal Mask Ablation): Phase 7
+#   - Phase 1: Baseline Training (UPDATE_1, UPDATE_2, UPDATE_4)
+#   - Phase 2: Evaluation - In-Distribution (Python) with TTT Improvement Gating
+#   - Phase 3: Evaluation - Out-of-Distribution (JS, Java, Go)
 
 # NOTE: No 'set -e' - we want to continue even if individual experiments fail
 
@@ -33,21 +27,14 @@ RUN_350M=false
 # Configuration - Common
 NUM_WORKERS=128
 
-# Evaluation flags
-USE_CKPT_THRESHOLD=false
-
 # Configuration - 125M Model
 BATCH_SIZE_125M=16
-# For 100k chunks: 3125 iters * 16 batch * 2 chunks/seq = 100,000 chunks
-NUM_ITERATIONS_125M=3125
 MAX_CHUNKS_125M=100000
 NUM_EVAL_BATCHES_125M=1000
 NUM_EVAL_BATCHES_OOD_125M=500
 
 # Configuration - 350M Model
 BATCH_SIZE_350M=16
-# For 100k chunks: 3125 iters * 16 batch * 2 chunks/seq = 100,000 chunks
-NUM_ITERATIONS_350M=3125
 MAX_CHUNKS_350M=100000
 NUM_EVAL_BATCHES_350M=1000
 NUM_EVAL_BATCHES_OOD_350M=500
@@ -55,8 +42,6 @@ NUM_EVAL_BATCHES_OOD_350M=500
 # Save frequency (auto-calculated: save once at midpoint)
 SAVE_EVERY_BASELINE_125M=$((MAX_CHUNKS_125M / 2))
 SAVE_EVERY_BASELINE_350M=$((MAX_CHUNKS_350M / 2))
-SAVE_EVERY_HARDSKIP_125M=$((NUM_ITERATIONS_125M / 2))
-SAVE_EVERY_HARDSKIP_350M=$((NUM_ITERATIONS_350M / 2))
 
 # Track failures
 declare -a FAILED_EXPERIMENTS=()
@@ -129,13 +114,12 @@ run_experiment() {
     fi
 }
 
-# ============================================================ 
+# ============================================================
 # Phase 1: Baseline Training (UPDATE_1, UPDATE_2, UPDATE_4)
-# Paper: Appendix Table (Baseline Results on Training Data)
 # SKIP doesn't need training - no learnable parameters
-# ============================================================ 
+# ============================================================
 phase1_baselines() {
-    log_phase "Phase 1: Training Baselines (Appendix Baseline Table)"
+    log_phase "Phase 1: Training Baselines"
 
     # 125M Baselines
     if [ "$RUN_125M" = true ]; then
@@ -188,321 +172,114 @@ phase1_baselines() {
     log_info "Phase 1 Complete!"
 }
 
-# ============================================================ 
-# Phase 2: Hard Skip (Binary Gating) Training
-# Paper: Table 1 (Main Results), Appendix Training Dynamics
-# Note: target_update_rate=0.5 corresponds to "Target Skip 0.5" in paper
-#       target_update_rate=0.2 corresponds to "Target Skip 0.8" in paper
-# IMPORTANT: Requires Phase 1 (UPDATE_1 baseline) to be completed first!
-#            The TTT checkpoint from UPDATE_1 is used to compute meaningful advantages.
-# ============================================================ 
-phase2_hard_skip() {
-    log_phase "Phase 2: Training Hard Skip (Table 1, Appendix Training Dynamics)"
+# ============================================================
+# Phase 2: Evaluation - In-Distribution (Python)
+# Compares: SKIP, UPDATE_1, Random Skip, Oracle, TTT Improvement Gating
+# ============================================================
+phase2_eval_id() {
+    log_phase "Phase 2: Evaluating In-Distribution Python"
 
-    # 125M Scale
+    # Number of examples to skip for held-out evaluation
+    # Training uses ~160K examples, so skip those for fair evaluation
+    local SKIP_EXAMPLES=160000
+
+    # 125M Evaluation
     if [ "$RUN_125M" = true ]; then
         local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
         if [ -z "$ckpt_125m_update1" ]; then
             log_error "No UPDATE_1 checkpoint found for 125M. Run Phase 1 first!"
-            log_error "Expected: outputs/baselines/125m_update1/checkpoints/checkpoint_*"
         else
-            log_info "Using TTT checkpoint: $ckpt_125m_update1"
-
-            # Paper "Target Skip 0.5" = 50% skip target = 50% update target
-            run_experiment "125M Hard Skip (target_update=0.5)" \
-                python -m ponderttt.experiments.train_hard_skip \
-                    --model_scale 125m --target_update_rate 0.5 \
-                    --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
-                    --ttt_checkpoint "$ckpt_125m_update1" \
-                    --output_dir outputs/hard_skip/125m_update0.5 \
-                    --num_workers $NUM_WORKERS --wandb_project ponderttt-125m \
-                    --save_every $SAVE_EVERY_HARDSKIP_125M
-
-            # Paper "Target Skip 0.8" = 80% skip target = 20% update target
-            run_experiment "125M Hard Skip (target_update=0.2)" \
-                python -m ponderttt.experiments.train_hard_skip \
-                    --model_scale 125m --target_update_rate 0.2 \
-                    --num_iterations $NUM_ITERATIONS_125M --batch_size $BATCH_SIZE_125M \
-                    --ttt_checkpoint "$ckpt_125m_update1" \
-                    --output_dir outputs/hard_skip/125m_update0.2 \
-                    --num_workers $NUM_WORKERS --wandb_project ponderttt-125m \
-                    --save_every $SAVE_EVERY_HARDSKIP_125M
+            log_info "Using UPDATE_1 checkpoint: $ckpt_125m_update1"
+            run_experiment "Eval 125M Python" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 125m \
+                    --update1_checkpoint "$ckpt_125m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_125M \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/125m_python \
+                    --eval_ttt_improvement
         fi
     fi
 
-    # 350M Scale
+    # 350M Evaluation
     if [ "$RUN_350M" = true ]; then
         local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
         if [ -z "$ckpt_350m_update1" ]; then
             log_error "No UPDATE_1 checkpoint found for 350M. Run Phase 1 first!"
-            log_error "Expected: outputs/baselines/350m_update1/checkpoints/checkpoint_*"
         else
-            log_info "Using TTT checkpoint: $ckpt_350m_update1"
-
-            run_experiment "350M Hard Skip (target_update=0.5)" \
-                python -m ponderttt.experiments.train_hard_skip \
-                    --model_scale 350m --target_update_rate 0.5 \
-                    --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
-                    --ttt_checkpoint "$ckpt_350m_update1" \
-                    --output_dir outputs/hard_skip/350m_update0.5 \
-                    --num_workers $NUM_WORKERS --wandb_project ponderttt-350m \
-                    --save_every $SAVE_EVERY_HARDSKIP_350M
-
-            run_experiment "350M Hard Skip (target_update=0.2)" \
-                python -m ponderttt.experiments.train_hard_skip \
-                    --model_scale 350m --target_update_rate 0.2 \
-                    --num_iterations $NUM_ITERATIONS_350M --batch_size $BATCH_SIZE_350M \
-                    --ttt_checkpoint "$ckpt_350m_update1" \
-                    --output_dir outputs/hard_skip/350m_update0.2 \
-                    --num_workers $NUM_WORKERS --wandb_project ponderttt-350m \
-                    --save_every $SAVE_EVERY_HARDSKIP_350M
+            log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
+            run_experiment "Eval 350M Python" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 350m \
+                    --update1_checkpoint "$ckpt_350m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_350M \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/350m_python \
+                    --eval_ttt_improvement
         fi
     fi
 
     log_info "Phase 2 Complete!"
 }
 
-# ============================================================ 
-# Phase 3: Evaluation - In-Distribution (Python)
-# Paper: Table 1 (Main Results)
-# ============================================================ 
-phase3_eval_id() {
-    log_phase "Phase 3: Evaluating In-Distribution Python (Table 1)"
+# ============================================================
+# Phase 3: Evaluation - Out-of-Distribution (JS, Java, Go)
+# ============================================================
+phase3_eval_ood() {
+    log_phase "Phase 3: Evaluating Out-of-Distribution"
 
-    # Number of examples to skip for held-out evaluation
-    # Training uses ~160K examples, so skip those for fair evaluation
-    local SKIP_EXAMPLES=160000
+    local languages=("JavaScript" "Java" "Go")
 
-    # 125M - Use target_update=0.5 checkpoint (primary result in paper)
+    # 125M OOD
     if [ "$RUN_125M" = true ]; then
-        local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
         local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
-        if [ -z "$ckpt_125m" ]; then
-            log_error "No checkpoint found for 125M Hard Skip"
+        if [ -z "$ckpt_125m_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 125M. Run Phase 1 first!"
         else
-            log_info "Using Hard Skip checkpoint: $ckpt_125m"
-            log_info "Using UPDATE_1 checkpoint: $ckpt_125m_update1"
-            run_experiment "Eval 125M Python (Table 1)" \
-                python -m ponderttt.experiments.compare_methods \
-                    --model_scale 125m \
-                    --binary_gating_checkpoint "$ckpt_125m" \
-                    --update1_checkpoint "$ckpt_125m_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_125M \
-                    --language Python \
-                    --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/125m_python \
-                    $( $USE_CKPT_THRESHOLD && echo --use_checkpoint_threshold )
+            log_info "Using 125M UPDATE_1 checkpoint: $ckpt_125m_update1"
+            for lang in "${languages[@]}"; do
+                local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
+                run_experiment "Eval 125M $lang" \
+                    python -m ponderttt.experiments.compare_methods \
+                        --model_scale 125m \
+                        --update1_checkpoint "$ckpt_125m_update1" \
+                        --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
+                        --language "$lang" \
+                        --output_dir "outputs/eval/125m_${lang_lower}" \
+                        --eval_ttt_improvement
+            done
         fi
     fi
 
-    # 350M
+    # 350M OOD
     if [ "$RUN_350M" = true ]; then
-        local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_update0.5")
         local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
-        if [ -z "$ckpt_350m" ]; then
-            log_error "No checkpoint found for 350M Hard Skip"
+        if [ -z "$ckpt_350m_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 350M. Run Phase 1 first!"
         else
-            log_info "Using Hard Skip checkpoint: $ckpt_350m"
-            log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
-            run_experiment "Eval 350M Python (Table 1)" \
-                python -m ponderttt.experiments.compare_methods \
-                    --model_scale 350m \
-                    --binary_gating_checkpoint "$ckpt_350m" \
-                    --update1_checkpoint "$ckpt_350m_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_350M \
-                    --language Python \
-                    --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/350m_python \
-                    $( $USE_CKPT_THRESHOLD && echo --use_checkpoint_threshold )
+            log_info "Using 350M UPDATE_1 checkpoint: $ckpt_350m_update1"
+            for lang in "${languages[@]}"; do
+                local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
+                run_experiment "Eval 350M $lang" \
+                    python -m ponderttt.experiments.compare_methods \
+                        --model_scale 350m \
+                        --update1_checkpoint "$ckpt_350m_update1" \
+                        --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
+                        --language "$lang" \
+                        --output_dir "outputs/eval/350m_${lang_lower}" \
+                        --eval_ttt_improvement
+            done
         fi
     fi
 
     log_info "Phase 3 Complete!"
 }
 
-# ============================================================ 
-# Phase 4: Evaluation - Out-of-Distribution (JS, Java, Go)
-# Paper: Table 2 (OOD), Appendix OOD Full
-# ============================================================ 
-phase4_eval_ood() {
-    log_phase "Phase 4: Evaluating Out-of-Distribution (Table 2, Appendix OOD)"
-
-    local languages=("JavaScript" "Java" "Go")
-
-    # 125M OOD (Table 2)
-    if [ "$RUN_125M" = true ]; then
-        local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
-        local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
-        if [ -z "$ckpt_125m" ]; then
-            log_error "No checkpoint found for 125M Hard Skip"
-        else
-            log_info "Using 125M Hard Skip checkpoint: $ckpt_125m"
-            for lang in "${languages[@]}"; do
-                local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
-                run_experiment "Eval 125M $lang (Table 2)" \
-                    python -m ponderttt.experiments.compare_methods \
-                        --model_scale 125m \
-                    --binary_gating_checkpoint "$ckpt_125m" \
-                    --update1_checkpoint "$ckpt_125m_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
-                    --language "$lang" \
-                    --output_dir "outputs/eval/125m_${lang_lower}" \
-                    $( $USE_CKPT_THRESHOLD && echo --use_checkpoint_threshold )
-            done
-        fi
-    fi
-
-    # 350M OOD (Appendix OOD Full)
-    if [ "$RUN_350M" = true ]; then
-        local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_update0.5")
-        local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
-        if [ -z "$ckpt_350m" ]; then
-            log_error "No checkpoint found for 350M Hard Skip"
-        else
-            log_info "Using 350M Hard Skip checkpoint: $ckpt_350m"
-            for lang in "${languages[@]}"; do
-                local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
-                run_experiment "Eval 350M $lang (Appendix OOD)" \
-                    python -m ponderttt.experiments.compare_methods \
-                        --model_scale 350m \
-                    --binary_gating_checkpoint "$ckpt_350m" \
-                    --update1_checkpoint "$ckpt_350m_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
-                    --language "$lang" \
-                    --output_dir "outputs/eval/350m_${lang_lower}" \
-                    $( $USE_CKPT_THRESHOLD && echo --use_checkpoint_threshold )
-            done
-        fi
-    fi
-
-    log_info "Phase 4 Complete!"
-}
-
-# ============================================================ 
-# Phase 5: Latency Measurement
-# Paper: Table 3 (Latency Analysis)
-# ============================================================ 
-phase5_latency() {
-    log_phase "Phase 5: Measuring Latency (Table 3)"
-
-    # 125M Latency
-    if [ "$RUN_125M" = true ]; then
-        local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
-        if [ -z "$ckpt_125m" ]; then
-            log_error "No checkpoint found for 125M Hard Skip"
-        else
-            run_experiment "Latency Measurement 125M (Table 3)" \
-                python scripts/measure_latency.py \
-                    --checkpoint "$ckpt_125m" \
-                    --model_scale 125m \
-                    --chunk_size 512 \
-                    --num_warmup 128 \
-                    --num_trials 100
-        fi
-    fi
-
-    # 350M Latency
-    if [ "$RUN_350M" = true ]; then
-        local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_update0.5")
-        if [ -z "$ckpt_350m" ]; then
-            log_error "No checkpoint found for 350M Hard Skip"
-        else
-            run_experiment "Latency Measurement 350M (Table 3)" \
-                python scripts/measure_latency.py \
-                    --checkpoint "$ckpt_350m" \
-                    --model_scale 350m \
-                    --chunk_size 512 \
-                    --num_warmup 128 \
-                    --num_trials 100
-        fi
-    fi
-
-    log_info "Phase 5 Complete!"
-}
-
-# ============================================================ 
-# Phase 6: Shuffled Input Sanity Check
-# Paper: Table 8 (Shuffled Input Test)
-# ============================================================ 
-phase6_shuffled() {
-    log_phase "Phase 6: Shuffled Input Test (Table 8)"
-
-    # 125M Shuffled
-    if [ "$RUN_125M" = true ]; then
-        local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
-        if [ -z "$ckpt_125m" ]; then
-            log_error "No checkpoint found for 125M Hard Skip"
-        else
-            run_experiment "Shuffled Input Test 125M (Table 8)" \
-                python scripts/test_shuffled_input.py \
-                    --checkpoint "$ckpt_125m" \
-                    --model_scale 125m \
-                    --num_batches 100 \
-                    --batch_size 4
-        fi
-    fi
-
-    # 350M Shuffled
-    if [ "$RUN_350M" = true ]; then
-        local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_update0.5")
-        if [ -z "$ckpt_350m" ]; then
-            log_error "No checkpoint found for 350M Hard Skip"
-        else
-            run_experiment "Shuffled Input Test 350M (Table 8)" \
-                python scripts/test_shuffled_input.py \
-                    --checkpoint "$ckpt_350m" \
-                    --model_scale 350m \
-                    --num_batches 100 \
-                    --batch_size 4
-        fi
-    fi
-
-    log_info "Phase 6 Complete!"
-}
-
-# ============================================================ 
-# Phase 7: Causal Mask Diagonal Ablation
-# Paper: Table 9 (Causal Mask Diagonal Ablation)
-# ============================================================ 
-phase7_causal_ablation() {
-    log_phase "Phase 7: Causal Mask Ablation (Table 9)"
-
-    # 125M Causal Ablation
-    if [ "$RUN_125M" = true ]; then
-        local ckpt_125m=$(get_latest_checkpoint "outputs/hard_skip/125m_update0.5")
-        if [ -z "$ckpt_125m" ]; then
-            log_error "No checkpoint found for 125M Hard Skip"
-        else
-            run_experiment "Causal Mask Ablation 125M k=0 vs k=-1 (Table 9)" \
-                python scripts/ablation_strict_causal.py \
-                    --checkpoint "$ckpt_125m" \
-                    --model_scale 125m \
-                    --num_batches 100 \
-                    --batch_size 4
-        fi
-    fi
-
-    # 350M Causal Ablation
-    if [ "$RUN_350M" = true ]; then
-        local ckpt_350m=$(get_latest_checkpoint "outputs/hard_skip/350m_update0.5")
-        if [ -z "$ckpt_350m" ]; then
-            log_error "No checkpoint found for 350M Hard Skip"
-        else
-            run_experiment "Causal Mask Ablation 350M k=0 vs k=-1 (Table 9)" \
-                python scripts/ablation_strict_causal.py \
-                    --checkpoint "$ckpt_350m" \
-                    --model_scale 350m \
-                    --num_batches 100 \
-                    --batch_size 4
-        fi
-    fi
-
-    log_info "Phase 7 Complete!"
-}
-
-# ============================================================ 
+# ============================================================
 # Print Summary
-# ============================================================ 
+# ============================================================
 print_summary() {
     log_phase "EXPERIMENT SUMMARY"
 
@@ -526,29 +303,20 @@ print_summary() {
     fi
 }
 
-# ============================================================ 
+# ============================================================
 # Main
-# ============================================================ 
+# ============================================================
 run_all() {
     log_info "Running ALL experiment phases..."
-    log_info "This will reproduce all tables from paper/main.tex"
     echo ""
-    echo "Phase 1: Baseline Training      -> Appendix Baseline Table"
-    echo "Phase 2: Hard Skip Training     -> Table 1, Appendix Training Dynamics"
-    echo "Phase 3: Eval Python (ID)       -> Table 1"
-    echo "Phase 4: Eval OOD               -> Table 2, Appendix OOD Full"
-    echo "Phase 5: Latency                -> Table 3"
-    echo "Phase 6: Shuffled Input         -> Table 8"
-    echo "Phase 7: Causal Mask Ablation   -> Table 9"
+    echo "Phase 1: Baseline Training      -> UPDATE_1, UPDATE_2, UPDATE_4"
+    echo "Phase 2: Eval Python (ID)       -> SKIP, UPDATE_1, Random, Oracle, TTT Improvement"
+    echo "Phase 3: Eval OOD               -> JavaScript, Java, Go"
     echo ""
 
     phase1_baselines
-    phase2_hard_skip
-    phase3_eval_id
-    phase4_eval_ood
-    phase5_latency
-    phase6_shuffled
-    phase7_causal_ablation
+    phase2_eval_id
+    phase3_eval_ood
     print_summary
 }
 
@@ -558,16 +326,13 @@ for arg in "$@"; do
     case $arg in
         --125m)
             RUN_125M=true
-            ;; 
+            ;;
         --350m)
             RUN_350M=true
-            ;; 
-        --use_checkpoint_threshold)
-            USE_CKPT_THRESHOLD=true
-            ;; 
+            ;;
         *)
             PHASES+=("$arg")
-            ;; 
+            ;;
     esac
 done
 
@@ -594,46 +359,30 @@ else
         case $phase in
             phase1|baselines)
                 phase1_baselines
-                ;; 
-            phase2|hard_skip)
-                phase2_hard_skip
-                ;; 
-            phase3|eval_id)
-                phase3_eval_id
-                ;; 
-            phase4|eval_ood)
-                phase4_eval_ood
-                ;; 
-            phase5|latency)
-                phase5_latency
-                ;; 
-            phase6|shuffled)
-                phase6_shuffled
-                ;; 
-            phase7|causal_ablation)
-                phase7_causal_ablation
-                ;; 
+                ;;
+            phase2|eval_id)
+                phase2_eval_id
+                ;;
+            phase3|eval_ood)
+                phase3_eval_ood
+                ;;
             all)
                 run_all
                 exit $?
-                ;; 
+                ;;
             *)
                 log_error "Unknown phase: $phase"
                 echo "Available phases:"
                 echo "  phase1, baselines       - Train UPDATE_1/2/4 baselines"
-                echo "  phase2, hard_skip       - Train Hard Skip (PonderTTT)"
-                echo "  phase3, eval_id         - Evaluate on Python (Table 1)"
-                echo "  phase4, eval_ood        - Evaluate OOD (Table 2)"
-                echo "  phase5, latency         - Measure latency (Table 3)"
-                echo "  phase6, shuffled        - Shuffled input test (Table 8)"
-                echo "  phase7, causal_ablation - Causal mask ablation (Table 9)"
+                echo "  phase2, eval_id         - Evaluate on Python (In-Distribution)"
+                echo "  phase3, eval_ood        - Evaluate OOD (JavaScript, Java, Go)"
                 echo "  all                     - Run all phases"
                 echo ""
                 echo "Model selection:"
                 echo "  --125m                  - Run only 125M experiments"
                 echo "  --350m                  - Run only 350M experiments"
                 exit 1
-                ;; 
+                ;;
         esac
     done
     print_summary
