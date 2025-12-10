@@ -15,6 +15,7 @@ def run_diagnostic(
     num_batches: int = 100,
     batch_size: int = 4,
     chunk_size: int = 512,
+    seq_length: int = 512,
     use_checkpoint: str | None = None,
 ):
     """Run diagnostic to measure TTT improvement vs oracle correlation."""
@@ -56,6 +57,7 @@ def run_diagnostic(
         tokenizer=tokenizer,
         language=language,
         batch_size=batch_size,
+        seq_length=seq_length,
         chunk_size=chunk_size,
         num_workers=8,
     )
@@ -155,6 +157,9 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="gpt2-medium", help="Model name (gpt2, gpt2-medium)")
     parser.add_argument("--language", default="JavaScript", help="Language for OOD test")
     parser.add_argument("--num_batches", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--seq_length", type=int, default=512, help="Sequence length (must be <= 1024 for GPT-2)")
+    parser.add_argument("--chunk_size", type=int, default=512)
     parser.add_argument("--checkpoint", default=None, help="Path to checkpoint (optional)")
     args = parser.parse_args()
 
@@ -163,6 +168,9 @@ if __name__ == "__main__":
         model_name=args.model,
         language=args.language,
         num_batches=args.num_batches,
+        batch_size=args.batch_size,
+        seq_length=args.seq_length,
+        chunk_size=args.chunk_size,
         use_checkpoint=args.checkpoint,
     )
 
