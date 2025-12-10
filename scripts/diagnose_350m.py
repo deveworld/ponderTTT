@@ -25,9 +25,17 @@ def run_diagnostic(
 
     # Load model
     if use_checkpoint:
-        from ponderttt.models.checkpoint_utils import load_checkpoint
+        from ponderttt.utils.checkpointing import load_checkpoint, unwrap_state
         model, config = load_ttt_model(model_name=model_name, seed=42)
-        load_checkpoint(model, use_checkpoint)
+        ckpt = load_checkpoint(use_checkpoint, target=None)
+        if ckpt and "fast_layer" in ckpt:
+            fast_layer_state = unwrap_state(ckpt["fast_layer"])
+            model.fast_layer.update(fast_layer_state)
+            print(f"  ✓ Loaded fast_layer from checkpoint")
+        if ckpt and "fast_norm" in ckpt:
+            fast_norm_state = unwrap_state(ckpt["fast_norm"])
+            model.fast_norm.update(fast_norm_state)
+            print(f"  ✓ Loaded fast_norm from checkpoint")
         print(f"Loaded checkpoint from {use_checkpoint}")
     else:
         model, config = load_ttt_model(model_name=model_name, seed=42)
