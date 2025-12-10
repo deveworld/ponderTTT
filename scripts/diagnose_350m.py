@@ -52,7 +52,7 @@ def run_diagnostic(
 
     # Load data
     tokenizer = get_tokenizer("gpt2")
-    data_iter, total_seqs = create_data_iterator(
+    data_iter = create_data_iterator(
         tokenizer=tokenizer,
         language=language,
         batch_size=batch_size,
