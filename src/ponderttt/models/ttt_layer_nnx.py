@@ -419,14 +419,12 @@ class TTTLayer(nnx.Module):
         token_idx = jnp.clip(token_idx, a_min=0.0)
 
         # Combined learning rate
-        # Scale by head_dim for gradient magnitude normalization
-        # Scale by (hidden_dim/768) for larger models - gradient magnitude scales linearly with hidden_dim
-        # because W1 projection sums over hidden_dim inputs
-        hidden_dim_scale = self.config.hidden_dim / 768.0
+        # Scale by head_dim for gradient magnitude normalization (standard TTT approach)
+        # Note: hidden_dim scaling was tested but caused negative correlation for larger models
         eta = (
             (self.config.ttt_base_lr * token_idx).reshape(1, 1, 1, token_idx.shape[0], -1)
             * learnable_ttt_lr
-            / (self.head_dim * hidden_dim_scale)
+            / self.head_dim
         )
 
         # Apply gating scale if provided
