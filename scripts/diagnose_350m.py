@@ -5,8 +5,21 @@ import numpy as np
 import jax.numpy as jnp
 from scipy import stats as scipy_stats
 
+import optax
+
 from ponderttt.models import load_ttt_model, TTTTransformerLM
 from ponderttt.data import create_data_iterator, get_tokenizer
+
+
+def compute_ce_loss(logits: jnp.ndarray, input_ids: jnp.ndarray) -> jnp.ndarray:
+    """Compute cross-entropy loss for next-token prediction."""
+    # Shift for next-token prediction
+    shift_logits = logits[:, :-1, :]
+    shift_labels = input_ids[:, 1:]
+
+    # Compute per-token loss
+    loss = optax.softmax_cross_entropy_with_integer_labels(shift_logits, shift_labels)
+    return jnp.mean(loss)
 
 
 def run_diagnostic(
@@ -78,11 +91,11 @@ def run_diagnostic(
 
         # SKIP output (no TTT)
         skip_output = model(input_ids, use_ttt=False)
-        loss_skip = float(jnp.mean(skip_output["loss"]))
+        loss_skip = float(compute_ce_loss(skip_output["logits"], input_ids))
 
         # UPDATE output (with TTT)
         update_output = model(input_ids, use_ttt=True)
-        loss_update = float(jnp.mean(update_output["loss"]))
+        loss_update = float(compute_ce_loss(update_output["logits"], input_ids))
         ttt_stats = update_output.get("ttt_stats", {})
 
         # TTT improvement
