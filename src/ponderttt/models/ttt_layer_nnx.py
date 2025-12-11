@@ -420,9 +420,9 @@ class TTTLayer(nnx.Module):
 
         # Combined learning rate
         # Scale by head_dim for gradient magnitude normalization (standard TTT approach)
-        # Additional sqrt(768/hidden_dim) scaling prevents overshooting for larger models
-        # (350M with hidden_dim=1024 needs ~13% smaller eta than 125M with hidden_dim=768)
-        hidden_dim_scale = jnp.sqrt(768.0 / self.config.hidden_dim)
+        # Additional 768/hidden_dim scaling prevents overshooting for larger models
+        # (350M with hidden_dim=1024 needs 25% smaller eta than 125M with hidden_dim=768)
+        hidden_dim_scale = 768.0 / self.config.hidden_dim
         eta = (
             (self.config.ttt_base_lr * token_idx).reshape(1, 1, 1, token_idx.shape[0], -1)
             * learnable_ttt_lr
