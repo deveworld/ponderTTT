@@ -80,22 +80,28 @@ class TTTConfig:
     remat_mini_batch_group_size: int = 4
     output_ttt_stats: bool = True
     causal_k: int = 0  # Causal mask diagonal: 0 includes diagonal, -1 excludes it
+    # Eta decay rate for exponential position weighting (0 = linear, >0 = exponential)
+    # Higher values give more weight to recent positions, fixing gradient misalignment
+    # for larger models (350M+). Recommended: 0.3-0.5 for 350M.
+    eta_decay_rate: float = 0.0
     # Sharding configuration (for multi-host TPU)
     axis_rules: Optional[Callable[..., P]] = None
 
     @classmethod
     def for_gpt2(cls, model_size: str = "125m") -> "TTTConfig":
         """TTT config for GPT-2 models."""
-        configs: dict[str, dict[str, int]] = {
-            "125m": {"hidden_dim": 768, "num_heads": 12, "head_dim": 64},
-            "350m": {"hidden_dim": 1024, "num_heads": 16, "head_dim": 64},
-            "1b": {"hidden_dim": 1280, "num_heads": 20, "head_dim": 64},
+        configs: dict[str, dict] = {
+            "125m": {"hidden_dim": 768, "num_heads": 12, "head_dim": 64, "eta_decay_rate": 0.0},
+            # 350M+ needs eta_decay_rate to fix gradient misalignment across positions
+            "350m": {"hidden_dim": 1024, "num_heads": 16, "head_dim": 64, "eta_decay_rate": 0.3},
+            "1b": {"hidden_dim": 1280, "num_heads": 20, "head_dim": 64, "eta_decay_rate": 0.3},
         }
         config = configs.get(model_size, configs["125m"])
         return cls(
             hidden_dim=config["hidden_dim"],
             num_heads=config["num_heads"],
             head_dim=config["head_dim"],
+            eta_decay_rate=config.get("eta_decay_rate", 0.0),
         )
 
     @classmethod
@@ -324,6 +330,12 @@ class TTTLayer(nnx.Module):
         self.token_idx = 1.0 / jnp.arange(1, self.mini_batch_size + 1, dtype=jnp.float32)
         self.learnable_token_idx = nnx.Param(jnp.zeros((self.mini_batch_size,), dtype=jnp.float32))
 
+        # Exponential decay weight for position-dependent eta
+        # This gives more weight to recent positions, fixing gradient misalignment for larger models
+        # position 15: exp(0) = 1.0, position 0: exp(-15 * decay_rate)
+        position_offset = jnp.arange(self.mini_batch_size) - (self.mini_batch_size - 1)
+        self.exp_decay_weight = jnp.exp(config.eta_decay_rate * position_offset.astype(jnp.float32))
+
         # Learnable learning rate (per-head)
         # Use Dict with string keys to avoid int/str comparison issues in sorting
         self.learnable_ttt_lr_layers = nnx.Dict({
@@ -417,6 +429,11 @@ class TTTLayer(nnx.Module):
         # Position-dependent base learning rate
         token_idx = self.learnable_token_idx[...] + self.token_idx
         token_idx = jnp.clip(token_idx, a_min=0.0)
+
+        # Apply exponential decay weighting if configured
+        # This gives more weight to recent positions, fixing gradient misalignment for larger models
+        # The exp_decay_weight is precomputed in __init__ for correct shape
+        token_idx = token_idx * self.exp_decay_weight
 
         # Combined learning rate
         # Scale by head_dim for gradient magnitude normalization (standard TTT approach)
