@@ -868,6 +868,15 @@ def main():
             if "fast_layer" in model_state:
                 nnx.update(update1_ttt_model.fast_layer, model_state["fast_layer"])
                 print("  ✓ Loaded fast_layer from checkpoint")
+                # Restore exp_decay_weight based on current config (not checkpoint)
+                # This is needed because old checkpoints have exp_decay_weight=1.0
+                ttt_layer = update1_ttt_model.fast_layer
+                if hasattr(ttt_layer, 'exp_decay_weight') and hasattr(ttt_layer, 'config'):
+                    mini_batch_size = ttt_layer.mini_batch_size
+                    eta_decay_rate = ttt_layer.config.eta_decay_rate
+                    position_offset = jnp.arange(mini_batch_size) - (mini_batch_size - 1)
+                    ttt_layer.exp_decay_weight = jnp.exp(eta_decay_rate * position_offset.astype(jnp.float32))
+                    print(f"  ✓ Applied eta_decay_rate={eta_decay_rate} (position 0 weight: {float(ttt_layer.exp_decay_weight[0]):.4f})")
             if "fast_norm" in model_state:
                 nnx.update(update1_ttt_model.fast_norm, model_state["fast_norm"])
                 print("  ✓ Loaded fast_norm from checkpoint")
