@@ -331,13 +331,15 @@ def load_ttt_model(
 
     # Default configs if not provided
     if fast_weight_type == "ttt" and ttt_config is None:
-        ttt_config = TTTConfig(
-            hidden_dim=gpt2_config.n_embd,  # Match GPT-2 hidden size
-            num_heads=gpt2_config.n_head,
-            head_dim=gpt2_config.n_embd // gpt2_config.n_head,
-            mini_batch_size=16,
-            dtype=dtype,
-        )
+        # Use for_gpt2() to get correct model-specific settings (e.g., eta_decay_rate for 350M+)
+        model_size_map = {
+            "gpt2": "125m",
+            "gpt2-medium": "350m",
+            "gpt2-large": "1b",
+        }
+        model_size = model_size_map.get(model_name, "125m")
+        ttt_config = TTTConfig.for_gpt2(model_size)
+        ttt_config.dtype = dtype
     elif fast_weight_type == "lora" and lora_config is None:
         lora_config = LoRAConfig(
             hidden_dim=gpt2_config.n_embd,
