@@ -512,6 +512,10 @@ def evaluate_threshold_gating(
         "ttt_improvement": [],
         "advantage": [],
         "threshold_used": [],
+        "loss_skip": [],
+        "loss_update": [],
+        "ttt_step_0": [],
+        "ttt_step_1": [],
     }
 
     # Threshold state
@@ -617,6 +621,10 @@ def evaluate_threshold_gating(
             results["ttt_improvement"].append(ttt_improvement)
             results["advantage"].append(advantage)
             results["threshold_used"].append(threshold if threshold is not None else 0.0)
+            results["loss_skip"].append(loss_skip)
+            results["loss_update"].append(loss_update)
+            results["ttt_step_0"].append(ttt_step_0_val)
+            results["ttt_step_1"].append(ttt_step_1_val)
 
     # Verify no state leakage
     final_checksum = get_fast_weight_checksum(ttt_model)
@@ -632,14 +640,35 @@ def evaluate_threshold_gating(
         print(f"  Final threshold: {threshold:.6f}")
 
     # Correlation analysis
-    _ttt_arr = np.array(results["ttt_improvement"])  # noqa: F841
+    ttt_arr = np.array(results["ttt_improvement"])
     adv_arr = np.array(results["advantage"])
+    loss_skip_arr = np.array(results["loss_skip"])
     decisions = np.array([1 if d == "UPDATE" else 0 for d in results["decision"]])
 
     # Compare decisions with oracle
     oracle_decisions = (adv_arr > np.median(adv_arr)).astype(int)
     decision_accuracy = np.mean(decisions == oracle_decisions)
     print(f"  Decision accuracy vs Oracle: {decision_accuracy:.2%}")
+
+    # Alternative gating signal analysis
+    from scipy import stats
+    print(f"\n  [Alternative Gating Signals Analysis]")
+
+    # TTT Improvement correlation (current method)
+    r_ttt, _ = stats.pearsonr(ttt_arr, adv_arr)
+    rho_ttt, _ = stats.spearmanr(ttt_arr, adv_arr)
+    print(f"    TTT Improvement vs Oracle:  r={r_ttt:.4f}, ρ={rho_ttt:.4f}")
+
+    # Loss Skip correlation (alternative: high loss → update)
+    r_skip, _ = stats.pearsonr(loss_skip_arr, adv_arr)
+    rho_skip, _ = stats.spearmanr(loss_skip_arr, adv_arr)
+    print(f"    Loss Skip vs Oracle:        r={r_skip:.4f}, ρ={rho_skip:.4f}")
+
+    # Simulate loss_skip gating performance
+    skip_threshold = np.median(loss_skip_arr)
+    skip_decisions = (loss_skip_arr > skip_threshold).astype(int)
+    skip_accuracy = np.mean(skip_decisions == oracle_decisions)
+    print(f"    Loss Skip gating accuracy:  {skip_accuracy:.2%}")
 
     return pd.DataFrame(results)
 
