@@ -462,6 +462,196 @@ def evaluate_ttt_improvement_gating(
     return pd.DataFrame(results)
 
 
+def evaluate_loss_skip_gating(
+    method_name: str,
+    model_scale: str,
+    update_rate: float,
+    num_batches: int,
+    batch_size: int,
+    seed: int,
+    model: Optional[TTTModel] = None,
+    language: str = "Python",
+    split: str = "test",
+    skip_examples: int = 0,
+    num_workers: int = 32,
+):
+    """
+    Loss Skip-based Gating: Use SKIP path loss as the gating signal.
+
+    Key insight: High loss_skip strongly correlates with oracle advantage (r=0.92),
+    meaning chunks where the model struggles benefit most from TTT adaptation.
+
+    For each chunk:
+    1. Run SKIP forward to get loss_skip
+    2. If loss_skip > threshold → UPDATE (model needs help)
+    3. If loss_skip <= threshold → SKIP (model is confident)
+
+    This is more efficient than TTT Improvement gating because:
+    - Decision can be made after SKIP forward only (cost 1.0)
+    - UPDATE forward only needed for high-loss chunks
+    - Total cost: 1.0 (SKIP) or 3.0 (SKIP + UPDATE decision + UPDATE)
+
+    For fair comparison, this implementation runs both paths like TTT Improvement.
+    """
+    print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}...")
+
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    tokenizer = get_tokenizer(model_name)
+
+    # Load TTT Model if not provided
+    if model is None:
+        ttt_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=seed,
+            load_pretrained=True,
+            vocab_size=tokenizer.get_vocab_size(),
+        )
+    else:
+        ttt_model = model
+
+    data_iter = create_data_iterator(
+        tokenizer=tokenizer,
+        split=split,
+        language=language,
+        batch_size=batch_size,
+        seq_length=1024,
+        chunk_size=512,
+        max_examples=batch_size * num_batches * 2,
+        skip_examples=skip_examples,
+        num_workers=num_workers,
+    )
+
+    results = {
+        "loss": [],
+        "cost": [],
+        "method": [],
+        "decision": [],
+        "text": [],
+        "is_real_code": [],
+    }
+
+    # For correlation analysis
+    all_loss_skips: list[float] = []
+    all_advantages: list[float] = []
+
+    assert isinstance(ttt_model, TTTTransformerLM)
+
+    initial_checksum = get_fast_weight_checksum(ttt_model)
+
+    for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
+        if i >= num_batches:
+            break
+
+        chunks = batch["chunks"]
+        masks = batch["chunk_attention_mask"]
+        num_chunks = chunks.shape[1]
+
+        # Step 1: Compute loss_skip for all chunks
+        chunk_data = []
+
+        for c_idx in range(num_chunks):
+            chunk_batch = {
+                "input_ids": chunks[:, c_idx],
+                "attention_mask": masks[:, c_idx]
+            }
+
+            chunk_len = chunk_batch["input_ids"].shape[-1]
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
+            position_ids = position_ids + c_idx * chunk_len
+            position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
+
+            # Compute both SKIP and UPDATE losses
+            loss_skip, loss_update, _, _ = jit_ttt_forward_with_stats(
+                ttt_model,
+                chunk_batch["input_ids"],
+                chunk_batch["attention_mask"],
+                position_ids,
+            )
+            loss_skip = float(loss_skip)
+            loss_update = float(loss_update)
+
+            # Oracle advantage (for analysis)
+            advantage = loss_skip - loss_update
+
+            # Decode text
+            try:
+                text = tokenizer.decode(chunk_batch["input_ids"][0], skip_special_tokens=False)
+            except Exception:
+                text = "[Decode Error]"
+
+            # Valid ratio for is_real_code
+            valid_ratio = float(jnp.sum(chunk_batch["attention_mask"])) / chunk_len
+            is_real_code = valid_ratio > 0.1
+
+            chunk_data.append({
+                "c_idx": c_idx,
+                "loss_skip": loss_skip,
+                "loss_update": loss_update,
+                "advantage": advantage,
+                "text": text,
+                "is_real_code": is_real_code,
+            })
+
+            all_loss_skips.append(loss_skip)
+            all_advantages.append(advantage)
+
+        # Step 2: Select top-k% chunks by loss_skip (HIGH loss → UPDATE)
+        num_to_update = max(1, int(len(chunk_data) * update_rate))
+        sorted_chunks = sorted(chunk_data, key=lambda x: x["loss_skip"], reverse=True)
+
+        update_indices = set(c["c_idx"] for c in sorted_chunks[:num_to_update])
+
+        # Step 3: Record results based on loss_skip decision
+        for c in chunk_data:
+            if c["c_idx"] in update_indices:
+                # High loss_skip → UPDATE
+                results["loss"].append(c["loss_update"])
+                results["cost"].append(3.0)
+                results["decision"].append("UPDATE")
+            else:
+                # Low loss_skip → SKIP
+                results["loss"].append(c["loss_skip"])
+                results["cost"].append(1.0)
+                results["decision"].append("SKIP")
+
+            results["method"].append(method_name)
+            results["text"].append(c["text"])
+            results["is_real_code"].append(c["is_real_code"])
+
+    # State leakage check
+    final_checksum = get_fast_weight_checksum(ttt_model)
+    if abs(final_checksum - initial_checksum) > 1e-6:
+        print("\n  ⚠️  [STATE LEAKAGE] Fast weights changed during evaluation!")
+        print(f"    Initial: {initial_checksum:.6f}, Final: {final_checksum:.6f}")
+    else:
+        print("\n  ✓ [State Check] No state leakage (fast weights unchanged)")
+
+    # Print correlation analysis
+    if all_loss_skips and all_advantages:
+        from scipy import stats as scipy_stats
+        loss_skip_arr = np.array(all_loss_skips)
+        adv_arr = np.array(all_advantages)
+
+        pearson_r, _ = scipy_stats.pearsonr(loss_skip_arr, adv_arr)
+        spearman_r, _ = scipy_stats.spearmanr(loss_skip_arr, adv_arr)
+
+        print("\n  [Loss Skip Gating] Correlation with Oracle:")
+        print(f"    Pearson r:  {pearson_r:.4f}")
+        print(f"    Spearman ρ: {spearman_r:.4f}")
+
+        # Top-k overlap
+        k = len(all_loss_skips) // 2
+        skip_sorted = np.argsort(loss_skip_arr)
+        adv_sorted = np.argsort(adv_arr)
+        skip_topk = set(skip_sorted[-k:])  # High loss_skip
+        adv_topk = set(adv_sorted[-k:])    # High advantage
+        overlap = len(skip_topk & adv_topk) / k
+        print(f"    Top-50% overlap with Oracle: {overlap:.2%}")
+
+    return pd.DataFrame(results)
+
+
 def evaluate_threshold_gating(
     method_name: str,
     model_scale: str,
@@ -714,6 +904,7 @@ def parse_args():
     parser.add_argument("--skip_examples", type=int, default=0, help="Number of examples to skip (for held-out evaluation).")
     parser.add_argument("--num_workers", type=int, default=32, help="Number of parallel workers for data downloading")
     parser.add_argument("--eval_ttt_improvement", action="store_true", help="Evaluate TTT Improvement-based gating (training-free, uses TTT internal loss as signal)")
+    parser.add_argument("--eval_loss_skip", action="store_true", help="Evaluate Loss Skip-based gating (training-free, high loss → update)")
     parser.add_argument("--eval_threshold", action="store_true", help="Evaluate threshold-based gating (Walk phase)")
     parser.add_argument("--threshold_mode", type=str, default="ema", choices=["fixed", "ema", "prob"], help="Threshold gating mode")
     parser.add_argument("--initial_threshold", type=float, default=None, help="Initial threshold (if None, calibrate from data)")
@@ -1035,7 +1226,27 @@ def main():
         )
         all_results.append(df_ttt_improvement)
 
-    # 6. Evaluate Threshold Gating (Walk phase - online decision making)
+    # 6. Evaluate Loss Skip Gating (training-free, high loss → update)
+    if args.eval_loss_skip:
+        model_source = "UPDATE_1" if update1_ttt_model else "fresh"
+        print(f"\n=== Running Loss Skip Gating (update_rate={target_update_rate:.2%}) ===")
+        print(f"    (Using {model_source} TTT weights)")
+        df_loss_skip = evaluate_loss_skip_gating(
+            f"Loss Skip ({target_update_rate:.0%} update)",
+            args.model_scale,
+            update_rate=target_update_rate,
+            num_batches=args.num_eval_batches,
+            batch_size=args.batch_size,
+            seed=args.seed,
+            model=update1_ttt_model,
+            language=args.language,
+            split=args.split,
+            skip_examples=args.skip_examples,
+            num_workers=args.num_workers,
+        )
+        all_results.append(df_loss_skip)
+
+    # 7. Evaluate Threshold Gating (Walk phase - online decision making)
     if args.eval_threshold:
         model_source = "UPDATE_1" if update1_ttt_model else "fresh"
         print(f"\n=== Running Threshold Gating (mode={args.threshold_mode}, update_rate={target_update_rate:.2%}) ===")
@@ -1070,11 +1281,13 @@ def main():
     summary_real = cast(pd.DataFrame, real_code_df.groupby("method").agg({"loss": "mean", "cost": "mean"})).sort_values(by="loss")
     print(summary_real)
 
-    # TTT Improvement vs Random Skip vs Oracle comparison
+    # TTT Improvement vs Loss Skip vs Random Skip vs Oracle comparison
     random_method = [m for m in summary.index if m.startswith("Random Skip")]
     oracle_method = [m for m in summary.index if m.startswith("Oracle")]
     ttt_imp_method = [m for m in summary.index if m.startswith("TTT Improvement")]
+    loss_skip_method = [m for m in summary.index if m.startswith("Loss Skip")]
     ttt_imp_loss = 0.0  # Initialize for pyright
+    loss_skip_loss = 0.0  # Initialize for pyright
 
     if random_method and oracle_method:
         random_name = random_method[0]
@@ -1087,31 +1300,43 @@ def main():
         improvement_oracle = (random_loss - oracle_loss) / random_loss * 100
 
         print("\n" + "=" * 70)
-        print("ABLATION: Random Skip vs TTT Improvement vs Oracle")
+        print("ABLATION: Gating Methods Comparison")
         print("=" * 70)
-        print(f"{'Method':<30} {'Loss':>10} {'Cost':>10} {'vs Random':>12}")
+        print(f"{'Method':<35} {'Loss':>10} {'Cost':>10} {'vs Random':>12}")
         print("-" * 70)
-        print(f"{'Random Skip':<30} {random_loss:>10.4f} {random_cost:>10.2f}x {'baseline':>12}")
+        print(f"{'Random Skip':<35} {random_loss:>10.4f} {random_cost:>10.2f}x {'baseline':>12}")
 
         if ttt_imp_method:
             ttt_imp_name = ttt_imp_method[0]
             ttt_imp_loss = float(summary.loc[ttt_imp_name, "loss"])
             ttt_imp_cost = float(summary.loc[ttt_imp_name, "cost"])
             improvement_ttt = (random_loss - ttt_imp_loss) / random_loss * 100
-            print(f"{'TTT Improvement (Training-free)':<30} {ttt_imp_loss:>10.4f} {ttt_imp_cost:>10.2f}x {improvement_ttt:>+11.2f}%")
+            print(f"{'TTT Improvement (Training-free)':<35} {ttt_imp_loss:>10.4f} {ttt_imp_cost:>10.2f}x {improvement_ttt:>+11.2f}%")
 
-        print(f"{'Oracle (Upper Bound)':<30} {oracle_loss:>10.4f} {oracle_cost:>10.2f}x {improvement_oracle:>+11.2f}%")
+        if loss_skip_method:
+            loss_skip_name = loss_skip_method[0]
+            loss_skip_loss = float(summary.loc[loss_skip_name, "loss"])
+            loss_skip_cost = float(summary.loc[loss_skip_name, "cost"])
+            improvement_loss_skip = (random_loss - loss_skip_loss) / random_loss * 100
+            print(f"{'Loss Skip (Training-free)':<35} {loss_skip_loss:>10.4f} {loss_skip_cost:>10.2f}x {improvement_loss_skip:>+11.2f}%")
+
+        print(f"{'Oracle (Upper Bound)':<35} {oracle_loss:>10.4f} {oracle_cost:>10.2f}x {improvement_oracle:>+11.2f}%")
         print("-" * 70)
 
-        # How much of the Oracle improvement does TTT Improvement capture?
-        if ttt_imp_method:
-            gap_random_to_oracle = random_loss - oracle_loss
-            gap_random_to_ttt = random_loss - ttt_imp_loss
-            capture_rate = (gap_random_to_ttt / gap_random_to_oracle * 100) if gap_random_to_oracle > 0 else 0
+        # How much of the Oracle improvement do gating methods capture?
+        gap_random_to_oracle = random_loss - oracle_loss
 
-            print(f"\nOracle Gap:         Random → Oracle = {gap_random_to_oracle:.4f}")
-            print(f"TTT Improvement:    Random → TTT    = {gap_random_to_ttt:.4f}")
-            print(f"Capture Rate:       {capture_rate:.1f}% of Oracle improvement")
+        print(f"\nOracle Gap: Random → Oracle = {gap_random_to_oracle:.4f}")
+
+        if ttt_imp_method:
+            gap_random_to_ttt = random_loss - ttt_imp_loss
+            capture_rate_ttt = (gap_random_to_ttt / gap_random_to_oracle * 100) if gap_random_to_oracle > 0 else 0
+            print(f"TTT Improvement: Random → TTT = {gap_random_to_ttt:.4f} ({capture_rate_ttt:+.1f}% of Oracle)")
+
+        if loss_skip_method:
+            gap_random_to_loss_skip = random_loss - loss_skip_loss
+            capture_rate_loss_skip = (gap_random_to_loss_skip / gap_random_to_oracle * 100) if gap_random_to_oracle > 0 else 0
+            print(f"Loss Skip:       Random → LS  = {gap_random_to_loss_skip:.4f} ({capture_rate_loss_skip:+.1f}% of Oracle)")
 
         print("=" * 70)
 

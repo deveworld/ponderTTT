@@ -174,7 +174,7 @@ phase1_baselines() {
 
 # ============================================================
 # Phase 2: Evaluation - In-Distribution (Python)
-# Compares: SKIP, UPDATE_1, Random Skip, Oracle, TTT Improvement Gating
+# Compares: SKIP, UPDATE_1, Random Skip, Oracle, TTT Improvement, Loss Skip Gating
 # ============================================================
 phase2_eval_id() {
     log_phase "Phase 2: Evaluating In-Distribution Python"
@@ -198,7 +198,8 @@ phase2_eval_id() {
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/125m_python \
-                    --eval_ttt_improvement
+                    --eval_ttt_improvement \
+                    --eval_loss_skip
         fi
     fi
 
@@ -217,7 +218,8 @@ phase2_eval_id() {
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/350m_python \
-                    --eval_ttt_improvement
+                    --eval_ttt_improvement \
+                    --eval_loss_skip
         fi
     fi
 
@@ -248,7 +250,8 @@ phase3_eval_ood() {
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
                         --language "$lang" \
                         --output_dir "outputs/eval/125m_${lang_lower}" \
-                        --eval_ttt_improvement
+                        --eval_ttt_improvement \
+                        --eval_loss_skip
             done
         fi
     fi
@@ -269,7 +272,8 @@ phase3_eval_ood() {
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
                         --language "$lang" \
                         --output_dir "outputs/eval/350m_${lang_lower}" \
-                        --eval_ttt_improvement
+                        --eval_ttt_improvement \
+                        --eval_loss_skip
             done
         fi
     fi
