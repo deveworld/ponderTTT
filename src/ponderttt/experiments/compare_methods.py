@@ -310,6 +310,8 @@ def evaluate_ttt_improvement_gating(
     # For correlation analysis
     all_ttt_improvements: list[float] = []
     all_advantages: list[float] = []
+    all_loss_skips: list[float] = []
+    all_loss_updates: list[float] = []
 
     assert isinstance(ttt_model, TTTTransformerLM)
 
@@ -378,6 +380,8 @@ def evaluate_ttt_improvement_gating(
 
             all_ttt_improvements.append(ttt_improvement)
             all_advantages.append(advantage)
+            all_loss_skips.append(loss_skip)
+            all_loss_updates.append(loss_update)
 
         # Step 2: Select top-k% chunks by TTT improvement
         num_to_update = max(1, int(len(chunk_data) * update_rate))
@@ -415,6 +419,7 @@ def evaluate_ttt_improvement_gating(
         from scipy import stats as scipy_stats
         ttt_arr = np.array(all_ttt_improvements)
         adv_arr = np.array(all_advantages)
+        loss_skip_arr = np.array(all_loss_skips)
 
         pearson_r, _ = scipy_stats.pearsonr(ttt_arr, adv_arr)
         spearman_r, _ = scipy_stats.spearmanr(ttt_arr, adv_arr)
@@ -431,6 +436,28 @@ def evaluate_ttt_improvement_gating(
         adv_topk = set(adv_sorted[-k:])
         overlap = len(ttt_topk & adv_topk) / k
         print(f"    Top-50% overlap with Oracle: {overlap:.2%}")
+
+        # Alternative gating signal analysis
+        print("\n  [Alternative Gating Signals Analysis]")
+
+        # Loss Skip correlation (high loss → update)
+        r_skip, _ = scipy_stats.pearsonr(loss_skip_arr, adv_arr)
+        rho_skip, _ = scipy_stats.spearmanr(loss_skip_arr, adv_arr)
+        print(f"    Loss Skip vs Oracle:        r={r_skip:.4f}, ρ={rho_skip:.4f}")
+
+        # Simulate loss_skip gating (high loss → update)
+        skip_threshold = np.median(loss_skip_arr)
+        oracle_decisions = (adv_arr > np.median(adv_arr)).astype(int)
+        skip_decisions = (loss_skip_arr > skip_threshold).astype(int)
+        skip_accuracy = np.mean(skip_decisions == oracle_decisions)
+        print(f"    Loss Skip gating accuracy:  {skip_accuracy:.2%}")
+
+        # Compute loss if using loss_skip gating
+        loss_update_arr = np.array(all_loss_updates)
+        skip_gating_loss = np.where(skip_decisions, loss_update_arr, loss_skip_arr).mean()
+        ttt_gating_loss = np.where(ttt_arr > np.median(ttt_arr), loss_update_arr, loss_skip_arr).mean()
+        print(f"    Loss Skip gating avg loss:  {skip_gating_loss:.4f}")
+        print(f"    TTT Improv gating avg loss: {ttt_gating_loss:.4f}")
 
     return pd.DataFrame(results)
 
