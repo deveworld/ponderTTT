@@ -17,6 +17,9 @@
 #   - Phase 1: Baseline Training (UPDATE_1, UPDATE_2, UPDATE_4)
 #   - Phase 2: Evaluation - In-Distribution (Python) with TTT Improvement Gating
 #   - Phase 3: Evaluation - Out-of-Distribution (JS, Java, Go)
+#   - Phase 4: Latency Benchmark
+#   - Phase 5: Shuffled Input Ablation
+#   - Phase 6: Diagonal Mask Ablation
 
 # NOTE: No 'set -e' - we want to continue even if individual experiments fail
 
@@ -282,6 +285,125 @@ phase3_eval_ood() {
 }
 
 # ============================================================
+# Phase 4: Latency Benchmark
+# ============================================================
+phase4_latency() {
+    log_phase "Phase 4: Latency Benchmark"
+
+    # Latency script handles both 125M and 350M if we pass arguments, 
+    # but the script provided seems to hardcode setups or expect modifications.
+    # Let's check measure_latency.py usage. It seems to just run.
+    # We will assume it's standalone or update it if needed. 
+    # For now, running it directly as it appears to measure TTT overhead generally.
+    
+    run_experiment "Latency Benchmark" \
+        python scripts/measure_latency.py
+
+    log_info "Phase 4 Complete!"
+}
+
+# ============================================================
+# Phase 5: Shuffled Input Ablation
+# ============================================================
+phase5_shuffle() {
+    log_phase "Phase 5: Shuffled Input Ablation"
+
+    local SKIP_EXAMPLES=160000
+
+    if [ "$RUN_125M" = true ]; then
+        local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
+         if [ -z "$ckpt_125m_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 125M. Cannot run Shuffle Ablation."
+        else
+            log_info "Using UPDATE_1 checkpoint: $ckpt_125m_update1"
+            run_experiment "Shuffle Ablation 125M" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 125m \
+                    --update1_checkpoint "$ckpt_125m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_125M \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/125m_shuffle \
+                    --eval_ttt_improvement \
+                    --shuffle
+        fi
+    fi
+
+    if [ "$RUN_350M" = true ]; then
+        local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
+        if [ -z "$ckpt_350m_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 350M. Cannot run Shuffle Ablation."
+        else
+            log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
+            run_experiment "Shuffle Ablation 350M" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 350m \
+                    --update1_checkpoint "$ckpt_350m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_350M \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/350m_shuffle \
+                    --eval_ttt_improvement \
+                    --shuffle
+        fi
+    fi
+
+    log_info "Phase 5 Complete!"
+}
+
+# ============================================================
+# Phase 6: Diagonal Mask Ablation
+# ============================================================
+phase6_diagonal() {
+    log_phase "Phase 6: Diagonal Mask Ablation"
+    
+    # We compare diagonal_offset=0 (standard, baseline) vs diagonal_offset=-1 (no diagonal info)
+    # The standard run covers 0. We run -1 here.
+
+    local SKIP_EXAMPLES=160000
+
+    if [ "$RUN_125M" = true ]; then
+        local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
+         if [ -z "$ckpt_125m_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 125M. Cannot run Diagonal Ablation."
+        else
+            log_info "Using UPDATE_1 checkpoint: $ckpt_125m_update1"
+            run_experiment "Diagonal Ablation 125M (k=-1)" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 125m \
+                    --update1_checkpoint "$ckpt_125m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_125M \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/125m_diagonal_k_minus_1 \
+                    --eval_ttt_improvement \
+                    --diagonal_offset -1
+        fi
+    fi
+
+    if [ "$RUN_350M" = true ]; then
+        local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
+        if [ -z "$ckpt_350m_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 350M. Cannot run Diagonal Ablation."
+        else
+            log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
+            run_experiment "Diagonal Ablation 350M (k=-1)" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 350m \
+                    --update1_checkpoint "$ckpt_350m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_350M \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/350m_diagonal_k_minus_1 \
+                    --eval_ttt_improvement \
+                    --diagonal_offset -1
+        fi
+    fi
+
+    log_info "Phase 6 Complete!"
+}
+
+# ============================================================
 # Print Summary
 # ============================================================
 print_summary() {
@@ -321,6 +443,9 @@ run_all() {
     phase1_baselines
     phase2_eval_id
     phase3_eval_ood
+    phase4_latency
+    phase5_shuffle
+    phase6_diagonal
     print_summary
 }
 
@@ -370,6 +495,15 @@ else
             phase3|eval_ood)
                 phase3_eval_ood
                 ;;
+            phase4|latency)
+                phase4_latency
+                ;;
+            phase5|shuffle)
+                phase5_shuffle
+                ;;
+            phase6|diagonal)
+                phase6_diagonal
+                ;;
             all)
                 run_all
                 exit $?
@@ -380,6 +514,9 @@ else
                 echo "  phase1, baselines       - Train UPDATE_1/2/4 baselines"
                 echo "  phase2, eval_id         - Evaluate on Python (In-Distribution)"
                 echo "  phase3, eval_ood        - Evaluate OOD (JavaScript, Java, Go)"
+                echo "  phase4, latency         - Benchmark TTT latency"
+                echo "  phase5, shuffle         - Shuffle ablation"
+                echo "  phase6, diagonal        - Diagonal mask ablation"
                 echo "  all                     - Run all phases"
                 echo ""
                 echo "Model selection:"
