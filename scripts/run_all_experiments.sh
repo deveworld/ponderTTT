@@ -46,6 +46,7 @@ NUM_EVAL_BATCHES_OOD_350M=500
 
 # Configuration - Larger Models
 BATCH_SIZE_LARGE=2
+MAX_CHUNKS_LARGE=10000
 NUM_EVAL_BATCHES_LARGE=200
 
 # Save frequency (auto-calculated: save once at midpoint)
@@ -182,20 +183,20 @@ phase1_baselines() {
     if [ "$RUN_1B" = true ]; then
         run_experiment "1B UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
-                --model_scale 1b --action UPDATE_1 --max_chunks $MAX_CHUNKS_350M \
+                --model_scale 1b --action UPDATE_1 --max_chunks $MAX_CHUNKS_LARGE \
                 --output_dir outputs/baselines/1b_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_LARGE \
-                --wandb_project ponderttt-1b --save_every $SAVE_EVERY_BASELINE_350M
+                --wandb_project ponderttt-1b --save_every $((MAX_CHUNKS_LARGE / 2))
     fi
 
     # XL Baselines
     if [ "$RUN_XL" = true ]; then
         run_experiment "XL UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
-                --model_scale xl --action UPDATE_1 --max_chunks $MAX_CHUNKS_350M \
+                --model_scale xl --action UPDATE_1 --max_chunks $MAX_CHUNKS_LARGE \
                 --output_dir outputs/baselines/xl_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_LARGE \
-                --wandb_project ponderttt-xl --save_every $SAVE_EVERY_BASELINE_350M
+                --wandb_project ponderttt-xl --save_every $((MAX_CHUNKS_LARGE / 2))
     fi
 
     log_info "Phase 1 Complete!"
