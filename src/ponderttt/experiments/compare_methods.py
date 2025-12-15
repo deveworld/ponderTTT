@@ -720,6 +720,183 @@ def evaluate_loss_skip_gating(
     return pd.DataFrame(results)
 
 
+def evaluate_ttt_loss_gating(
+    method_name: str,
+    model_scale: str,
+    update_rate: float,
+    num_batches: int,
+    batch_size: int,
+    seed: int,
+    model: Optional[TTTModel] = None,
+    language: str = "Python",
+    split: str = "test",
+    skip_examples: int = 0,
+    num_workers: int = 32,
+    shuffle: bool = False,
+    diagonal_offset: int = 0,
+):
+    """
+    TTT Reconstruction Loss Gating (Self-Supervised).
+    
+    Uses `ttt_loss_step_0` (reconstruction error of the fast weights on the current input)
+    as the gating signal.
+    
+    Logic:
+    1. Run partial TTT forward (or full, extracting stats) to get `ttt_loss_step_0`.
+       $$ \text{score} = \mathcal{L}_{rec}(\theta_{fast}; x_t) $$
+    2. If score > threshold (Top-k): UPDATE.
+    3. Else: SKIP.
+    
+    This is Generation-Compatible because $\mathcal{L}_{rec}$ does not use labels.
+    """
+    print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}...")
+
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    tokenizer = get_tokenizer(model_name)
+
+    # Load TTT Model if not provided
+    if model is None:
+        ttt_model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=seed,
+            load_pretrained=True,
+            vocab_size=tokenizer.get_vocab_size(),
+        )
+    else:
+        ttt_model = model
+
+    # Apply diagonal offset override if needed
+    if diagonal_offset != 0:
+        if hasattr(ttt_model, "fast_layer") and hasattr(ttt_model.fast_layer, "config"):
+            print(f"  [Config Override] Setting causal_k = {diagonal_offset}")
+            ttt_model.fast_layer.config.causal_k = diagonal_offset
+
+    data_iter = create_data_iterator(
+        tokenizer=tokenizer,
+        split=split,
+        language=language,
+        batch_size=batch_size,
+        seq_length=1024,
+        chunk_size=512,
+        max_examples=batch_size * num_batches * 2,
+        skip_examples=skip_examples,
+        num_workers=num_workers,
+    )
+
+    results = {
+        "loss": [],
+        "cost": [],
+        "method": [],
+        "decision": [],
+        "text": [],
+        "is_real_code": [],
+    }
+
+    # For correlation analysis
+    all_ttt_recon: list[float] = []
+    all_advantages: list[float] = []
+
+    assert isinstance(ttt_model, TTTTransformerLM)
+    
+    # RNG key for stochastic evaluation (standard practice even if currently unused)
+    random_key = jax.random.PRNGKey(seed)
+
+    for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
+        if i >= num_batches:
+            break
+
+        chunks = batch["chunks"]
+        masks = batch["chunk_attention_mask"]
+        num_chunks = chunks.shape[1]
+
+        # Step 1: Compute TTT Reconstruction Loss for all chunks
+        chunk_data = []
+
+        for c_idx in range(num_chunks):
+            chunk_batch = {
+                "input_ids": chunks[:, c_idx],
+                "attention_mask": masks[:, c_idx]
+            }
+
+            chunk_len = chunk_batch["input_ids"].shape[-1]
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
+            position_ids = position_ids + c_idx * chunk_len
+            position_ids = jnp.broadcast_to(position_ids, chunk_batch["input_ids"].shape)
+
+            if shuffle:
+                 chunk_batch["input_ids"] = permute_within_chunks(chunk_batch["input_ids"], seed=seed + c_idx)
+
+            # Compute losses + stats
+            loss_skip, loss_update, ttt_step_0, _ = jit_ttt_forward_with_stats(
+                ttt_model,
+                chunk_batch["input_ids"],
+                chunk_batch["attention_mask"],
+                position_ids,
+            )
+            loss_skip = float(loss_skip)
+            loss_update = float(loss_update)
+            
+            # Reconstruction Loss
+            ttt_recon_loss = float(ttt_step_0)
+
+            # Oracle advantage (for analysis)
+            advantage = loss_skip - loss_update
+            
+            # Helper: Is Real Code?
+            valid_ratio = float(jnp.sum(chunk_batch["attention_mask"])) / chunk_len
+            is_real_code = valid_ratio > 0.1
+
+            chunk_data.append({
+                "c_idx": c_idx,
+                "loss_skip": loss_skip,
+                "loss_update": loss_update,
+                "ttt_recon_loss": ttt_recon_loss,
+                "advantage": advantage,
+                "text": "[Text]", # Skip decode for speed if not needed
+                "is_real_code": is_real_code,
+            })
+
+            all_ttt_recon.append(ttt_recon_loss)
+            all_advantages.append(advantage)
+
+        # Step 2: Select top-k% chunks by Reconstruction Loss
+        num_to_update = max(1, int(len(chunk_data) * update_rate))
+        # Higher reconstruction error -> Needs update
+        sorted_chunks = sorted(chunk_data, key=lambda x: x["ttt_recon_loss"], reverse=True)
+
+        update_indices = set(c["c_idx"] for c in sorted_chunks[:num_to_update])
+
+        # Step 3: Record results
+        for c in chunk_data:
+            if c["c_idx"] in update_indices:
+                results["loss"].append(c["loss_update"])
+                results["cost"].append(3.0)
+                results["decision"].append("UPDATE")
+            else:
+                results["loss"].append(c["loss_skip"])
+                results["cost"].append(1.0) # Theoretical cost if we had cheap estimator
+                results["decision"].append("SKIP")
+
+            results["method"].append(method_name)
+            results["text"].append(c["text"])
+            results["is_real_code"].append(c["is_real_code"])
+
+    # Print correlation analysis
+    if all_ttt_recon and all_advantages:
+        from scipy import stats as scipy_stats
+        score_arr = np.array(all_ttt_recon)
+        adv_arr = np.array(all_advantages)
+
+        pearson_r, _ = scipy_stats.pearsonr(score_arr, adv_arr)
+        spearman_r, _ = scipy_stats.spearmanr(score_arr, adv_arr)
+
+        print(f"\n  [TTT Recon Gating] Correlation with Oracle:")
+        print(f"    Pearson r:  {pearson_r:.4f}")
+        print(f"    Spearman ρ: {spearman_r:.4f}")
+
+    return pd.DataFrame(results)
+
 def evaluate_threshold_gating(
     method_name: str,
     model_scale: str,
