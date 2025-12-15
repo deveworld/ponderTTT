@@ -747,7 +747,7 @@ def evaluate_ttt_loss_gating(
     invert_signal: bool = False,
     ttt_base_lr: Optional[float] = None,
 ):
-    """
+    r"""
     TTT Reconstruction Loss Gating (Self-Supervised).
     
     Uses `ttt_loss_step_0` (reconstruction error of the fast weights on the current input)
@@ -1438,7 +1438,6 @@ def main():
         fixed_action="SKIP",
         language=args.language,
         split=args.split,
-        split=args.split,
         skip_examples=args.skip_examples,
         num_workers=args.num_workers,
         ttt_base_lr=args.ttt_base_lr,
@@ -1495,7 +1494,6 @@ def main():
             model=update1_ttt_model,
             language=args.language,
             split=args.split,
-            skip_examples=args.skip_examples,
             skip_examples=args.skip_examples,
             num_workers=args.num_workers,
             ttt_base_lr=args.ttt_base_lr,
