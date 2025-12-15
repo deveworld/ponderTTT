@@ -11,6 +11,7 @@ from scipy import stats
 from ..data import create_data_iterator, get_tokenizer
 from ..models import load_ttt_model, TTTTransformerLM
 from ..utils import cross_entropy_loss
+from ..utils.checkpointing import load_checkpoint, unwrap_state
 
 @nnx.jit
 def fit_forward(model, input_ids, attention_mask, position_ids):
@@ -83,6 +84,7 @@ def main():
     parser.add_argument("--model_scale", type=str, default="125m")
     parser.add_argument("--num_batches", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--checkpoint_path", type=str, default=None, help="Path to checkpoint directory/file")
     args = parser.parse_args()
     
     print(f"Analyzing signals for {args.model_scale} model...")
@@ -96,6 +98,50 @@ def main():
         load_pretrained=True,
         vocab_size=tokenizer.get_vocab_size()
     )
+    
+    # Checkpoint loading
+    ckpt_path = args.checkpoint_path
+    if ckpt_path is None:
+        # Auto-detect from standard output dir
+        import glob
+        import os
+        possible_dir = f"outputs/baselines/{args.model_scale}_update1/checkpoints"
+        if os.path.exists(possible_dir):
+            checkpoints = glob.glob(f"{possible_dir}/checkpoint_*")
+            if checkpoints:
+                # excessive sorting logic handled by load_checkpoint usually, but let's pick one
+                # Actually load_checkpoint helper handles directory
+                ckpt_path = possible_dir
+                print(f"Auto-detected checkpoint dir: {ckpt_path}")
+    
+    if ckpt_path:
+        print(f"Loading checkpoint from {ckpt_path}...")
+        try:
+            # Create target structure matches train_baseline.py save format
+            # state = {"model": nnx.state(model), "optimizer": ...}
+            # We only need model.
+            # load_checkpoint can return full dict if target not specified, then we extract.
+            
+            # Using target=None to get raw dict
+            ckpt = load_checkpoint(ckpt_path)
+            
+            if "state" in ckpt and "model" in ckpt["state"]:
+                # Structure from train_baseline.py
+                model_state = unwrap_state(ckpt["state"]["model"])
+            elif "model" in ckpt:
+                 model_state = unwrap_state(ckpt["model"])
+            else:
+                 # assume root is state (e.g. from some other saver) or try direct
+                 model_state = unwrap_state(ckpt.get("state", ckpt))
+            
+            nnx.update(model, model_state)
+            print("Checkpoint loaded successfully.")
+        except Exception as e:
+            print(f"Warning: Failed to load checkpoint: {e}")
+            print("Running with initialized model (expect ~0 advantage if untrained TTT).")
+    else:
+        print("No checkpoint provided/found. TTT layer is untrained (initialized to identity).")
+        print("Expect 'advantage' to be 0.0.")
     
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
