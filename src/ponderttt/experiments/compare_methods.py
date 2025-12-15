@@ -137,7 +137,7 @@ def evaluate_oracle(
     """
     print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}...")
 
-    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large", "xl": "gpt2-xl"}[model_scale]
     tokenizer = get_tokenizer(model_name)
 
     # Load TTT Model if not provided
@@ -327,7 +327,7 @@ def evaluate_ttt_improvement_gating(
     """
     print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}...")
 
-    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large", "xl": "gpt2-xl"}[model_scale]
     tokenizer = get_tokenizer(model_name)
 
     # Load TTT Model if not provided
@@ -566,7 +566,7 @@ def evaluate_loss_skip_gating(
     """
     print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}...")
 
-    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large", "xl": "gpt2-xl"}[model_scale]
     tokenizer = get_tokenizer(model_name)
 
     # Load TTT Model if not provided
@@ -763,7 +763,7 @@ def evaluate_ttt_loss_gating(
     """
     print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}, invert={invert_signal}) on {language}...")
 
-    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large", "xl": "gpt2-xl"}[model_scale]
     tokenizer = get_tokenizer(model_name)
 
     # Load TTT Model if not provided
@@ -953,7 +953,7 @@ def evaluate_threshold_gating(
     """
     print(f"\nEvaluating {method_name} (mode={threshold_mode}) on {language}...")
 
-    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large", "xl": "gpt2-xl"}[model_scale]
     tokenizer = get_tokenizer(model_name)
 
     if model is None:
@@ -1166,7 +1166,7 @@ def evaluate_threshold_gating(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare optimization methods")
-    parser.add_argument("--model_scale", type=str, default="125m", choices=["125m", "350m", "1b"])
+    parser.add_argument("--model_scale", type=str, default="125m", choices=["125m", "350m", "1b", "xl"])
     parser.add_argument("--budget", type=float, default=2.0, help="Target budget (avg steps)")
     parser.add_argument("--num_eval_batches", type=int, default=20, help="Number of batches for evaluation")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
@@ -1220,7 +1220,7 @@ def evaluate_model(
     skip_info = f", skip={skip_examples}" if skip_examples > 0 else ""
     print(f"\nEvaluating {method_name} on {language} ({split}{skip_info})...")
 
-    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large", "xl": "gpt2-xl"}[model_scale]
     tokenizer = get_tokenizer(model_name)
 
     # Load TTT Model if not provided
@@ -1377,7 +1377,7 @@ def main():
     print("Comparison: Gating Methods vs Baseline")
     print("="*60)
 
-    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[args.model_scale]
+    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large", "xl": "gpt2-xl"}[args.model_scale]
     tokenizer = get_tokenizer(model_name)
     vocab_size = tokenizer.get_vocab_size()
 

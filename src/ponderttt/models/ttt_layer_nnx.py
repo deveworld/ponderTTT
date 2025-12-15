@@ -95,6 +95,7 @@ class TTTConfig:
             # 350M+ needs eta_decay_rate to fix gradient misalignment across positions
             "350m": {"hidden_dim": 1024, "num_heads": 16, "head_dim": 64, "eta_decay_rate": 0.3},
             "1b": {"hidden_dim": 1280, "num_heads": 20, "head_dim": 64, "eta_decay_rate": 0.3},
+            "xl": {"hidden_dim": 1600, "num_heads": 25, "head_dim": 64, "eta_decay_rate": 0.3},
         }
         config = configs.get(model_size, configs["125m"])
         return cls(

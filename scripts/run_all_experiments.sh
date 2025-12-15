@@ -26,6 +26,8 @@
 # Model selection flags (default: run both)
 RUN_125M=false
 RUN_350M=false
+RUN_1B=false
+RUN_XL=false
 
 # Configuration - Common
 NUM_WORKERS=128
@@ -41,6 +43,10 @@ BATCH_SIZE_350M=16
 MAX_CHUNKS_350M=100000
 NUM_EVAL_BATCHES_350M=1000
 NUM_EVAL_BATCHES_OOD_350M=500
+
+# Configuration - Larger Models
+BATCH_SIZE_LARGE=4
+NUM_EVAL_BATCHES_LARGE=200
 
 # Save frequency (auto-calculated: save once at midpoint)
 SAVE_EVERY_BASELINE_125M=$((MAX_CHUNKS_125M / 2))
@@ -228,6 +234,40 @@ phase2_eval_id() {
                     $INVERT_SIGNAL \
                     $TTT_BASE_LR_ARG
         fi
+    fi
+
+    # 1B Evaluation (Fresh)
+    if [ "$RUN_1B" = true ]; then
+        log_info "Evaluating 1B (Fresh Weights)..."
+        run_experiment "Eval 1B Python" \
+            python -m ponderttt.experiments.compare_methods \
+                --model_scale 1b \
+                --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
+                --batch_size $BATCH_SIZE_LARGE \
+                --language Python \
+                --skip_examples $SKIP_EXAMPLES \
+                --output_dir outputs/eval/1b_python \
+                --eval_ttt_loss \
+                --eval_ttt_improvement \
+                $INVERT_SIGNAL \
+                $TTT_BASE_LR_ARG
+    fi
+
+    # XL Evaluation (Fresh)
+    if [ "$RUN_XL" = true ]; then
+        log_info "Evaluating XL (Fresh Weights)..."
+        run_experiment "Eval XL Python" \
+            python -m ponderttt.experiments.compare_methods \
+                --model_scale xl \
+                --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
+                --batch_size $BATCH_SIZE_LARGE \
+                --language Python \
+                --skip_examples $SKIP_EXAMPLES \
+                --output_dir outputs/eval/xl_python \
+                --eval_ttt_loss \
+                --eval_ttt_improvement \
+                $INVERT_SIGNAL \
+                $TTT_BASE_LR_ARG
     fi
 
     log_info "Phase 2 Complete!"
@@ -477,6 +517,12 @@ for arg in "$@"; do
         --350m)
             RUN_350M=true
             ;;
+        --1b)
+            RUN_1B=true
+            ;;
+        --xl)
+            RUN_XL=true
+            ;;
         --invert_signal)
             INVERT_SIGNAL="--invert_signal"
             ;;
@@ -490,7 +536,8 @@ for arg in "$@"; do
 done
 
 # If neither flag specified, run both
-if [ "$RUN_125M" = false ] && [ "$RUN_350M" = false ]; then
+# If neither flag specified, run both small models (default)
+if [ "$RUN_125M" = false ] && [ "$RUN_350M" = false ] && [ "$RUN_1B" = false ] && [ "$RUN_XL" = false ]; then
     RUN_125M=true
     RUN_350M=true
 fi
@@ -546,6 +593,8 @@ else
                 echo "Model selection:"
                 echo "  --125m                  - Run only 125M experiments"
                 echo "  --350m                  - Run only 350M experiments"
+                echo "  --1b                    - Run only 1B (GPT2-Large) experiments"
+                echo "  --xl                    - Run only XL (GPT2-XL) experiments"
                 exit 1
                 ;;
         esac
