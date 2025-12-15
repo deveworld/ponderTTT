@@ -250,10 +250,19 @@ class Attention(nnx.Module):
             'sliding_window_size must be set if attn_type is Local Sliding.'
         )
 
-      all_ones = jnp.ones_like(attn_mask)
-      sliding_mask = jnp.triu(
-          all_ones, -1 * self.sliding_window_size + 1
-      ) * jnp.tril(all_ones, self.sliding_window_size - 1)
+      # Create sliding window mask based on positions
+      K_len = attn_mask.shape[-1]
+      
+      # [batch, query_len, 1]
+      q_pos = segment_pos[..., None]
+      # [1, 1, K_len]
+      k_pos = jnp.arange(K_len, dtype=segment_pos.dtype)[None, None, :]
+      
+      # We want to attend to keys k where: q - window < k <= q
+      # Equivalent to: 0 <= q - k < window
+      diff = q_pos - k_pos
+      sliding_mask = (diff < self.sliding_window_size) & (diff >= 0)
+      
       attn_mask = sliding_mask * attn_mask
 
     padded_logits = jnp.where((jnp.expand_dims(attn_mask, -2)), logits, K_MASK)
@@ -263,7 +272,7 @@ class Attention(nnx.Module):
     if use_gqa:
       # Reshape matrices to enable einsums over groups.
       num_groups = self.num_heads // self.num_kv_heads
-      batch_size, seq_size, _, head_dim = query_scaled.shape
+      batch_size, seq_size, _, _, head_dim = query_scaled.shape
       probs = probs.reshape(
         (batch_size, seq_size, self.num_kv_heads, num_groups, -1)
       )

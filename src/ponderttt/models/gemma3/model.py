@@ -111,9 +111,21 @@ class Gemma3Model(nnx.Module):
 
         # Create causal mask if not provided
         if attention_mask is None:
-            seq_len = tokens.shape[-1]
-            attention_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
-            attention_mask = attention_mask[None, :, :]  # Add batch dim
+            if cache is None:
+                seq_len = tokens.shape[-1]
+                attention_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+                attention_mask = attention_mask[None, :, :]  # Add batch dim
+            else:
+                # Retrieve cache size and end index from the first layer
+                first_layer_cache = next(iter(cache.values()))
+                cache_size = first_layer_cache['k'].shape[1]
+                
+                # Create mask based on positions: allow attending to positions <= current
+                # positions: [batch, seq_len]
+                # mask: [batch, seq_len, cache_size]
+                key_positions = jnp.arange(cache_size, dtype=positions.dtype)[None, None, :]
+                query_positions = positions[:, :, None]
+                attention_mask = key_positions <= query_positions
 
         # Process through layers
         assert attention_mask is not None  # Set above if was None
@@ -295,19 +307,38 @@ class Gemma3TTTModel(nnx.Module):
 
         # Generate position_ids if not provided
         if position_ids is None:
-            position_ids = jnp.arange(seq_len, dtype=jnp.int32)[None, :].repeat(
-                batch_size, axis=0
-            )
+            if cache is not None:
+                # Infer positions from cache state
+                first_layer_cache = next(iter(cache.values()))
+                start_indices = first_layer_cache['end_index']  # [batch]
+                position_ids = start_indices[:, None] + jnp.arange(seq_len, dtype=jnp.int32)[None, :]
+            else:
+                position_ids = jnp.arange(seq_len, dtype=jnp.int32)[None, :].repeat(
+                    batch_size, axis=0
+                )
 
         # Create attention mask
         if attention_mask is None:
-            attn_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
-            attn_mask = attn_mask[None, :, :]
+            if cache is not None:
+                first_layer_cache = next(iter(cache.values()))
+                cache_size = first_layer_cache['k'].shape[1]
+                
+                # Mask: [batch, seq_len, cache_size]
+                key_positions = jnp.arange(cache_size, dtype=position_ids.dtype)[None, None, :]
+                query_positions = position_ids[:, :, None]
+                attn_mask = key_positions <= query_positions
+            else:
+                attn_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+                attn_mask = attn_mask[None, :, :]
         else:
-            # Convert 1D mask to 2D causal mask
-            attn_mask = attention_mask[:, None, :] * jnp.tril(
-                jnp.ones((seq_len, seq_len), dtype=jnp.bool_)
-            )
+            if cache is not None:
+                # If cached, trust user provided 2D/3D mask matches cache_size
+                 attn_mask = attention_mask[:, None, :]
+            else:
+                # Convert 1D mask to 2D causal mask
+                attn_mask = attention_mask[:, None, :] * jnp.tril(
+                    jnp.ones((seq_len, seq_len), dtype=jnp.bool_)
+                )
 
         # Forward through base model (frozen)
         hidden_states, new_cache = jax.lax.stop_gradient(
