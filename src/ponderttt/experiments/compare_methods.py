@@ -734,6 +734,7 @@ def evaluate_ttt_loss_gating(
     num_workers: int = 32,
     shuffle: bool = False,
     diagonal_offset: int = 0,
+    invert_signal: bool = False,
 ):
     """
     TTT Reconstruction Loss Gating (Self-Supervised).
@@ -744,12 +745,12 @@ def evaluate_ttt_loss_gating(
     Logic:
     1. Run partial TTT forward (or full, extracting stats) to get `ttt_loss_step_0`.
        $$ \text{score} = \mathcal{L}_{rec}(\theta_{fast}; x_t) $$
-    2. If score > threshold (Top-k): UPDATE.
+    2. If score > threshold (Top-k): UPDATE. (If invert_signal=True, score < threshold)
     3. Else: SKIP.
     
     This is Generation-Compatible because $\mathcal{L}_{rec}$ does not use labels.
     """
-    print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}...")
+    print(f"\nEvaluating {method_name} (update_rate={update_rate:.1%}, invert={invert_signal}) on {language}...")
 
     model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[model_scale]
     tokenizer = get_tokenizer(model_name)
@@ -862,8 +863,13 @@ def evaluate_ttt_loss_gating(
 
         # Step 2: Select top-k% chunks by Reconstruction Loss
         num_to_update = max(1, int(len(chunk_data) * update_rate))
-        # Higher reconstruction error -> Needs update
-        sorted_chunks = sorted(chunk_data, key=lambda x: x["ttt_recon_loss"], reverse=True)
+        
+        # Determine sort order
+        # Normal: Higher reconstruction error -> Needs update (reverse=True)
+        # Inverted: Lower reconstruction error -> Needs update (reverse=False)
+        reverse_sort = not invert_signal
+        
+        sorted_chunks = sorted(chunk_data, key=lambda x: x["ttt_recon_loss"], reverse=reverse_sort)
 
         update_indices = set(c["c_idx"] for c in sorted_chunks[:num_to_update])
 
@@ -1163,6 +1169,7 @@ def parse_args():
     parser.add_argument("--eval_loss_skip", action="store_true", help="Evaluate Loss Skip-based gating (training-free, high loss → update)")
     parser.add_argument("--eval_threshold", action="store_true", help="Evaluate threshold-based gating (Walk phase)")
     parser.add_argument("--eval_ttt_loss", action="store_true", help="Evaluate TTT Reconstruction Loss-based gating (training-free, high recon loss -> update)")
+    parser.add_argument("--invert_signal", action="store_true", help="Invert gating signal (e.g. for TTT Loss: Low Loss -> Update)")
     parser.add_argument("--shuffle", action="store_true", help="Shuffle tokens within chunks (ablation)")
     parser.add_argument("--diagonal_offset", type=int, default=0, help="Causal mask diagonal offset (0=default, -1=no diagonal)")
     parser.add_argument("--threshold_mode", type=str, default="ema", choices=["fixed", "ema", "prob"], help="Threshold gating mode")
@@ -1532,7 +1539,7 @@ def main():
     # 8. Evaluate TTT Reconstruction Loss Gating (Proposed Method)
     if args.eval_ttt_loss:
         model_source = "UPDATE_1" if update1_ttt_model else "fresh"
-        print(f"\n=== Running TTT Reconstruction Gating (update_rate={target_update_rate:.2%}) ===")
+        print(f"\n=== Running TTT Reconstruction Gating (update_rate={target_update_rate:.2%}, invert={args.invert_signal}) ===")
         print(f"    (Using {model_source} TTT weights)")
         df_ttt_loss = evaluate_ttt_loss_gating(
             f"TTT Loss-Gating({target_update_rate:.0%} update)",
@@ -1548,6 +1555,7 @@ def main():
             num_workers=args.num_workers,
             shuffle=args.shuffle,
             diagonal_offset=args.diagonal_offset,
+            invert_signal=args.invert_signal,
         )
         all_results.append(df_ttt_loss)
 
