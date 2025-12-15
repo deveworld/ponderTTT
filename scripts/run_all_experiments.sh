@@ -45,7 +45,7 @@ NUM_EVAL_BATCHES_350M=1000
 NUM_EVAL_BATCHES_OOD_350M=500
 
 # Configuration - Larger Models
-BATCH_SIZE_LARGE=4
+BATCH_SIZE_LARGE=2
 NUM_EVAL_BATCHES_LARGE=200
 
 # Save frequency (auto-calculated: save once at midpoint)
