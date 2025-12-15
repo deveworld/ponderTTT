@@ -461,13 +461,7 @@ run_all() {
     print_summary
 }
 
-# Parse arguments - first pass: extract model flags
-PHASES=()
-for arg in "$@"; do
-    case $arg in
-        --125m)
-            RUN_125M=true
-            ;;
+
 # Parse arguments - first pass: extract model flags
 PHASES=()
 INVERT_SIGNAL=""
