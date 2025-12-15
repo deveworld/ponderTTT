@@ -202,7 +202,8 @@ phase2_eval_id() {
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/125m_python \
                     --eval_ttt_loss \
-                    --eval_ttt_improvement
+                    --eval_ttt_improvement \
+                    $INVERT_SIGNAL
         fi
     fi
 
@@ -222,7 +223,8 @@ phase2_eval_id() {
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/350m_python \
                     --eval_ttt_loss \
-                    --eval_ttt_improvement
+                    --eval_ttt_improvement \
+                    $INVERT_SIGNAL
         fi
     fi
 
@@ -254,7 +256,8 @@ phase3_eval_ood() {
                         --language "$lang" \
                         --output_dir "outputs/eval/125m_${lang_lower}" \
                         --eval_ttt_loss \
-                        --eval_ttt_improvement
+                        --eval_ttt_improvement \
+                        $INVERT_SIGNAL
             done
         fi
     fi
@@ -276,7 +279,8 @@ phase3_eval_ood() {
                         --language "$lang" \
                         --output_dir "outputs/eval/350m_${lang_lower}" \
                         --eval_ttt_loss \
-                        --eval_ttt_improvement
+                        --eval_ttt_improvement \
+                        $INVERT_SIGNAL
             done
         fi
     fi
@@ -326,6 +330,7 @@ phase5_shuffle() {
                     --output_dir outputs/eval/125m_shuffle \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
+                    $INVERT_SIGNAL \
                     --shuffle
         fi
     fi
@@ -346,6 +351,7 @@ phase5_shuffle() {
                     --output_dir outputs/eval/350m_shuffle \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
+                    $INVERT_SIGNAL \
                     --shuffle
         fi
     fi
@@ -380,6 +386,7 @@ phase6_diagonal() {
                     --output_dir outputs/eval/125m_diagonal_k_minus_1 \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
+                    $INVERT_SIGNAL \
                     --diagonal_offset -1
         fi
     fi
@@ -400,6 +407,7 @@ phase6_diagonal() {
                     --output_dir outputs/eval/350m_diagonal_k_minus_1 \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
+                    $INVERT_SIGNAL \
                     --diagonal_offset -1
         fi
     fi
@@ -460,8 +468,20 @@ for arg in "$@"; do
         --125m)
             RUN_125M=true
             ;;
+# Parse arguments - first pass: extract model flags
+PHASES=()
+INVERT_SIGNAL=""
+
+for arg in "$@"; do
+    case $arg in
+        --125m)
+            RUN_125M=true
+            ;;
         --350m)
             RUN_350M=true
+            ;;
+        --invert_signal)
+            INVERT_SIGNAL="--invert_signal"
             ;;
         *)
             PHASES+=("$arg")
