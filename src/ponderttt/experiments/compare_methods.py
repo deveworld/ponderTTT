@@ -129,6 +129,7 @@ def evaluate_oracle(
     num_workers: int = 32,
     shuffle: bool = False,
     diagonal_offset: int = 0,
+    ttt_base_lr: Optional[float] = None,
 ):
     """
     Oracle baseline: compute advantage for each chunk and select top-k% to update.
@@ -148,6 +149,10 @@ def evaluate_oracle(
             load_pretrained=True,
             vocab_size=tokenizer.get_vocab_size(),
         )
+        if ttt_base_lr is not None:
+             if hasattr(ttt_model, "fast_layer") and hasattr(ttt_model.fast_layer, "config"):
+                print(f"  [Config Override] Setting ttt_base_lr = {ttt_base_lr}")
+                ttt_model.fast_layer.config.ttt_base_lr = ttt_base_lr
     else:
         ttt_model = model
 
@@ -302,6 +307,7 @@ def evaluate_ttt_improvement_gating(
     num_workers: int = 32,
     shuffle: bool = False,
     diagonal_offset: int = 0,
+    ttt_base_lr: Optional[float] = None,
 ):
     """
     TTT Improvement-based Gating: Use TTT internal self-supervision loss improvement
@@ -333,6 +339,10 @@ def evaluate_ttt_improvement_gating(
             load_pretrained=True,
             vocab_size=tokenizer.get_vocab_size(),
         )
+        if ttt_base_lr is not None:
+             if hasattr(ttt_model, "fast_layer") and hasattr(ttt_model.fast_layer, "config"):
+                print(f"  [Config Override] Setting ttt_base_lr = {ttt_base_lr}")
+                ttt_model.fast_layer.config.ttt_base_lr = ttt_base_lr
     else:
         ttt_model = model
 
@@ -735,6 +745,7 @@ def evaluate_ttt_loss_gating(
     shuffle: bool = False,
     diagonal_offset: int = 0,
     invert_signal: bool = False,
+    ttt_base_lr: Optional[float] = None,
 ):
     """
     TTT Reconstruction Loss Gating (Self-Supervised).
@@ -921,6 +932,7 @@ def evaluate_threshold_gating(
     seed: int = 42,
     shuffle: bool = False,
     diagonal_offset: int = 0,
+    ttt_base_lr: Optional[float] = None,
 ):
     """
     Walk Phase: Threshold-based online gating.
@@ -1174,6 +1186,7 @@ def parse_args():
     parser.add_argument("--diagonal_offset", type=int, default=0, help="Causal mask diagonal offset (0=default, -1=no diagonal)")
     parser.add_argument("--threshold_mode", type=str, default="ema", choices=["fixed", "ema", "prob"], help="Threshold gating mode")
     parser.add_argument("--initial_threshold", type=float, default=None, help="Initial threshold (if None, calibrate from data)")
+    parser.add_argument("--ttt_base_lr", type=float, default=None, help="Override TTT base learning rate")
     return parser.parse_args()
 
 
@@ -1191,6 +1204,7 @@ def evaluate_model(
     skip_examples: int = 0,
     num_workers: int = 32,
     random_update_rate: Optional[float] = None,  # For Random Skip baseline (0.0-1.0); set explicitly
+    ttt_base_lr: Optional[float] = None,
 ):
     # Convert budget (cost multiplier) to target update rate using cost model:
     # cost = 1 + 2 * update_rate => update_rate = (budget - 1) / 2
@@ -1218,6 +1232,10 @@ def evaluate_model(
             load_pretrained=True,
             vocab_size=tokenizer.get_vocab_size(),
         )
+        if ttt_base_lr is not None:
+             if hasattr(ttt_model, "fast_layer") and hasattr(ttt_model.fast_layer, "config"):
+                print(f"  [Config Override] Setting ttt_base_lr = {ttt_base_lr}")
+                ttt_model.fast_layer.config.ttt_base_lr = ttt_base_lr
     else:
         ttt_model = model
     # Ensure eval mode for inference (dropout off, deterministic)
@@ -1398,6 +1416,12 @@ def main():
 
     all_results = []
 
+    # Apply LR override to pre-loaded update1 model if exists
+    if update1_ttt_model is not None and args.ttt_base_lr is not None:
+        if hasattr(update1_ttt_model, "fast_layer") and hasattr(update1_ttt_model.fast_layer, "config"):
+             print(f"  [Config Override] Setting update1 ttt_base_lr = {args.ttt_base_lr}")
+             update1_ttt_model.fast_layer.config.ttt_base_lr = args.ttt_base_lr
+
     # Convert budget to target update rate (cost = 1 + 2 * update_rate)
     target_update_rate = max(0.0, min(1.0, (args.budget - 1.0) / 2.0))
     print(f"\nTarget update rate from budget={args.budget:.2f}: {target_update_rate*100:.1f}%")
@@ -1414,8 +1438,10 @@ def main():
         fixed_action="SKIP",
         language=args.language,
         split=args.split,
+        split=args.split,
         skip_examples=args.skip_examples,
         num_workers=args.num_workers,
+        ttt_base_lr=args.ttt_base_lr,
     )
     all_results.append(df_skip)
 
@@ -1434,6 +1460,7 @@ def main():
             split=args.split,
             skip_examples=args.skip_examples,
             num_workers=args.num_workers,
+            ttt_base_lr=args.ttt_base_lr,
         )
         all_results.append(df_update1)
 
@@ -1452,6 +1479,7 @@ def main():
             skip_examples=args.skip_examples,
             num_workers=args.num_workers,
             random_update_rate=target_update_rate,
+            ttt_base_lr=args.ttt_base_lr,
         )
         all_results.append(df_random)
 
@@ -1468,7 +1496,9 @@ def main():
             language=args.language,
             split=args.split,
             skip_examples=args.skip_examples,
+            skip_examples=args.skip_examples,
             num_workers=args.num_workers,
+            ttt_base_lr=args.ttt_base_lr,
         )
         all_results.append(df_oracle)
 
@@ -1489,6 +1519,7 @@ def main():
             split=args.split,
             skip_examples=args.skip_examples,
             num_workers=args.num_workers,
+            ttt_base_lr=args.ttt_base_lr,
         )
         all_results.append(df_ttt_improvement)
 
@@ -1529,6 +1560,7 @@ def main():
             split=args.split,
             skip_examples=args.skip_examples,
             num_workers=args.num_workers,
+            ttt_base_lr=args.ttt_base_lr,
             threshold_mode=args.threshold_mode,
             initial_threshold=args.initial_threshold,
             shuffle=args.shuffle,
@@ -1556,6 +1588,7 @@ def main():
             shuffle=args.shuffle,
             diagonal_offset=args.diagonal_offset,
             invert_signal=args.invert_signal,
+            ttt_base_lr=args.ttt_base_lr,
         )
         all_results.append(df_ttt_loss)
 

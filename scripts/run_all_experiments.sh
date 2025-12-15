@@ -203,7 +203,8 @@ phase2_eval_id() {
                     --output_dir outputs/eval/125m_python \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL
+                    $INVERT_SIGNAL \
+                    $TTT_BASE_LR_ARG
         fi
     fi
 
@@ -224,7 +225,8 @@ phase2_eval_id() {
                     --output_dir outputs/eval/350m_python \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL
+                    $INVERT_SIGNAL \
+                    $TTT_BASE_LR_ARG
         fi
     fi
 
@@ -465,6 +467,7 @@ run_all() {
 # Parse arguments - first pass: extract model flags
 PHASES=()
 INVERT_SIGNAL=""
+TTT_BASE_LR_ARG=""
 
 for arg in "$@"; do
     case $arg in
@@ -476,6 +479,9 @@ for arg in "$@"; do
             ;;
         --invert_signal)
             INVERT_SIGNAL="--invert_signal"
+            ;;
+        --ttt_base_lr=*)
+            TTT_BASE_LR_ARG="${arg}"
             ;;
         *)
             PHASES+=("$arg")
