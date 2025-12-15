@@ -717,8 +717,6 @@ def evaluate_loss_skip_gating(
         skip_topk = set(skip_sorted[-k:])  # High loss_skip
         adv_topk = set(adv_sorted[-k:])    # High advantage
         overlap = len(skip_topk & adv_topk) / k
-        print(f"    Top-50% overlap with Oracle: {overlap:.2%}")
-
     return pd.DataFrame(results)
 
 
@@ -987,6 +985,7 @@ def parse_args():
     parser.add_argument("--eval_ttt_improvement", action="store_true", help="Evaluate TTT Improvement-based gating (training-free, uses TTT internal loss as signal)")
     parser.add_argument("--eval_loss_skip", action="store_true", help="Evaluate Loss Skip-based gating (training-free, high loss → update)")
     parser.add_argument("--eval_threshold", action="store_true", help="Evaluate threshold-based gating (Walk phase)")
+    parser.add_argument("--eval_ttt_loss", action="store_true", help="Evaluate TTT Reconstruction Loss-based gating (training-free, high recon loss -> update)")
     parser.add_argument("--shuffle", action="store_true", help="Shuffle tokens within chunks (ablation)")
     parser.add_argument("--diagonal_offset", type=int, default=0, help="Causal mask diagonal offset (0=default, -1=no diagonal)")
     parser.add_argument("--threshold_mode", type=str, default="ema", choices=["fixed", "ema", "prob"], help="Threshold gating mode")
@@ -1352,6 +1351,28 @@ def main():
             diagonal_offset=args.diagonal_offset,
         )
         all_results.append(df_threshold)
+
+    # 8. Evaluate TTT Reconstruction Loss Gating (Proposed Method)
+    if args.eval_ttt_loss:
+        model_source = "UPDATE_1" if update1_ttt_model else "fresh"
+        print(f"\n=== Running TTT Reconstruction Gating (update_rate={target_update_rate:.2%}) ===")
+        print(f"    (Using {model_source} TTT weights)")
+        df_ttt_loss = evaluate_ttt_loss_gating(
+            f"TTT Loss-Gating({target_update_rate:.0%} update)",
+            args.model_scale,
+            update_rate=target_update_rate,
+            num_batches=args.num_eval_batches,
+            batch_size=args.batch_size,
+            seed=args.seed,
+            model=update1_ttt_model,
+            language=args.language,
+            split=args.split,
+            skip_examples=args.skip_examples,
+            num_workers=args.num_workers,
+            shuffle=args.shuffle,
+            diagonal_offset=args.diagonal_offset,
+        )
+        all_results.append(df_ttt_loss)
 
     # 7. Visualize & Report
     full_df = pd.concat(all_results)
