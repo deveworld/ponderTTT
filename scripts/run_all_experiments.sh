@@ -201,7 +201,8 @@ phase2_eval_id() {
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/125m_python \
-                    --eval_ttt_loss
+                    --eval_ttt_loss \
+                    --eval_ttt_improvement
         fi
     fi
 
@@ -220,7 +221,8 @@ phase2_eval_id() {
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/350m_python \
-                    --eval_ttt_loss
+                    --eval_ttt_loss \
+                    --eval_ttt_improvement
         fi
     fi
 
@@ -251,7 +253,8 @@ phase3_eval_ood() {
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
                         --language "$lang" \
                         --output_dir "outputs/eval/125m_${lang_lower}" \
-                        --eval_ttt_loss
+                        --eval_ttt_loss \
+                        --eval_ttt_improvement
             done
         fi
     fi
@@ -272,7 +275,8 @@ phase3_eval_ood() {
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
                         --language "$lang" \
                         --output_dir "outputs/eval/350m_${lang_lower}" \
-                        --eval_ttt_loss
+                        --eval_ttt_loss \
+                        --eval_ttt_improvement
             done
         fi
     fi
@@ -321,6 +325,7 @@ phase5_shuffle() {
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/125m_shuffle \
                     --eval_ttt_loss \
+                    --eval_ttt_improvement \
                     --shuffle
         fi
     fi
@@ -340,6 +345,7 @@ phase5_shuffle() {
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/350m_shuffle \
                     --eval_ttt_loss \
+                    --eval_ttt_improvement \
                     --shuffle
         fi
     fi
@@ -373,6 +379,7 @@ phase6_diagonal() {
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/125m_diagonal_k_minus_1 \
                     --eval_ttt_loss \
+                    --eval_ttt_improvement \
                     --diagonal_offset -1
         fi
     fi
@@ -392,6 +399,7 @@ phase6_diagonal() {
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/350m_diagonal_k_minus_1 \
                     --eval_ttt_loss \
+                    --eval_ttt_improvement \
                     --diagonal_offset -1
         fi
     fi
