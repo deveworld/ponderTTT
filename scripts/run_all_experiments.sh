@@ -178,6 +178,26 @@ phase1_baselines() {
                 --wandb_project ponderttt-350m --save_every $SAVE_EVERY_BASELINE_350M
     fi
 
+    # 1B Baselines
+    if [ "$RUN_1B" = true ]; then
+        run_experiment "1B UPDATE_1" \
+            python -m ponderttt.experiments.train_baseline \
+                --model_scale 1b --action UPDATE_1 --max_chunks $MAX_CHUNKS_350M \
+                --output_dir outputs/baselines/1b_update1 \
+                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_LARGE \
+                --wandb_project ponderttt-1b --save_every $SAVE_EVERY_BASELINE_350M
+    fi
+
+    # XL Baselines
+    if [ "$RUN_XL" = true ]; then
+        run_experiment "XL UPDATE_1" \
+            python -m ponderttt.experiments.train_baseline \
+                --model_scale xl --action UPDATE_1 --max_chunks $MAX_CHUNKS_350M \
+                --output_dir outputs/baselines/xl_update1 \
+                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_LARGE \
+                --wandb_project ponderttt-xl --save_every $SAVE_EVERY_BASELINE_350M
+    fi
+
     log_info "Phase 1 Complete!"
 }
 
@@ -548,7 +568,11 @@ if [ "$RUN_125M" = true ] && [ "$RUN_350M" = true ]; then
 elif [ "$RUN_125M" = true ]; then
     log_info "Running experiments for: 125M only"
 else
-    log_info "Running experiments for: 350M only"
+    log_info "Running experiments for selected models:"
+    [ "$RUN_125M" = true ] && echo "  - 125M"
+    [ "$RUN_350M" = true ] && echo "  - 350M"
+    [ "$RUN_1B" = true ] && echo "  - 1B"
+    [ "$RUN_XL" = true ] && echo "  - XL"
 fi
 
 # Parse phase arguments
