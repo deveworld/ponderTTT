@@ -240,12 +240,16 @@ def load_gemma3_from_huggingface(
     if gemma_config is None:
         raise ValueError("Model must have a 'gemma_config' attribute")
 
+    # Check if model uses GQA (Grouped Query Attention)
+    use_gqa = gemma_config.num_heads != gemma_config.num_kv_heads
+
     def np_to_jax(arr: np.ndarray) -> jnp.ndarray:
         """Convert numpy array to JAX array."""
         return jnp.array(arr)
 
     # Weight mapping: HuggingFace -> NNX
     # Note: HuggingFace uses (out, in) for Linear, NNX uses (in, out)
+    # For einsum layers, reshape is also needed.
     weight_mapping: dict[str, tuple[str | int, ...]] = {
         # Embeddings
         "model.embed_tokens.weight": ("base_model", "embedder", "input_embedding"),
@@ -253,25 +257,41 @@ def load_gemma3_from_huggingface(
         "model.norm.weight": ("base_model", "final_norm", "scale"),
     }
 
+    # Special handling for attention Q/K/V weights (handled separately for GQA)
+    # These are NOT added to weight_mapping for GQA models
+    attn_qkv_keys: list[tuple[int, str, str]] = []  # (layer_idx, hf_key, qkv_type)
+
     # Layer weights
     for i in range(gemma_config.num_layers):
         layer_prefix = f"model.layers.{i}"
         nnx_layer: tuple[str | int, ...] = ("base_model", "layers", i)
 
-        layer_mapping: dict[str, tuple[str | int, ...]] = {
-            # Attention
-            f"{layer_prefix}.self_attn.q_proj.weight": (*nnx_layer, "attn", "q_einsum", "w"),
-            f"{layer_prefix}.self_attn.k_proj.weight": (*nnx_layer, "attn", "kv_einsum", "w"),
-            f"{layer_prefix}.self_attn.v_proj.weight": (*nnx_layer, "attn", "kv_einsum", "w"),
-            f"{layer_prefix}.self_attn.o_proj.weight": (*nnx_layer, "attn", "attn_vec_einsum", "w"),
-            # Norms
-            f"{layer_prefix}.input_layernorm.weight": (*nnx_layer, "pre_attention_norm", "scale"),
-            f"{layer_prefix}.post_attention_layernorm.weight": (*nnx_layer, "pre_ffw_norm", "scale"),
-            # MLP
-            f"{layer_prefix}.mlp.gate_proj.weight": (*nnx_layer, "mlp", "gate_proj", "kernel"),
-            f"{layer_prefix}.mlp.up_proj.weight": (*nnx_layer, "mlp", "up_proj", "kernel"),
-            f"{layer_prefix}.mlp.down_proj.weight": (*nnx_layer, "mlp", "down_proj", "kernel"),
-        }
+        # For GQA models, Q/K/V need special handling
+        if use_gqa:
+            attn_qkv_keys.append((i, f"{layer_prefix}.self_attn.q_proj.weight", "q"))
+            attn_qkv_keys.append((i, f"{layer_prefix}.self_attn.k_proj.weight", "k"))
+            attn_qkv_keys.append((i, f"{layer_prefix}.self_attn.v_proj.weight", "v"))
+            layer_mapping: dict[str, tuple[str | int, ...]] = {
+                # Output projection
+                f"{layer_prefix}.self_attn.o_proj.weight": (*nnx_layer, "attn", "attn_vec_einsum", "w"),
+            }
+        else:
+            # MHA: use qkv_einsum (handled separately too)
+            attn_qkv_keys.append((i, f"{layer_prefix}.self_attn.q_proj.weight", "q"))
+            attn_qkv_keys.append((i, f"{layer_prefix}.self_attn.k_proj.weight", "k"))
+            attn_qkv_keys.append((i, f"{layer_prefix}.self_attn.v_proj.weight", "v"))
+            layer_mapping = {
+                f"{layer_prefix}.self_attn.o_proj.weight": (*nnx_layer, "attn", "attn_vec_einsum", "w"),
+            }
+
+        # Norms
+        layer_mapping[f"{layer_prefix}.input_layernorm.weight"] = (*nnx_layer, "pre_attention_norm", "scale")
+        layer_mapping[f"{layer_prefix}.post_attention_layernorm.weight"] = (*nnx_layer, "pre_ffw_norm", "scale")
+
+        # MLP
+        layer_mapping[f"{layer_prefix}.mlp.gate_proj.weight"] = (*nnx_layer, "mlp", "gate_proj", "kernel")
+        layer_mapping[f"{layer_prefix}.mlp.up_proj.weight"] = (*nnx_layer, "mlp", "up_proj", "kernel")
+        layer_mapping[f"{layer_prefix}.mlp.down_proj.weight"] = (*nnx_layer, "mlp", "down_proj", "kernel")
 
         # QK norm (Gemma 3 specific)
         if getattr(gemma_config, "use_qk_norm", False):
@@ -311,11 +331,87 @@ def load_gemma3_from_huggingface(
         elif isinstance(obj, dict):
             obj[final_key] = value
 
+    def get_nested(obj: Any, path: tuple[str | int, ...]) -> Any:
+        for key in path:
+            if isinstance(key, int):
+                obj = obj[key]
+            else:
+                obj = getattr(obj, key) if hasattr(obj, key) else obj[key]
+        return obj
+
     loaded_count = 0
+
+    # Handle Q/K/V attention weights specially
+    # Group by layer
+    qkv_by_layer: dict[int, dict[str, jnp.ndarray]] = {}
+    for layer_idx, hf_key, qkv_type in attn_qkv_keys:
+        if hf_key in state_dict:
+            weight = np_to_jax(state_dict[hf_key])
+            # HuggingFace: [out_features, in_features] -> transpose to [in, out]
+            weight = weight.T  # Now [embed_dim, num_heads * head_dim] or [embed_dim, num_kv_heads * head_dim]
+            if layer_idx not in qkv_by_layer:
+                qkv_by_layer[layer_idx] = {}
+            qkv_by_layer[layer_idx][qkv_type] = weight
+            loaded_count += 1
+
+    # Now assign Q/K/V weights with proper reshaping
+    for layer_idx, qkv_weights in qkv_by_layer.items():
+        nnx_layer = ("base_model", "layers", layer_idx, "attn")
+
+        if use_gqa:
+            # GQA: separate q_einsum and kv_einsum
+            # q_einsum.w: [num_heads, features, head_dim]
+            # kv_einsum.w: [2, num_kv_heads, features, head_dim]
+            if "q" in qkv_weights:
+                q_weight = qkv_weights["q"]  # [embed_dim, num_heads * head_dim]
+                # Reshape to [embed_dim, num_heads, head_dim] then transpose to [num_heads, embed_dim, head_dim]
+                q_weight = q_weight.reshape(gemma_config.embed_dim, gemma_config.num_heads, gemma_config.head_dim)
+                q_weight = jnp.transpose(q_weight, (1, 0, 2))  # [num_heads, embed_dim, head_dim]
+                set_nested(model, (*nnx_layer, "q_einsum", "w"), q_weight)
+
+            if "k" in qkv_weights and "v" in qkv_weights:
+                k_weight = qkv_weights["k"]  # [embed_dim, num_kv_heads * head_dim]
+                v_weight = qkv_weights["v"]  # [embed_dim, num_kv_heads * head_dim]
+                # Reshape each to [embed_dim, num_kv_heads, head_dim]
+                k_weight = k_weight.reshape(gemma_config.embed_dim, gemma_config.num_kv_heads, gemma_config.head_dim)
+                v_weight = v_weight.reshape(gemma_config.embed_dim, gemma_config.num_kv_heads, gemma_config.head_dim)
+                # Stack to [2, embed_dim, num_kv_heads, head_dim]
+                kv_weight = jnp.stack([k_weight, v_weight], axis=0)
+                # Transpose to [2, num_kv_heads, embed_dim, head_dim]
+                kv_weight = jnp.transpose(kv_weight, (0, 2, 1, 3))
+                set_nested(model, (*nnx_layer, "kv_einsum", "w"), kv_weight)
+        else:
+            # MHA: combined qkv_einsum
+            # qkv_einsum.w: [3, num_heads, features, head_dim]
+            if "q" in qkv_weights and "k" in qkv_weights and "v" in qkv_weights:
+                q_weight = qkv_weights["q"]  # [embed_dim, num_heads * head_dim]
+                k_weight = qkv_weights["k"]
+                v_weight = qkv_weights["v"]
+                # Reshape each to [embed_dim, num_heads, head_dim]
+                q_weight = q_weight.reshape(gemma_config.embed_dim, gemma_config.num_heads, gemma_config.head_dim)
+                k_weight = k_weight.reshape(gemma_config.embed_dim, gemma_config.num_heads, gemma_config.head_dim)
+                v_weight = v_weight.reshape(gemma_config.embed_dim, gemma_config.num_heads, gemma_config.head_dim)
+                # Stack to [3, embed_dim, num_heads, head_dim]
+                qkv_weight = jnp.stack([q_weight, k_weight, v_weight], axis=0)
+                # Transpose to [3, num_heads, embed_dim, head_dim]
+                qkv_weight = jnp.transpose(qkv_weight, (0, 2, 1, 3))
+                set_nested(model, (*nnx_layer, "qkv_einsum", "w"), qkv_weight)
+
+    # Handle remaining weights (non-QKV)
     for hf_name, nnx_path in weight_mapping.items():
         if hf_name in state_dict:
             try:
                 weight = np_to_jax(state_dict[hf_name])
+
+                # Handle output projection (attn_vec_einsum)
+                # attn_vec_einsum.w: [num_heads, head_dim, features]
+                # HuggingFace o_proj: [embed_dim, num_heads * head_dim]
+                if "o_proj.weight" in hf_name:
+                    weight = weight.T  # [embed_dim, num_heads * head_dim] -> [num_heads * head_dim, embed_dim]
+                    weight = weight.reshape(gemma_config.num_heads, gemma_config.head_dim, gemma_config.embed_dim)
+                    set_nested(model, nnx_path, weight)
+                    loaded_count += 1
+                    continue
 
                 # Transpose linear weights (HuggingFace: [out, in] -> NNX: [in, out])
                 if "weight" in hf_name and weight.ndim == 2:

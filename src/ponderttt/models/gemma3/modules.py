@@ -225,7 +225,8 @@ class Attention(nnx.Module):
           cache['k'], key_proj, slice_indices
       )
 
-    use_gqa = self.num_heads > self.num_kv_heads and self.num_kv_heads > 1
+    # GQA/MQA: when num_kv_heads < num_heads (includes MQA where num_kv_heads=1)
+    use_gqa = self.num_heads > self.num_kv_heads
     if use_gqa:
       # Reshape matrices to enable einsums over groups.
       num_groups = self.num_heads // self.num_kv_heads

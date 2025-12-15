@@ -196,6 +196,7 @@ class Gemma3Config:
             "final_logit_softcap": None,
             "local_base_frequency": 10_000,
             "global_base_frequency": 1_000_000,
+            "global_scale_factor": 8.0,
             "transpose_gating_einsum": True,
             "dtype": dtype,
         }

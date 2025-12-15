@@ -272,20 +272,22 @@ class Gemma3TTTModel(nnx.Module):
         input_ids: Array,
         position_ids: Optional[Array] = None,
         attention_mask: Optional[Array] = None,
+        cache: Cache | None = None,
         use_ttt: bool = True,
         gating_scale: Optional[Array] = None,
-    ) -> dict:
+    ) -> tuple[dict, Cache | None]:
         """Forward pass combining slow and fast weights.
 
         Args:
             input_ids: Input token IDs [batch, seq_len]
             position_ids: Position IDs [batch, seq_len]
             attention_mask: Attention mask [batch, seq_len]
+            cache: KV cache for incremental decoding
             use_ttt: Whether to apply TTT layer
             gating_scale: Optional scaling for TTT output (for PonderTTT gating)
 
         Returns:
-            Dictionary with:
+            Tuple of (output_dict, new_cache) where output_dict contains:
                 - logits: Output logits [batch, seq_len, vocab_size]
                 - ttt_stats: TTT layer statistics (if use_ttt=True)
         """
@@ -308,8 +310,8 @@ class Gemma3TTTModel(nnx.Module):
             )
 
         # Forward through base model (frozen)
-        hidden_states, _ = jax.lax.stop_gradient(
-            self.base_model(input_ids, position_ids, None, attn_mask)
+        hidden_states, new_cache = jax.lax.stop_gradient(
+            self.base_model(input_ids, position_ids, cache, attn_mask)
         )
 
         ttt_stats = None
@@ -353,7 +355,20 @@ class Gemma3TTTModel(nnx.Module):
         return {
             "logits": logits,
             "ttt_stats": ttt_stats,
-        }
+        }, new_cache
+
+    def init_cache(
+        self,
+        cache_size: int,
+        batch_size: int,
+        dtype: jnp.dtype = jnp.bfloat16,
+    ) -> Cache:
+        """Initialize KV cache for incremental decoding."""
+        return self.base_model.init_cache(
+            cache_size=cache_size,
+            batch_size=batch_size,
+            dtype=dtype,
+        )
 
     def freeze_base_model(self):
         """Freeze slow weights (pretrained Gemma 3).
