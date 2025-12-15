@@ -65,12 +65,17 @@ def fit_forward(model, input_ids, attention_mask, position_ids):
     ttt_loss_initial = ttt_stats.get("ttt_loss_step_0", jnp.array(0.0))
     ttt_loss_final = ttt_stats.get("ttt_loss_step_1", jnp.array(0.0))
     
+    # Ensure all are scalars (take mean over batch if necessary, though input is usually single batch or reduced)
+    # cross_entropy_loss returns a scalar (mean over batch).
+    # avg_entropy calculation above resulted in a scalar.
+    # ttt_loss_step_0 might be [B] or scalar depending on model. Let's force mean.
+    
     return {
-        "loss_skip": loss_skip,
-        "loss_update": loss_update,
-        "avg_entropy": avg_entropy,
-        "ttt_loss_initial": ttt_loss_initial,
-        "ttt_loss_final": ttt_loss_final
+        "loss_skip": jnp.mean(loss_skip),
+        "loss_update": jnp.mean(loss_update),
+        "avg_entropy": jnp.mean(avg_entropy),
+        "ttt_loss_initial": jnp.mean(ttt_loss_initial),
+        "ttt_loss_final": jnp.mean(ttt_loss_final)
     }
 
 def main():
