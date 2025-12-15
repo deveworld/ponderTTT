@@ -1062,7 +1062,7 @@ def evaluate_model(
     }
 
     # RNG key for stochastic evaluation
-    rng_key = jax.random.PRPRNGKey(seed)
+    rng_key = jax.random.PRNGKey(seed)
 
     # JIT-compiled functions
     @nnx.jit
