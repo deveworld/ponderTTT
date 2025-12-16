@@ -257,38 +257,50 @@ phase2_eval_id() {
         fi
     fi
 
-    # 1B Evaluation (Fresh)
+    # 1B Evaluation
     if [ "$RUN_1B" = true ]; then
-        log_info "Evaluating 1B (Fresh Weights)..."
-        run_experiment "Eval 1B Python" \
-            python -m ponderttt.experiments.compare_methods \
-                --model_scale 1b \
-                --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
-                --batch_size $BATCH_SIZE_LARGE \
-                --language Python \
-                --skip_examples $SKIP_EXAMPLES \
-                --output_dir outputs/eval/1b_python \
-                --eval_ttt_loss \
-                --eval_ttt_improvement \
-                $INVERT_SIGNAL \
-                $TTT_BASE_LR_ARG
+        local ckpt_1b_update1=$(get_latest_checkpoint "outputs/baselines/1b_update1/checkpoints")
+        if [ -z "$ckpt_1b_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 1B. Run Phase 1 first!"
+        else
+            log_info "Using UPDATE_1 checkpoint: $ckpt_1b_update1"
+            run_experiment "Eval 1B Python" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 1b \
+                    --update1_checkpoint "$ckpt_1b_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
+                    --batch_size $BATCH_SIZE_LARGE \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/1b_python \
+                    --eval_ttt_loss \
+                    --eval_ttt_improvement \
+                    $INVERT_SIGNAL \
+                    $TTT_BASE_LR_ARG
+        fi
     fi
 
-    # XL Evaluation (Fresh)
+    # XL Evaluation
     if [ "$RUN_XL" = true ]; then
-        log_info "Evaluating XL (Fresh Weights)..."
-        run_experiment "Eval XL Python" \
-            python -m ponderttt.experiments.compare_methods \
-                --model_scale xl \
-                --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
-                --batch_size $BATCH_SIZE_LARGE \
-                --language Python \
-                --skip_examples $SKIP_EXAMPLES \
-                --output_dir outputs/eval/xl_python \
-                --eval_ttt_loss \
-                --eval_ttt_improvement \
-                $INVERT_SIGNAL \
-                $TTT_BASE_LR_ARG
+        local ckpt_xl_update1=$(get_latest_checkpoint "outputs/baselines/xl_update1/checkpoints")
+        if [ -z "$ckpt_xl_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for XL. Run Phase 1 first!"
+        else
+            log_info "Using UPDATE_1 checkpoint: $ckpt_xl_update1"
+            run_experiment "Eval XL Python" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale xl \
+                    --update1_checkpoint "$ckpt_xl_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
+                    --batch_size $BATCH_SIZE_LARGE \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/xl_python \
+                    --eval_ttt_loss \
+                    --eval_ttt_improvement \
+                    $INVERT_SIGNAL \
+                    $TTT_BASE_LR_ARG
+        fi
     fi
 
     log_info "Phase 2 Complete!"
