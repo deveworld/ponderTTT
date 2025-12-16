@@ -14,12 +14,12 @@ This is **inference-compatible** because the gating signal (reconstruction loss)
  
 ```mermaid
 graph TD
-    A[Input Chunk] --> B[TTT Forward (No Update)]
+    A[Input Chunk] --> B["TTT Forward (No Update)"]
     B --> C{Compute Recon Loss L_rec}
     C --> D{Check Scale & Threshold}
-    D -- "125M: L_rec > τ" --> E[UPDATE (Learn)]
+    D -- "125M: L_rec > τ" --> E["UPDATE (Learn)"]
     D -- "350M+: L_rec < τ" --> E
-    D -- "Otherwise" --> F[SKIP (Infer)]
+    D -- "Otherwise" --> F["SKIP (Infer)"]
     E --> G[Update TTT State W_t]
     G --> H[Final Forward Pass]
     F --> H
@@ -214,7 +214,7 @@ ponderttt/
     │   ├── compare_methods.py   # Gating method comparison
     │   └── analyze_signals.py   # Signal correlation analysis
     └── data/
-        └── pipeline.py          # Streaming data pipeline
+        └── dataset.py           # Streaming data pipeline
 ```
 
 ## Citation
