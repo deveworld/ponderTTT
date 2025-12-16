@@ -213,6 +213,12 @@ phase2_eval_id() {
     # Training uses ~160K examples, so skip those for fair evaluation
     local SKIP_EXAMPLES=160000
 
+    # Determine suffix for output directory based on invert_signal
+    local INVERTED_SUFFIX=""
+    if [ -n "$INVERT_SIGNAL" ]; then
+        INVERTED_SUFFIX="_inverted"
+    fi
+
     # 125M Evaluation
     if [ "$RUN_125M" = true ]; then
         local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
@@ -227,7 +233,7 @@ phase2_eval_id() {
                     --num_eval_batches $NUM_EVAL_BATCHES_125M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/125m_python \
+                    --output_dir outputs/eval/125m_python$INVERTED_SUFFIX \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
                     $INVERT_SIGNAL \
@@ -249,7 +255,7 @@ phase2_eval_id() {
                     --num_eval_batches $NUM_EVAL_BATCHES_350M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/350m_python \
+                    --output_dir outputs/eval/350m_python$INVERTED_SUFFIX \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
                     $INVERT_SIGNAL \
@@ -272,7 +278,7 @@ phase2_eval_id() {
                     --batch_size $BATCH_SIZE_LARGE \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/1b_python \
+                    --output_dir outputs/eval/1b_python$INVERTED_SUFFIX \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
                     $INVERT_SIGNAL \
@@ -295,7 +301,7 @@ phase2_eval_id() {
                     --batch_size $BATCH_SIZE_LARGE \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/xl_python \
+                    --output_dir outputs/eval/xl_python$INVERTED_SUFFIX \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
                     $INVERT_SIGNAL \
