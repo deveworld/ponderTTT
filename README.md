@@ -11,6 +11,20 @@ PonderTTT introduces **Adaptive Test-Time Training (TTT)** with a fully self-sup
 **TTT Reconstruction Loss** → Decides whether to update or skip.
 
 This is **inference-compatible** because the gating signal (reconstruction loss) does not require ground-truth labels.
+ 
+```mermaid
+graph TD
+    A[Input Chunk] --> B[TTT Forward (No Update)]
+    B --> C{Compute Recon Loss L_rec}
+    C --> D{Check Scale & Threshold}
+    D -- "125M: L_rec > τ" --> E[UPDATE (Learn)]
+    D -- "350M+: L_rec < τ" --> E
+    D -- "Otherwise" --> F[SKIP (Infer)]
+    E --> G[Update TTT State W_t]
+    G --> H[Final Forward Pass]
+    F --> H
+    H --> I[Next Token Prediction]
+```
 
 ### How It Works
 
