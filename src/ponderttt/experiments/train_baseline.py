@@ -368,9 +368,12 @@ def main():
         )
 
         # Data skipping logic for resume
+        # start_chunk is the total number of chunks processed (always a multiple of batch_size)
+        # Each batch processes: batch_size * chunks_per_sequence chunks
         chunks_per_seq = seq_length // chunk_size
-        batches_to_skip = start_chunk // chunks_per_seq
-        remainder_chunks = start_chunk % chunks_per_seq
+        chunks_per_batch = batch_size * chunks_per_seq
+        batches_to_skip = start_chunk // chunks_per_batch
+        remainder_chunks = start_chunk % chunks_per_batch
         
         if batches_to_skip > 0:
             print(f"Skipping {batches_to_skip} batches to resume from chunk {start_chunk}...")
@@ -401,7 +404,9 @@ def main():
                 num_chunks_available = batch["chunks"].shape[1]
                 for chunk_idx in range(num_chunks_available):
                     # Skip already processed chunks in the first batch after resume
-                    if first_batch and chunk_idx < remainder_chunks:
+                    # remainder_chunks is in units of total chunks, convert to chunk_idx units
+                    chunk_positions_to_skip = remainder_chunks // batch_size
+                    if first_batch and chunk_idx < chunk_positions_to_skip:
                         continue
 
                     if chunks_processed >= args.max_chunks:
