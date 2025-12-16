@@ -1,0 +1,11 @@
+{
+  "exclude": [
+    ".venv",
+    "dist",
+    "archive"
+  ],
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "pythonVersion": "3.13",
+  "typeCheckingMode": "basic"
+}

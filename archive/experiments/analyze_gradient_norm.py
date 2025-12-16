@@ -1,3 +1,5 @@
+# type: ignore
+# pyright: reportMissingImports=false
 """
 Gradient Norm & TTT Loss Improvement vs Oracle Advantage 상관관계 분석.
 

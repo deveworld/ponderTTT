@@ -1,3 +1,5 @@
+# type: ignore
+# pyright: reportMissingImports=false
 """
 Compare gating methods: SKIP, UPDATE_1, Random Skip, Oracle, TTT Improvement Gating.
 

@@ -51,4 +51,4 @@ gpu12 = ["jax[cuda12]"]
 tpu = ["jax[tpu]"]
 
 [tool.pyright]
-exclude = [".venv/**", "dist/**"]
+exclude = [".venv/**", "dist/**", "archive/**"]

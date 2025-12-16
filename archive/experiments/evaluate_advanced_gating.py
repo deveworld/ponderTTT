@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# type: ignore
+# pyright: reportMissingImports=false
 """
 Evaluate advanced multi-signal gating for Run phase.
 
