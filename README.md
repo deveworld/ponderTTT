@@ -26,14 +26,12 @@ This is **inference-compatible** because the gating signal (reconstruction loss)
 
 | Model | Language | Baseline (SKIP) | Oracle | **Recon Gating** | **Oracle Capture** |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **125M** | Python | 3.935 | 2.684 | **2.686** | **99.5%** |
-| **125M** | JavaScript | 4.374 | 3.020 | **3.023** | **99.3%** |
-| **125M** | Java | 4.927 | 3.342 | **3.357** | **95.7%** |
-| **125M** | Go | 10.07 | 6.306 | **6.372** | **82.3%** |
-| **350M** | Python | 4.074 | 3.285 | **3.285** | **100.0%** |
-| **350M** | JavaScript | 4.447 | 3.597 | **3.597** | **100.0%** |
-| **350M** | Java | 4.806 | 3.933 | **3.933** | **99.7%** |
-| **350M** | Go | 8.525 | 7.098 | **7.098** | **100.0%** |
+| **125M** | Python | 3.935 | 2.684 | **2.698** | **98.9%** |
+| **125M** | JavaScript | 4.374 | 3.020 | **3.099** | **94.2%** |
+| **125M** | Java | 4.927 | 3.344 | **3.403** | **96.3%** |
+| **125M** | Go | 10.07 | 6.311 | **6.472** | **95.7%** |
+
+> **Note**: 350M Python shows negative correlation (r=-0.60). Standard Recon Gating fails (3.78 > Random 3.27). **Inverted Gating** (update on low loss) is required for 350M+ models.
 
 ### Correlation: Reconstruction Loss vs Oracle Advantage
 

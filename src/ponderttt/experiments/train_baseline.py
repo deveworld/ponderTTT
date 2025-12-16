@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument(
         "--model_scale",
         type=str,
-        choices=["125m", "350m", "1b"],
+        choices=["125m", "350m", "1b", "xl"],
         default="125m",
         help="Model scale",
     )
@@ -159,6 +159,7 @@ def get_model_name(model_scale: str) -> str:
         "125m": "gpt2",
         "350m": "gpt2-medium",
         "1b": "gpt2-large",
+        "xl": "gpt2-xl",
     }
     return mapping[model_scale]
 
@@ -241,7 +242,7 @@ def main():
         if args.fast_weight_type == "lora":
             from ponderttt.models import LoRAConfig
             lora_config = LoRAConfig(
-                hidden_dim=768 if args.model_scale == "125m" else 1024 if args.model_scale == "350m" else 1280,
+                hidden_dim=768 if args.model_scale == "125m" else 1024 if args.model_scale == "350m" else 1280 if args.model_scale == "1b" else 1600,
                 rank=args.lora_rank,
                 alpha=float(args.lora_rank),
                 dropout_rate=0.1,
