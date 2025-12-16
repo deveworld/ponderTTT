@@ -51,7 +51,7 @@ graph LR
 
 | Model | Parameters | **Recon Loss (r)** | TTT Improvement (r) | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **125M** | 125M | **+0.89** | +0.84 | Normal Gating |
+| **125M** | 125M | **+0.86** | +0.84 | Normal Gating |
 | **350M** | 350M | **-0.60** | -0.82 | Inverted Gating |
 | **1B** | 774M | **-0.66** | -0.72 | Inverted Gating |
 | **XL** | 1.5B | **-0.86** | -0.89 | Inverted Gating |

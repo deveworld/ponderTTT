@@ -78,7 +78,7 @@ def benchmark():
     print("Warmup complete")
 
     # Benchmark
-    n_iters = 50
+    n_iters = 500
 
     # Measure SKIP
     block_leaves(input_ids)
