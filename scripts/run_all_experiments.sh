@@ -213,12 +213,6 @@ phase2_eval_id() {
     # Training uses ~160K examples, so skip those for fair evaluation
     local SKIP_EXAMPLES=160000
 
-    # Determine suffix for output directory based on invert_signal
-    local INVERTED_SUFFIX=""
-    if [ -n "$INVERT_SIGNAL" ]; then
-        INVERTED_SUFFIX="_inverted"
-    fi
-
     # 125M Evaluation
     if [ "$RUN_125M" = true ]; then
         local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
@@ -335,7 +329,7 @@ phase3_eval_ood() {
                         --update1_checkpoint "$ckpt_125m_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
                         --language "$lang" \
-                        --output_dir "outputs/eval/125m_${lang_lower}" \
+                        --output_dir "outputs/eval/125m_${lang_lower}${INVERTED_SUFFIX}" \
                         --eval_ttt_loss \
                         --eval_ttt_improvement \
                         $INVERT_SIGNAL
@@ -579,6 +573,12 @@ done
 if [ "$RUN_125M" = false ] && [ "$RUN_350M" = false ] && [ "$RUN_1B" = false ] && [ "$RUN_XL" = false ]; then
     RUN_125M=true
     RUN_350M=true
+fi
+
+# Determine suffix for output directory based on invert_signal (global)
+INVERTED_SUFFIX=""
+if [ -n "$INVERT_SIGNAL" ]; then
+    INVERTED_SUFFIX="_inverted"
 fi
 
 # Log which models will be run
