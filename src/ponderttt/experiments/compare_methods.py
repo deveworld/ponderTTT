@@ -23,6 +23,11 @@ from ..models import TTTLayer, load_ttt_model, TTTTransformerLM, TTTModel
 from ..utils import cross_entropy_loss
 from ..utils.checkpointing import load_checkpoint, unwrap_state
 
+import json
+
+# Global correlation data collector
+_correlation_data: dict = {}
+
 
 def permute_within_chunks(input_ids: jax.Array, seed: int) -> jax.Array:
     """Permute tokens randomly within each chunk to destroy local structure."""
@@ -497,6 +502,12 @@ def evaluate_ttt_improvement_gating(
         print(f"    Pearson r:  {pearson_r:.4f}")
         print(f"    Spearman ρ: {spearman_r:.4f}")
 
+        # Save to global
+        _correlation_data["ttt_improvement"] = {
+            "pearson_r": float(pearson_r) if not np.isnan(pearson_r) else None,
+            "spearman_r": float(spearman_r) if not np.isnan(spearman_r) else None,
+        }
+
         # Top-k overlap
         k = len(all_ttt_improvements) // 2
         ttt_sorted = np.argsort(ttt_arr)
@@ -513,6 +524,12 @@ def evaluate_ttt_improvement_gating(
         r_skip, _ = scipy_stats.pearsonr(loss_skip_arr, adv_arr)
         rho_skip, _ = scipy_stats.spearmanr(loss_skip_arr, adv_arr)
         print(f"    Loss Skip vs Oracle:        r={r_skip:.4f}, ρ={rho_skip:.4f}")
+
+        # Save to global
+        _correlation_data["loss_skip"] = {
+            "pearson_r": float(r_skip) if not np.isnan(r_skip) else None,
+            "spearman_r": float(rho_skip) if not np.isnan(rho_skip) else None,
+        }
 
         # Simulate loss_skip gating (high loss → update)
         skip_threshold = np.median(loss_skip_arr)
@@ -911,6 +928,12 @@ def evaluate_ttt_loss_gating(
         print(f"\n  [TTT Recon Gating] Correlation with Oracle:")
         print(f"    Pearson r:  {pearson_r:.4f}")
         print(f"    Spearman ρ: {spearman_r:.4f}")
+
+        # Save to global
+        _correlation_data["ttt_recon_loss"] = {
+            "pearson_r": float(pearson_r) if not np.isnan(pearson_r) else None,
+            "spearman_r": float(spearman_r) if not np.isnan(spearman_r) else None,
+        }
 
     return pd.DataFrame(results)
 
@@ -1668,6 +1691,12 @@ def main():
     summary.to_csv(output_path / "summary.csv")
     summary_real.to_csv(output_path / "summary_real_code.csv")
     full_df.to_csv(output_path / "detailed_results.csv")
+
+    # Save correlation data
+    if _correlation_data:
+        with open(output_path / "correlation.json", "w") as f:
+            json.dump(_correlation_data, f, indent=2)
+        print(f"Correlation data saved to {output_path / 'correlation.json'}")
 
     # Plot
     plt.figure(figsize=(10, 6))
