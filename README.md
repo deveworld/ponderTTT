@@ -13,7 +13,7 @@ PonderTTT introduces **Adaptive Test-Time Training (TTT)** with a fully self-sup
 This is **inference-compatible** because the gating signal (reconstruction loss) does not require ground-truth labels.
  
 ```mermaid
-graph TD
+graph LR
     A[Input Chunk] --> B["TTT Forward (No Update)"]
     B --> C{Compute Recon Loss L_rec}
     C --> D{Check Scale & Threshold}
