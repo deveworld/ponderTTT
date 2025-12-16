@@ -336,6 +336,7 @@ def load_ttt_model(
             "gpt2": "125m",
             "gpt2-medium": "350m",
             "gpt2-large": "1b",
+            "gpt2-xl": "xl",
         }
         model_size = model_size_map.get(model_name, "125m")
         ttt_config = TTTConfig.for_gpt2(model_size)
