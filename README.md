@@ -33,16 +33,16 @@ This is **inference-compatible** because the gating signal (reconstruction loss)
 
 > **Note**: 350M Python shows negative correlation (r=-0.60). Standard Recon Gating fails (3.78 > Random 3.27). **Inverted Gating** (update on low loss) is required for 350M+ models.
 
-### Correlation: Reconstruction Loss vs Oracle Advantage
+### Scaling Law: Correlation vs Model Size
 
-| Model | Language | **Recon Loss (Ours)** | TTT Improvement | Note |
+| Model | Parameters | **Recon Loss (r)** | TTT Improvement (r) | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **125M** | Python | **+0.89** | +0.84 | Both positive |
-| **125M** | Go | **+0.92** | +0.40 | Recon more robust |
-| **350M** | Python | **-0.60** | -0.82 | **Inverted** |
-| **350M** | Go | **-0.94** | -0.83 | **Inverted** |
+| **125M** | 125M | **+0.89** | +0.84 | Normal Gating |
+| **350M** | 350M | **-0.60** | -0.82 | Inverted Gating |
+| **1B** | 774M | **-0.66** | -0.72 | Inverted Gating |
+| **XL** | 1.5B | **-0.86** | -0.89 | Inverted Gating |
 
-> **Key Finding**: For 350M+ models, the correlation between reconstruction loss and Oracle Advantage is **negative**. This means high reconstruction loss actually *hurts* performance. We use **Inverted Gating** (update on *low* loss) for larger models.
+> **Scaling Law**: As model size increases, the correlation between reconstruction loss and Oracle Advantage becomes **more negative**. The correlation crosses zero between 125M and 350M, and continues to decrease. This means larger models require **Inverted Gating** (update on low loss instead of high loss).
 
 ## Technical Architecture
 
@@ -52,10 +52,10 @@ Pure JAX/Flax NNX implementation with multi-scale model support.
 
 | Model | Parameters | Status |
 |-------|------------|--------|
-| GPT-2 125M | 125M | ✅ Validated (Recon Gating) |
-| GPT-2 350M | 350M | ✅ Validated (Inverted Gating) |
-| GPT-2 Large | 774M | 🧪 Experimental |
-| GPT-2 XL | 1.5B | 🧪 Experimental |
+| GPT-2 125M | 125M | ✅ Validated (Normal Gating, r=+0.89) |
+| GPT-2 350M | 350M | ✅ Validated (Inverted Gating, r=-0.60) |
+| GPT-2 Large | 774M | ✅ Validated (Inverted Gating, r=-0.66) |
+| GPT-2 XL | 1.5B | ✅ Validated (Inverted Gating, r=-0.86) |
 | Gemma 3 1B | 1B | In Progress |
 | Gemma 3 4B | 4B | In Progress |
 | Gemma 3 12B | 12B | In Progress (TPU) |
