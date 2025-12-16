@@ -61,9 +61,10 @@ from ..utils.checkpointing import save_checkpoint, wait_for_checkpoints, load_ch
 
 try:
     import wandb
+
     WANDB_AVAILABLE = True
 except ImportError:
-    wandb = None # type: ignore[invalid-assignment]
+    wandb = None  # type: ignore[invalid-assignment]
     WANDB_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
@@ -106,7 +107,10 @@ def parse_args():
         help="Loss threshold for ADAPTIVE gating (Loss > Threshold -> Update)",
     )
     parser.add_argument(
-        "--max_chunks", type=int, default=100, help="Maximum number of chunks to process"
+        "--max_chunks",
+        type=int,
+        default=100,
+        help="Maximum number of chunks to process",
     )
     parser.add_argument(
         "--learning_rate", type=float, default=1e-4, help="Learning rate"
@@ -114,9 +118,7 @@ def parse_args():
     parser.add_argument(
         "--batch_size", type=int, default=4, help="Batch size per device"
     )
-    parser.add_argument(
-        "--seq_length", type=int, default=4096, help="Sequence length"
-    )
+    parser.add_argument("--seq_length", type=int, default=4096, help="Sequence length")
     parser.add_argument(
         "--chunk_size", type=int, default=512, help="Chunk size for TTT processing"
     )
@@ -128,28 +130,31 @@ def parse_args():
         help="Enable explicit multi-device sharding",
     )
     parser.add_argument(
-        "--dcn_data_parallelism", type=int, default=-1,
-        help="DCN (inter-host) data parallelism (-1 for auto)"
+        "--dcn_data_parallelism",
+        type=int,
+        default=-1,
+        help="DCN (inter-host) data parallelism (-1 for auto)",
     )
     parser.add_argument(
-        "--dcn_fsdp_parallelism", type=int, default=1,
-        help="DCN FSDP parallelism"
+        "--dcn_fsdp_parallelism", type=int, default=1, help="DCN FSDP parallelism"
     )
     parser.add_argument(
-        "--dcn_tensor_parallelism", type=int, default=1,
-        help="DCN tensor parallelism"
+        "--dcn_tensor_parallelism", type=int, default=1, help="DCN tensor parallelism"
     )
     parser.add_argument(
-        "--ici_data_parallelism", type=int, default=1,
-        help="ICI (intra-host) data parallelism"
+        "--ici_data_parallelism",
+        type=int,
+        default=1,
+        help="ICI (intra-host) data parallelism",
     )
     parser.add_argument(
-        "--ici_fsdp_parallelism", type=int, default=-1,
-        help="ICI FSDP parallelism (-1 for auto)"
+        "--ici_fsdp_parallelism",
+        type=int,
+        default=-1,
+        help="ICI FSDP parallelism (-1 for auto)",
     )
     parser.add_argument(
-        "--ici_tensor_parallelism", type=int, default=1,
-        help="ICI tensor parallelism"
+        "--ici_tensor_parallelism", type=int, default=1, help="ICI tensor parallelism"
     )
 
     # Output
@@ -248,7 +253,7 @@ def get_model_name(model_scale: str) -> str:
 def count_params(model: nnx.Module) -> int:
     """Count total parameters in NNX model."""
     state = nnx.state(model)
-    return sum(x.size for x in jax.tree.leaves(state) if hasattr(x, 'size'))
+    return sum(x.size for x in jax.tree.leaves(state) if hasattr(x, "size"))
 
 
 def create_sharding_config(args: argparse.Namespace) -> ShardingConfig:
@@ -272,9 +277,11 @@ def make_train_step(ssl_weight: float) -> Callable:
         input_ids: jax.Array,
         attention_mask: jax.Array,
         position_ids: jax.Array,
-        use_ttt: bool
+        use_ttt: bool,
     ) -> tuple[dict[str, jax.Array], dict[str, Any]]:
-        def loss_fn(model: TTTModel) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict[str, Any]]]:
+        def loss_fn(
+            model: TTTModel,
+        ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict[str, Any]]]:
             outputs = model(
                 input_ids,
                 attention_mask=attention_mask,
@@ -337,59 +344,51 @@ def make_adaptive_train_step(ssl_weight: float, threshold: float) -> Callable:
         input_ids: jax.Array,
         attention_mask: jax.Array,
         position_ids: jax.Array,
-        use_ttt: bool  # Unused, logic is inside
+        use_ttt: bool,  # Unused, logic is inside
     ) -> tuple[dict[str, jax.Array], dict[str, Any]]:
-        
-        # 1. First Pass (Forward Only) to check Loss
-        # We need gradients to be conditional, so we use jax.lax.cond
-        
-        # Helper to compute loss
-        def compute_loss(mdl):
-            # TTT Loss Skip implementation notes:
-            # "Loss Skip" uses the INITIAL loss (before update)
-            # Standard TTT:
-            #   Forward(theta_fast_old) -> Loss
-            #   Update theta_fast -> theta_fast_new
-            #   Forward(theta_fast_new) -> Final Preds
-            #
-            # TTTLayer updates internal state recursively.
-            # TTTLayer forward with train=True returns (output, stats) AND updates params
-            # NNX modules are stateful but functional updates require optimizer.update()
-            #
-            # PonderTTT paper: "We predict binary decision... If SKIP, no update."
-            # If UPDATE, we run TTT.
-            # The "Loss Skip" heuristic: Calculate L_initial. If L_initial > Thresh, run TTT. Else Skip.
-            #
-            # Implementation: Run with use_ttt=False to check SKIP loss.
-            # If SKIP Loss > Threshold, we run with use_ttt=True.
+        # 1. First Pass (Forward Only) to check Gating Signal
+        # User requested "TTT Reconstruction Loss" gating.
+        # This requires running TTT (use_ttt=True) to get ttt_loss_init.
 
-            outputs_skip = mdl(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=False)
-            logits_skip = outputs_skip["logits"]
-            
-            # Compute partial CE loss for gating
-            logits_for_loss = logits_skip[:, :-1]
-            labels = input_ids[:, 1:]
-            mask = attention_mask[:, 1:]
-            log_probs = jax.nn.log_softmax(logits_for_loss, axis=-1)
-            one_hot = jax.nn.one_hot(labels, logits_for_loss.shape[-1])
-            ce_loss = -jnp.sum(log_probs * one_hot, axis=-1)
-            # Scalar loss proxy (mean over batch/seq)
-            proxy_loss = jnp.sum(ce_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
-            
-            return proxy_loss
+        # Helper to compute gating signal
+        def compute_gating_signal(mdl):
+            # Run with use_ttt=True to get TTT stats
+            # We don't use the updated logits here, just the stats.
+            outputs = mdl(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_ttt=True,
+            )
+            ttt_stats = outputs.get("ttt_stats", {})
 
-        proxy_loss = compute_loss(model)
-        should_update = proxy_loss > threshold
-        
+            # Extract TTT Recon Loss (ttt_loss_init)
+            # This is the reconstruction loss BEFORE update.
+            signal = 0.0
+            if ttt_stats and "ttt_loss_init" in ttt_stats:
+                loss_val = ttt_stats["ttt_loss_init"]
+                # Handle array vs scalar
+                signal = jnp.mean(loss_val)
+
+            return signal
+
+        gating_metric = compute_gating_signal(model)
+        should_update = gating_metric > threshold
+
         # Define functions for conditional branches
         def perform_update(mdl, opt):
             # This is the standard train step
             def loss_fn(m):
                 # Standard TTT training logic
-                outputs = m(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=True)
+                outputs = m(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    use_ttt=True,
+                )
                 logits = outputs["logits"]
                 ttt_stats = outputs.get("ttt_stats", {})
-                
+
                 logits_for_loss = logits[:, :-1]
                 labels = input_ids[:, 1:]
                 mask = attention_mask[:, 1:]
@@ -397,27 +396,41 @@ def make_adaptive_train_step(ssl_weight: float, threshold: float) -> Callable:
                 one_hot = jax.nn.one_hot(labels, logits_for_loss.shape[-1])
                 ce_loss = -jnp.sum(log_probs * one_hot, axis=-1)
                 ce_loss = jnp.sum(ce_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
-                
+
                 # SSL aux loss
                 aux_loss = jnp.array(0.0)
                 if ssl_weight > 0 and ttt_stats:
-                     ssl_values = [x.mean() for x in [ttt_stats.get("ttt_loss_init")] if x is not None]
-                     if ssl_values:
-                         aux_loss = jnp.asarray(ssl_weight * ssl_values[0])
-                
+                    ssl_values = [
+                        x.mean()
+                        for x in [ttt_stats.get("ttt_loss_init")]
+                        if x is not None
+                    ]
+                    if ssl_values:
+                        aux_loss = jnp.asarray(ssl_weight * ssl_values[0])
+
                 return ce_loss + aux_loss, (ce_loss, aux_loss, ttt_stats)
 
-            (loss, (ce_loss, aux_loss, ttt_stats)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(mdl)
+            (loss, (ce_loss, aux_loss, ttt_stats)), grads = nnx.value_and_grad(
+                loss_fn, has_aux=True
+            )(mdl)
             opt.update(mdl, grads)
             metrics = {
-                "loss_total": loss, "loss_ce": ce_loss, "loss_aux": aux_loss, 
-                "perplexity": jnp.exp(ce_loss), "updated": 1.0
+                "loss_total": loss,
+                "loss_ce": ce_loss,
+                "loss_aux": aux_loss,
+                "perplexity": jnp.exp(ce_loss),
+                "updated": 1.0,
             }
             return metrics, ttt_stats
 
         def skip_update(mdl, opt):
             # Just eval
-            outputs = mdl(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=False)
+            outputs = mdl(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_ttt=False,
+            )
             logits = outputs["logits"]
             logits_for_loss = logits[:, :-1]
             labels = input_ids[:, 1:]
@@ -426,45 +439,48 @@ def make_adaptive_train_step(ssl_weight: float, threshold: float) -> Callable:
             one_hot = jax.nn.one_hot(labels, logits_for_loss.shape[-1])
             ce_loss = -jnp.sum(log_probs * one_hot, axis=-1)
             ce_loss = jnp.sum(ce_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
-            
+
             metrics = {
-                "loss_total": ce_loss, "loss_ce": ce_loss, "loss_aux": 0.0, 
-                "perplexity": jnp.exp(ce_loss), "updated": 0.0
+                "loss_total": ce_loss,
+                "loss_ce": ce_loss,
+                "loss_aux": 0.0,
+                "perplexity": jnp.exp(ce_loss),
+                "updated": 0.0,
             }
             return metrics, {}
 
         # Use lax.cond
         # Note: nnx.Optimizer and Model state updates in cond require care?
         # NNX handles state updates via functional API often, but here `opt.update` mutates.
-        # jax.lax.cond requires pure functions usually. 
+        # jax.lax.cond requires pure functions usually.
         # NNX + lax.cond: pass state in/out.
         # Effectively: (new_state, result) = cond(pred, true_fun, false_fun, state)
-        
+
         # We need to wrap state handling.
         # Simple for now: Just use python if/else if NOT jitting full Loop?
         # But we are JIT-ing `train_step`. So we must use `lax.cond`.
-        
+
         # Limitation: NNX state handling in lax.cond is tricky if structures differ.
         # But here inputs/outputs are same structure (state update).
-        # We'll use a simplified strategy: Always calculate gradients but mask them? 
+        # We'll use a simplified strategy: Always calculate gradients but mask them?
         # No, that defeats efficiency.
-        
+
         # For this prototype, let's implement the simpler "Fixed Action" training first,
-        # and support "ADAPTIVE" via Python control flow (slower) or accept we need to rewrite 
+        # and support "ADAPTIVE" via Python control flow (slower) or accept we need to rewrite
         # the JIT boundary to support branching if we want strict speed.
-        # However, `train_gemma3.py` JITs the step. 
-        
+        # However, `train_gemma3.py` JITs the step.
+
         # For now, let's stick to Python control flow inside the generator if "ADAPTIVE" is chosen,
         # OR just define `jit_train_adaptive_step` using `lax.cond`.
-        
+
         # Implementation of lax.cond with NNX:
         # TODO: Proper NNX cond support. Using hacky if/else assuming JIT unroll? No.
         # We will assume "ADAPTIVE" runs in Python loop for now (easier to debug).
-        
+
         if should_update:
-             return perform_update(model, optimizer)
+            return perform_update(model, optimizer)
         else:
-             return skip_update(model, optimizer)
+            return skip_update(model, optimizer)
 
     return train_step
 
@@ -477,7 +493,7 @@ def make_eval_step() -> Callable:
         input_ids: jax.Array,
         attention_mask: jax.Array,
         position_ids: jax.Array,
-        use_ttt: bool
+        use_ttt: bool,
     ) -> dict[str, jax.Array]:
         outputs = model(
             input_ids,
@@ -503,7 +519,11 @@ def make_eval_step() -> Callable:
 
 def main() -> None:
     args = parse_args()
-    seeds = [args.seed] if args.seeds is None else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
+    seeds = (
+        [args.seed]
+        if args.seeds is None
+        else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
+    )
 
     # Initialize JAX distributed for multi-host TPU setups
     # This must be called before any other JAX operations
@@ -580,7 +600,7 @@ def main() -> None:
         logger.info(f"Using ADAPTIVE gating with threshold {args.gating_threshold}")
     else:
         train_step_fn = make_train_step(args.ssl_weight)
-    
+
     eval_step_fn = make_eval_step()
 
     def init_model(seed: int) -> tuple[TTTModel, Any]:
@@ -606,7 +626,9 @@ def main() -> None:
 
     total_params = count_params(model)
     trainable_state = model.get_trainable_params()
-    trainable_params = sum(x.size for x in jax.tree.leaves(trainable_state) if hasattr(x, 'size'))
+    trainable_params = sum(
+        x.size for x in jax.tree.leaves(trainable_state) if hasattr(x, "size")
+    )
 
     logger.info(f"  Total parameters: {total_params:,}")
     logger.info(f"  Trainable parameters (TTT layer): {trainable_params:,}")
@@ -639,21 +661,23 @@ def main() -> None:
             # For this "Phase 2" implementation, we'll try JIT but might need `static_argnums`.
             # Actually, `should_update` is dynamic.
             # We'll rely on NNX's ability or fall back to Python dispatch.
-            # For absolute safety and rigorous experimental results, we use NO JIT for the adaptive branching 
+            # For absolute safety and rigorous experimental results, we use NO JIT for the adaptive branching
             # (jit the inner functions manually in make_adaptive_train_step) or accept slower run.
             # For now, let's NOT jit the top-level adaptive step, but jit the sub-functions inside it.
-            jit_train_step = train_step_fn # Expect internal JIT
+            jit_train_step = train_step_fn  # Expect internal JIT
         else:
-            jit_train_step = partial(jax.jit, static_argnames=['use_ttt'])(train_step_fn)
-        
-        jit_eval_step = partial(jax.jit, static_argnames=['use_ttt'])(eval_step_fn)
+            jit_train_step = partial(jax.jit, static_argnames=["use_ttt"])(
+                train_step_fn
+            )
+
+        jit_eval_step = partial(jax.jit, static_argnames=["use_ttt"])(eval_step_fn)
     else:
         # Auto sharding
         if args.action == "ADAPTIVE":
-             jit_train_step = train_step_fn # Internal JIT
+            jit_train_step = train_step_fn  # Internal JIT
         else:
-             jit_train_step = nnx.jit(train_step_fn, static_argnames=['use_ttt'])
-        jit_eval_step = nnx.jit(eval_step_fn, static_argnames=['use_ttt'])
+            jit_train_step = nnx.jit(train_step_fn, static_argnames=["use_ttt"])
+        jit_eval_step = nnx.jit(eval_step_fn, static_argnames=["use_ttt"])
 
     # Training loop
     logger.info("\nStarting training...")
@@ -676,7 +700,9 @@ def main() -> None:
         # Resume logic
         if args.resume_from and len(seeds) == 1:
             logger.info(f"Resuming from checkpoint: {args.resume_from}")
-            load_target = {"state": {"model": nnx.state(model), "optimizer": nnx.state(optimizer)}}
+            load_target = {
+                "state": {"model": nnx.state(model), "optimizer": nnx.state(optimizer)}
+            }
             ckpt = load_checkpoint(args.resume_from, target=load_target)
             nnx.update(model, ckpt["state"]["model"])
             nnx.update(optimizer, ckpt["state"]["optimizer"])
@@ -720,7 +746,9 @@ def main() -> None:
 
         logger.info(f"\n=== Running seed {seed} ===")
 
-        with tqdm(total=args.max_chunks, initial=start_chunk, desc=f"Training seed {seed}") as pbar:
+        with tqdm(
+            total=args.max_chunks, initial=start_chunk, desc=f"Training seed {seed}"
+        ) as pbar:
             while chunks_processed < args.max_chunks:
                 try:
                     batch = next(data_iter)
@@ -738,18 +766,24 @@ def main() -> None:
                         break
 
                     chunk_input_ids = batch["chunks"][:, chunk_idx, :]
-                    chunk_attention_mask = batch["chunk_attention_mask"][:, chunk_idx, :]
+                    chunk_attention_mask = batch["chunk_attention_mask"][
+                        :, chunk_idx, :
+                    ]
                     chunk_position_ids = jnp.arange(
                         chunk_idx * chunk_size,
                         (chunk_idx + 1) * chunk_size,
-                        dtype=jnp.int32
+                        dtype=jnp.int32,
                     )[None, :].repeat(batch["chunks"].shape[0], axis=0)
 
                     # Apply data sharding if enabled
                     if data_sharding is not None:
                         chunk_input_ids = jax.device_put(chunk_input_ids, data_sharding)
-                        chunk_attention_mask = jax.device_put(chunk_attention_mask, data_sharding)
-                        chunk_position_ids = jax.device_put(chunk_position_ids, data_sharding)
+                        chunk_attention_mask = jax.device_put(
+                            chunk_attention_mask, data_sharding
+                        )
+                        chunk_position_ids = jax.device_put(
+                            chunk_position_ids, data_sharding
+                        )
 
                     # Check for valid tokens
                     num_valid_tokens = jnp.sum(chunk_attention_mask[:, 1:])
@@ -758,14 +792,23 @@ def main() -> None:
 
                     if action_steps == 0:
                         metrics = jit_eval_step(
-                            model, chunk_input_ids, chunk_attention_mask, chunk_position_ids, use_ttt=False
+                            model,
+                            chunk_input_ids,
+                            chunk_attention_mask,
+                            chunk_position_ids,
+                            use_ttt=False,
                         )
                         metrics["loss_total"] = metrics["loss_ce"]
                         metrics["loss_aux"] = jnp.array(0.0)
                     else:
                         for _ in range(action_steps):
                             metrics, _ = jit_train_step(
-                                model, optimizer, chunk_input_ids, chunk_attention_mask, chunk_position_ids, use_ttt=True
+                                model,
+                                optimizer,
+                                chunk_input_ids,
+                                chunk_attention_mask,
+                                chunk_position_ids,
+                                use_ttt=True,
                             )
 
                     # Stability check
@@ -781,37 +824,49 @@ def main() -> None:
                     total_cost += cost_multiplier
                     chunks_processed += 1
 
-                    pbar.set_postfix({
-                        "loss_ce": f"{loss_ce:.4f}",
-                        "ppl": f"{float(metrics['perplexity']):.2f}",
-                    })
+                    pbar.set_postfix(
+                        {
+                            "loss_ce": f"{loss_ce:.4f}",
+                            "ppl": f"{float(metrics['perplexity']):.2f}",
+                        }
+                    )
                     pbar.update(1)
 
                     # WandB logging
                     if args.wandb_project and WANDB_AVAILABLE and wandb is not None:
-                        wandb.log({
-                            f"seed_{seed}/loss_total": float(metrics['loss_total']),
-                            f"seed_{seed}/loss_ce": loss_ce,
-                            f"seed_{seed}/loss_aux": float(metrics['loss_aux']),
-                            f"seed_{seed}/perplexity": float(metrics['perplexity']),
-                            "chunks": chunks_processed,
-                        })
+                        wandb.log(
+                            {
+                                f"seed_{seed}/loss_total": float(metrics["loss_total"]),
+                                f"seed_{seed}/loss_ce": loss_ce,
+                                f"seed_{seed}/loss_aux": float(metrics["loss_aux"]),
+                                f"seed_{seed}/perplexity": float(metrics["perplexity"]),
+                                "chunks": chunks_processed,
+                            }
+                        )
 
                     if chunks_processed % 10 == 0:
                         denom = chunks_processed - start_chunk + 1e-6
                         avg_ce_loss = total_loss_ce / denom
                         avg_ppl = math.exp(avg_ce_loss)
                         logger.info(f"\nChunk {chunks_processed}/{args.max_chunks}:")
-                        logger.info(f"  Avg CE loss: {avg_ce_loss:.4f}, Avg PPL: {avg_ppl:.2f}")
+                        logger.info(
+                            f"  Avg CE loss: {avg_ce_loss:.4f}, Avg PPL: {avg_ppl:.2f}"
+                        )
 
                     # Periodic checkpoint
-                    if chunks_processed % args.save_every == 0 and chunks_processed < args.max_chunks:
+                    if (
+                        chunks_processed % args.save_every == 0
+                        and chunks_processed < args.max_chunks
+                    ):
                         checkpoint_dir = output_dir / "checkpoints"
                         logger.info(f"Saving checkpoint at chunk {chunks_processed}...")
                         save_checkpoint(
                             checkpoint_dir=checkpoint_dir,
                             step=chunks_processed,
-                            state={"model": nnx.state(model), "optimizer": nnx.state(optimizer)},
+                            state={
+                                "model": nnx.state(model),
+                                "optimizer": nnx.state(optimizer),
+                            },
                             metadata={"chunks": chunks_processed},
                         )
 
@@ -823,34 +878,39 @@ def main() -> None:
             final_avg_ce_loss = total_loss_ce / denom
             final_avg_ppl = math.exp(final_avg_ce_loss)
 
-            seed_results.append({
-                'seed': seed,
-                'chunks_processed': chunks_processed,
-                'final_loss': final_avg_ce_loss,
-                'final_perplexity': final_avg_ppl,
-                'total_cost': total_cost,
-            })
+            seed_results.append(
+                {
+                    "seed": seed,
+                    "chunks_processed": chunks_processed,
+                    "final_loss": final_avg_ce_loss,
+                    "final_perplexity": final_avg_ppl,
+                    "total_cost": total_cost,
+                }
+            )
 
             results = {
-                'model_scale': args.model_scale,
-                'model_name': model_name,
-                'action': args.action,
-                'num_ttt_steps': num_ttt_steps,
-                'cost_multiplier': cost_multiplier,
-                'chunks_processed': chunks_processed,
-                'final_loss': final_avg_ce_loss,
-                'final_perplexity': final_avg_ppl,
-                'learning_rate': args.learning_rate,
-                'seed': seed,
-                'total_cost': total_cost,
-                'seq_length': args.seq_length,
-                'chunk_size': args.chunk_size,
-                'enable_sharding': args.enable_sharding,
-                'num_devices': len(jax.devices()),
+                "model_scale": args.model_scale,
+                "model_name": model_name,
+                "action": args.action,
+                "num_ttt_steps": num_ttt_steps,
+                "cost_multiplier": cost_multiplier,
+                "chunks_processed": chunks_processed,
+                "final_loss": final_avg_ce_loss,
+                "final_perplexity": final_avg_ppl,
+                "learning_rate": args.learning_rate,
+                "seed": seed,
+                "total_cost": total_cost,
+                "seq_length": args.seq_length,
+                "chunk_size": args.chunk_size,
+                "enable_sharding": args.enable_sharding,
+                "num_devices": len(jax.devices()),
             }
 
-            results_file = output_dir / f"results_gemma3_{args.model_scale}_{args.action}_seed{seed}.json"
-            with open(results_file, 'w') as f:
+            results_file = (
+                output_dir
+                / f"results_gemma3_{args.model_scale}_{args.action}_seed{seed}.json"
+            )
+            with open(results_file, "w") as f:
                 json.dump(results, f, indent=2)
             logger.info(f"\nResults saved to: {results_file}")
 
@@ -866,12 +926,12 @@ def main() -> None:
 
     # Aggregate multi-seed results
     if seed_results and len(seed_results) > 1:
-        losses = jnp.array([r['final_loss'] for r in seed_results])
-        perplexities = jnp.array([r['final_perplexity'] for r in seed_results])
+        losses = jnp.array([r["final_loss"] for r in seed_results])
+        perplexities = jnp.array([r["final_perplexity"] for r in seed_results])
         from ..utils.statistics import bootstrap_ci, compute_iqm
 
         summary = {
-            "seeds": [r['seed'] for r in seed_results],
+            "seeds": [r["seed"] for r in seed_results],
             "loss_mean": float(losses.mean()),
             "loss_iqm": compute_iqm(losses),
             "loss_ci": bootstrap_ci(losses, n_bootstrap=1000),
@@ -879,7 +939,9 @@ def main() -> None:
             "ppl_iqm": compute_iqm(perplexities),
             "ppl_ci": bootstrap_ci(perplexities, n_bootstrap=1000),
         }
-        summary_file = output_dir / f"summary_gemma3_{args.model_scale}_{args.action}.json"
+        summary_file = (
+            output_dir / f"summary_gemma3_{args.model_scale}_{args.action}.json"
+        )
         with open(summary_file, "w") as f:
             json.dump(summary, f, indent=2)
         logger.info(f"\nSeed summary saved to {summary_file}")

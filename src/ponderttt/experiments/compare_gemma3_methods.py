@@ -36,20 +36,36 @@ logger = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare gating methods on Gemma 3")
-    
+
     # Model
-    parser.add_argument("--model_scale", type=str, choices=["1b", "4b", "12b"], default="4b")
-    parser.add_argument("--checkpoint_path", type=str, required=True, 
-                        help="Path to checkpoint. 'hf:google/gemma-3-4b-pt' or Orbax path")
-    
+    parser.add_argument(
+        "--model_scale", type=str, choices=["1b", "4b", "12b"], default="4b"
+    )
+    parser.add_argument(
+        "--checkpoint_path",
+        type=str,
+        required=True,
+        help="Path to checkpoint. 'hf:google/gemma-3-4b-pt' or Orbax path",
+    )
+
     # Experiment
-    parser.add_argument("--update_rate", type=float, default=0.5, help="Update budget (e.g. 0.5 = 50%)")
-    parser.add_argument("--num_batches", type=int, default=10, help="Number of batches to evaluate")
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size per device")
-    parser.add_argument("--language", type=str, default="Python", help="Dataset language")
-    
+    parser.add_argument(
+        "--update_rate", type=float, default=0.5, help="Update budget (e.g. 0.5 = 50%)"
+    )
+    parser.add_argument(
+        "--num_batches", type=int, default=10, help="Number of batches to evaluate"
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=1, help="Batch size per device"
+    )
+    parser.add_argument(
+        "--language", type=str, default="Python", help="Dataset language"
+    )
+
     # Sharding
-    parser.add_argument("--enable_sharding", action="store_true", help="Enable TPU sharding")
+    parser.add_argument(
+        "--enable_sharding", action="store_true", help="Enable TPU sharding"
+    )
     parser.add_argument("--dcn_data_parallelism", type=int, default=-1)
     parser.add_argument("--dcn_fsdp_parallelism", type=int, default=1)
     parser.add_argument("--dcn_tensor_parallelism", type=int, default=1)
@@ -59,7 +75,7 @@ def parse_args():
 
     parser.add_argument("--output_dir", type=str, default="outputs/gemma3_comparison")
     parser.add_argument("--seed", type=int, default=42)
-    
+
     return parser.parse_args()
 
 
@@ -85,30 +101,37 @@ def evaluate_oracle_gemma(
     Oracle evaluation for Gemma 3.
     Compute SKIP vs UPDATE loss for every chunk and measure Oracle upper bound.
     """
-    logger.info(f"Evaluating Oracle on {args.language} (Update Budget: {args.update_rate})")
-    
+    logger.info(
+        f"Evaluating Oracle on {args.language} (Update Budget: {args.update_rate})"
+    )
+
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         split="test",
         language=args.language,
         batch_size=args.batch_size,
-        seq_length=4096, # Gemma 3 context
+        seq_length=4096,  # Gemma 3 context
         chunk_size=512,
         max_examples=args.batch_size * args.num_batches * 2,
         num_workers=16,
     )
 
     # Define step functions
-    def step_fn(model, input_ids, attention_mask, position_ids, use_ttt, gating_scale=None):
+    def step_fn(
+        model, input_ids, attention_mask, position_ids, use_ttt, gating_scale=None
+    ):
         # Gemma3TTTModel returns (output_dict, cache) tuple
         out, _cache = model(
-            input_ids, 
-            attention_mask=attention_mask, 
-            position_ids=position_ids, 
-            use_ttt=use_ttt, 
-            gating_scale=gating_scale
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            use_ttt=use_ttt,
+            gating_scale=gating_scale,
         )
-        return cross_entropy_loss(out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:])
+        task_loss = cross_entropy_loss(
+            out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:]
+        )
+        return task_loss, out.get("ttt_stats")
 
     if mesh is not None:
         jit_step = nnx.jit(step_fn, static_argnames=("use_ttt",))
@@ -116,8 +139,14 @@ def evaluate_oracle_gemma(
         jit_step = nnx.jit(step_fn, static_argnames=("use_ttt",))
 
     results = {
-        "loss": [], "cost": [], "method": [], "decision": [],
-        "loss_skip_val": [], "loss_update_val": [], "advantage": []
+        "loss": [],
+        "cost": [],
+        "method": [],
+        "decision": [],
+        "loss_skip_val": [],
+        "loss_update_val": [],
+        "advantage": [],
+        "ttt_recon_loss": [],
     }
 
     chunk_stats = []
@@ -126,7 +155,7 @@ def evaluate_oracle_gemma(
         if i >= args.num_batches:
             break
 
-        chunks = batch["chunks"] # [B, num_chunks, chunk_size]
+        chunks = batch["chunks"]  # [B, num_chunks, chunk_size]
         masks = batch["chunk_attention_mask"]
         num_chunks = chunks.shape[1]
 
@@ -134,11 +163,11 @@ def evaluate_oracle_gemma(
         # But for efficiency, we can process batch of chunks if they are independent
         # Current data loader gives [B, num_chunks, L].
         # We iterate chunks in seq.
-        
+
         for c_idx in range(num_chunks):
             chunk_input = chunks[:, c_idx]
             chunk_mask = masks[:, c_idx]
-            
+
             # Check valid tokens
             # NOTE: This causes a host-device sync per chunk and can slow down evaluation.
             # For production, consider filtering in data loader or accepting all chunks.
@@ -146,7 +175,9 @@ def evaluate_oracle_gemma(
                 continue
 
             chunk_len = chunk_input.shape[-1]
-            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)[None, :] + c_idx * chunk_len
+            position_ids = (
+                jnp.arange(chunk_len, dtype=jnp.int32)[None, :] + c_idx * chunk_len
+            )
             position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
 
             # Apply sharding
@@ -156,40 +187,56 @@ def evaluate_oracle_gemma(
                 position_ids = jax.device_put(position_ids, data_sharding)
 
             # 1. SKIP Loss
-            loss_skip = jit_step(model, chunk_input, chunk_mask, position_ids, use_ttt=False)
-            
+            loss_skip, _ = jit_step(
+                model, chunk_input, chunk_mask, position_ids, use_ttt=False
+            )
+
             # 2. UPDATE Loss
             # Gating scale 1.0 needed? TTTLayer usually handles it.
-            loss_update = jit_step(model, chunk_input, chunk_mask, position_ids, use_ttt=True)
+            loss_update, ttt_stats = jit_step(
+                model, chunk_input, chunk_mask, position_ids, use_ttt=True
+            )
 
             # Host sync for stats
             loss_skip_val = float(loss_skip)
             loss_update_val = float(loss_update)
             advantage = loss_skip_val - loss_update_val
 
-            chunk_stats.append({
-                "batch_idx": i,
-                "chunk_idx": c_idx,
-                "loss_skip": loss_skip_val,
-                "loss_update": loss_update_val,
-                "advantage": advantage,
-            })
+            # Extract TTT Reconstruction Loss (ttt_loss_init)
+            # ttt_stats is a dict, values might be sharded arrays
+            if ttt_stats is not None and "ttt_loss_init" in ttt_stats:
+                ttt_recon_loss = float(ttt_stats["ttt_loss_init"])
+            else:
+                ttt_recon_loss = 0.0
+
+            chunk_stats.append(
+                {
+                    "batch_idx": i,
+                    "chunk_idx": c_idx,
+                    "loss_skip": loss_skip_val,
+                    "loss_update": loss_update_val,
+                    "advantage": advantage,
+                    "ttt_recon_loss": ttt_recon_loss,
+                }
+            )
 
     # Oracle Selection
     # Sort all processed chunks by advantage
     num_total = len(chunk_stats)
     num_update = max(1, int(num_total * args.update_rate))
-    
+
     sorted_stats = sorted(chunk_stats, key=lambda x: x["advantage"], reverse=True)
-    update_set = set((x["batch_idx"], x["chunk_idx"]) for x in sorted_stats[:num_update])
+    update_set = set(
+        (x["batch_idx"], x["chunk_idx"]) for x in sorted_stats[:num_update]
+    )
 
     # Record Method Results
     avg_loss_oracle = 0.0
-    avg_loss_baseline = 0.0 # All SKIP
+    avg_loss_baseline = 0.0  # All SKIP
 
     for stat in chunk_stats:
         key = (stat["batch_idx"], stat["chunk_idx"])
-        
+
         # Baseline
         avg_loss_baseline += stat["loss_skip"]
 
@@ -204,11 +251,12 @@ def evaluate_oracle_gemma(
             results["decision"].append("SKIP")
             results["cost"].append(1.0)
             avg_loss_oracle += stat["loss_skip"]
-            
+
         results["method"].append("Oracle")
         results["loss_skip_val"].append(stat["loss_skip"])
         results["loss_update_val"].append(stat["loss_update"])
         results["advantage"].append(stat["advantage"])
+        results["ttt_recon_loss"].append(stat["ttt_recon_loss"])
 
     avg_loss_oracle /= num_total
     avg_loss_baseline /= num_total
@@ -217,22 +265,40 @@ def evaluate_oracle_gemma(
     print(f"  Baseline (SKIP) Loss: {avg_loss_baseline:.4f}")
     print(f"  Oracle Loss:          {avg_loss_oracle:.4f}")
     print(f"  Oracle Advantage:     {avg_loss_baseline - avg_loss_oracle:.4f}")
-    
+
     # Save correlation data
     df = pd.DataFrame(results)
-    
-    # Analyze Loss Skip Correlation
-    # Loss Skip Gating: Use loss_skip > Threshold to decide UPDATE
+
+    # Analyze TTT Reconstruction Loss Correlation
+    # We want to know if high recon loss correlates with high advantage
     if len(df) > 0:
-        corr = df["loss_skip_val"].corr(df["advantage"])
-        print(f"  Correlation (Initial Loss vs Advantage): {corr:.4f}")
+        # Check TTT Recon Loss vs Advantage
+        # Positive Correlation => Standard Gating (High Loss -> High Improvement)
+        # Negative Correlation => Inverted Gating (Low Loss -> High Improvement)
+        corr_recon = df["ttt_recon_loss"].corr(df["advantage"])
+        print(f"  Correlation (TTT Recon Loss vs Advantage): {corr_recon:.4f}")
+
+        if corr_recon < 0:
+            print(
+                f"  [Insight] Negative correlation suggests INVERTED GATING might be optimal."
+            )
+            print(f"  (i.e., Update when Reconstruction Loss is LOW)")
+        else:
+            print(
+                f"  [Insight] Positive correlation suggests STANDARD GATING is optimal."
+            )
+            print(f"  (i.e., Update when Reconstruction Loss is HIGH)")
+
+        # Also check Loss Skip vs Advantage (for comparison)
+        corr_skip = df["loss_skip_val"].corr(df["advantage"])
+        print(f"  Correlation (Loss Skip vs Advantage):      {corr_skip:.4f}")
 
     return df
 
 
 def main():
     args = parse_args()
-    
+
     # Initialize Distributed
     if args.enable_sharding:
         jax.distributed.initialize()
@@ -252,7 +318,7 @@ def main():
     # Load Model
     model_name = f"gemma3-{args.model_scale}"
     logger.info(f"Loading {model_name} from {args.checkpoint_path}...")
-    
+
     # Use load_ttt_model which supports Gemma3
     model, config = load_ttt_model(
         model_name=model_name,
@@ -260,12 +326,12 @@ def main():
         dtype=jnp.bfloat16,
         seed=args.seed,
         checkpoint_path=args.checkpoint_path,
-        load_pretrained=True
+        load_pretrained=True,
     )
-    
+
     # Set to eval mode
     model.eval()
-    
+
     # Apply sharding to params if enabled
     if mesh is not None:
         # Setup sharding (this shards the params in place or returns sharded state)
@@ -278,15 +344,16 @@ def main():
         pass
 
     # Tokenizer
-    tokenizer = get_tokenizer("google/gemma-2-2b") # Use generic gemma tokenizer
+    tokenizer = get_tokenizer("google/gemma-2-2b")  # Use generic gemma tokenizer
 
     # Run Oracle Evaluation
     df = evaluate_oracle_gemma(model, tokenizer, args, mesh, data_sharding)
-    
+
     # Save
     csv_path = output_dir / f"oracle_{args.model_scale}_{args.language}.csv"
     df.to_csv(csv_path, index=False)
     logger.info(f"Saved results to {csv_path}")
+
 
 if __name__ == "__main__":
     main()
