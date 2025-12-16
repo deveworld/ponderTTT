@@ -358,7 +358,7 @@ phase3_eval_ood() {
                         --update1_checkpoint "$ckpt_350m_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
                         --language "$lang" \
-                        --output_dir "outputs/eval/350m_${lang_lower}" \
+                        --output_dir "outputs/eval/350m_${lang_lower}${INVERTED_SUFFIX}" \
                         --eval_ttt_loss \
                         --eval_ttt_improvement \
                         $INVERT_SIGNAL
