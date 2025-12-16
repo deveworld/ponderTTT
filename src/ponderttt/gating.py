@@ -57,7 +57,7 @@ class LossSkipGating(GatingStrategy):
             
         should_update = (loss > self.threshold)
         return GatingDecision(
-            should_update=should_update.astype(jnp.float32), 
+            should_update=jnp.asarray(should_update, dtype=jnp.float32),
             metrics={"loss": loss, "threshold": self.threshold}
         )
 

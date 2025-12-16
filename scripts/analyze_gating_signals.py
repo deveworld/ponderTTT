@@ -151,7 +151,6 @@ def collect_and_analyze(model_scale: str, checkpoint_path: str, num_batches: int
         seq_length=256,
         batch_size=1,
         skip_examples=160000,  # Use held-out data
-        seed=42,
     )
 
     # Define forward function
