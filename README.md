@@ -99,8 +99,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install the project (CPU)
 uv pip install -e .
 
-# GPU (CUDA)
+# GPU (CUDA 13)
 uv pip install -e . --group gpu
+
+# GPU (CUDA 12)
+uv pip install -e . --group gpu12
 
 # TPU
 uv pip install -e . --group tpu
