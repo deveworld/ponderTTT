@@ -47,12 +47,12 @@ def analyze_from_csv(csv_path: str):
     ttt_imp = df['ttt_improvement'].values
     advantage = df['advantage'].values
 
-    print(f"\n--- Correlation Analysis ---")
+    print("\n--- Correlation Analysis ---")
 
     # 1. TTT Improvement vs Advantage (current method)
     r_ttt, p_ttt = stats.pearsonr(ttt_imp, advantage)
     rho_ttt, _ = stats.spearmanr(ttt_imp, advantage)
-    print(f"\n1. TTT Improvement vs Oracle Advantage:")
+    print("\n1. TTT Improvement vs Oracle Advantage:")
     print(f"   Pearson r:  {r_ttt:.4f} (p={p_ttt:.2e})")
     print(f"   Spearman ρ: {rho_ttt:.4f}")
 
@@ -61,13 +61,13 @@ def analyze_from_csv(csv_path: str):
         loss_skip = df['loss_skip'].values
         r_skip, p_skip = stats.pearsonr(loss_skip, advantage)
         rho_skip, _ = stats.spearmanr(loss_skip, advantage)
-        print(f"\n2. Loss Skip vs Oracle Advantage:")
+        print("\n2. Loss Skip vs Oracle Advantage:")
         print(f"   Pearson r:  {r_skip:.4f} (p={p_skip:.2e})")
         print(f"   Spearman ρ: {rho_skip:.4f}")
 
     # 3. Simulate different gating strategies
-    print(f"\n--- Gating Strategy Simulation ---")
-    print(f"Target update rate: 50%")
+    print("\n--- Gating Strategy Simulation ---")
+    print("Target update rate: 50%")
 
     # Get loss values if available
     if 'loss_skip' not in df.columns:
@@ -99,7 +99,7 @@ def analyze_from_csv(csv_path: str):
         return losses.mean()
 
     if loss_update is not None:
-        print(f"\nAverage Loss by Strategy:")
+        print("\nAverage Loss by Strategy:")
         print(f"  Oracle (upper bound):     {compute_loss(decisions_oracle, loss_skip, loss_update):.4f}")
         print(f"  TTT Improvement:          {compute_loss(decisions_ttt, loss_skip, loss_update):.4f}")
         print(f"  Loss Skip (high→update):  {compute_loss(decisions_skip, loss_skip, loss_update):.4f}")
@@ -108,7 +108,7 @@ def analyze_from_csv(csv_path: str):
         print(f"  Always Update:            {loss_update.mean():.4f}")
 
     # Decision overlap with oracle
-    print(f"\nDecision Overlap with Oracle:")
+    print("\nDecision Overlap with Oracle:")
     print(f"  TTT Improvement:          {np.mean(decisions_ttt == decisions_oracle):.2%}")
     print(f"  Loss Skip (high→update):  {np.mean(decisions_skip == decisions_oracle):.2%}")
     print(f"  Random:                   {np.mean(decisions_random == decisions_oracle):.2%}")
@@ -130,7 +130,6 @@ def collect_and_analyze(model_scale: str, checkpoint_path: str, num_batches: int
 
     # Load checkpoint
     print(f"Loading checkpoint: {checkpoint_path}")
-    state = nnx.state(model)
     restored_state = load_checkpoint(checkpoint_path)
     nnx.update(model, restored_state)
 

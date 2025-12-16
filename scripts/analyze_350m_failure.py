@@ -2,7 +2,6 @@
 # dependencies = ["pandas", "scipy"]
 # ///
 import pandas as pd
-import numpy as np
 
 def analyze_failure():
     # Load data

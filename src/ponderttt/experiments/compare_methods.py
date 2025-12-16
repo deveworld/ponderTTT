@@ -846,6 +846,8 @@ def evaluate_loss_skip_gating(
         skip_topk = set(skip_sorted[-k:])  # High loss_skip
         adv_topk = set(adv_sorted[-k:])  # High advantage
         overlap = len(skip_topk & adv_topk) / k
+        print(f"    Top-50% overlap with Oracle: {overlap:.2%}")
+
     return pd.DataFrame(results)
 
 
@@ -953,9 +955,6 @@ def evaluate_ttt_loss_gating(
     all_advantages: list[float] = []
 
     assert isinstance(ttt_model, TTTTransformerLM)
-
-    # RNG key for stochastic evaluation (standard practice even if currently unused)
-    random_key = jax.random.PRNGKey(seed)
 
     for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
         if i >= num_batches:

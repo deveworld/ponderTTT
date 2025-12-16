@@ -869,7 +869,7 @@ def evaluate_threshold_gating(
 
     # Alternative gating signal analysis
     from scipy import stats
-    print(f"\n  [Alternative Gating Signals Analysis]")
+    print("\n  [Alternative Gating Signals Analysis]")
 
     # TTT Improvement correlation (current method)
     r_ttt, _ = stats.pearsonr(ttt_arr, adv_arr)

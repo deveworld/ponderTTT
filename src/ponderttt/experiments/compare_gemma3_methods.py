@@ -11,7 +11,6 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 from pathlib import Path
 from typing import Optional, Any
@@ -30,7 +29,6 @@ from ..models.gemma3 import (
     get_data_sharding,
 )
 from ..utils import cross_entropy_loss
-from ..utils.checkpointing import load_checkpoint
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -99,12 +97,6 @@ def evaluate_oracle_gemma(
         max_examples=args.batch_size * args.num_batches * 2,
         num_workers=16,
     )
-
-    # JIT functions with sharding if mesh provided
-    if mesh is not None:
-        jit_opts = {"out_shardings": None} # Let JAX infer
-    else:
-        jit_opts = {}
 
     # Define step functions
     def step_fn(model, input_ids, attention_mask, position_ids, use_ttt, gating_scale=None):
@@ -276,21 +268,13 @@ def main():
     
     # Apply sharding to params if enabled
     if mesh is not None:
-        from ..models.gemma3.sharding import setup_sharded_state
         # Setup sharding (this shards the params in place or returns sharded state)
         # load_ttt_model returns initialized model.
         # We need to re-shard.
         # Gemma3 sharding utility expects (model, optimizer, mesh).
         # Here we only have model.
-        # Actually setup_sharded_state works on model state.
-        
-        # We can manually shard using same logic
-        state = nnx.state(model)
-        # ... logic similar to train_gemma3.py or simplifed
         # For inference/eval, we mainly need params sharded.
-        
-        # Simply rely on JAX automatic sharding propagation if we put data correctly?
-        # Or use the shard_params utility.
+        # Simply rely on JAX automatic sharding propagation if we put data correctly.
         pass
 
     # Tokenizer

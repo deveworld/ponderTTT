@@ -57,7 +57,6 @@ from ..models.gemma3 import (
     create_device_mesh,
     get_data_sharding,
 )
-from ..gating import LossSkipGating, FixedActionGating
 from ..utils.checkpointing import save_checkpoint, wait_for_checkpoints, load_checkpoint
 
 try:
@@ -346,54 +345,24 @@ def make_adaptive_train_step(ssl_weight: float, threshold: float) -> Callable:
         
         # Helper to compute loss
         def compute_loss(mdl):
-            outputs = mdl(
-                input_ids,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                use_ttt=True, # Initially assume TTT to check reconstruction loss? 
-                # Wait, "Loss Skip" uses the INITIAL loss (before update)
-                # If we use TTT=True here, we get the result *with* TTT (if online TTT is 1 step)
-                # But standard TTT is:
-                #   Forward(theta_fast_old) -> Loss
-                #   Update theta_fast -> theta_fast_new
-                #   Forward(theta_fast_new) -> Final Preds
-                
-                # So we want to check Loss(theta_fast_old).
-                # Actually, TTTLayer updates internal state recursively.
-                # If we run with use_ttt=True, it DOES the update internally if in training mode.
-                
-                # CRITICAL: TTTLayer implementation details.
-                # TTTLayer forward with train=True returns (output, stats) AND updates the params?
-                # No, NNX modules are stateful but functional updates require optimizer.update() or manually assigning state.
-                # TTTLayer.forward actually does the inner-loop SGD *inside* the scan?
-                # Let's recall: TTTLayer uses `jax.lax.scan`. The "update" is transient for the sequence unless we save it.
-                # BUT TTT *fast weights* (W_t) are transient activation-like states, NOT global params.
-                # Wait, TTTLayer has `eta` (learning rate) as a global param.
-                # The fast weight $W_t$ is hidden state.
-                
-                # PonderTTT paper says: "We predict binary decision... If SKIP, no update."
-                # If UPDATE, we run TTT.
-                # The "Loss Skip" heuristic means: Calculate L_initial. If L_initial > Thresh, run TTT. Else Skip.
-                pass
-
-            # Since TTT is an INNER loop optimization, the "Forward" pass of the TTTLayer
-            # *includes* the gradient descent steps on W_t if `train=True`.
-            # If `train=False` (or use_ttt=False), it acts as Identity or simple attention.
-            
-            # To implement Loss Skip efficiently:
-            # We need a metric of "How bad is it right now?"
-            # This is available from the base model + current W_0 (initial fast weight).
-            
-            # Simply: Run with use_ttt=False (SKIP) first?
-            # Or run a "Probe" step?
-            
-            # The user said: "Initial Loss > Threshold".
-            # Initial Loss usually means the loss of the model *without* the current TTT update on this chunk.
-            # i.e., use_ttt=False (or use_ttt=True but 0 steps).
-            
-            # Let's assume we run with use_ttt=False to check SKIP loss.
+            # TTT Loss Skip implementation notes:
+            # "Loss Skip" uses the INITIAL loss (before update)
+            # Standard TTT:
+            #   Forward(theta_fast_old) -> Loss
+            #   Update theta_fast -> theta_fast_new
+            #   Forward(theta_fast_new) -> Final Preds
+            #
+            # TTTLayer updates internal state recursively.
+            # TTTLayer forward with train=True returns (output, stats) AND updates params
+            # NNX modules are stateful but functional updates require optimizer.update()
+            #
+            # PonderTTT paper: "We predict binary decision... If SKIP, no update."
+            # If UPDATE, we run TTT.
+            # The "Loss Skip" heuristic: Calculate L_initial. If L_initial > Thresh, run TTT. Else Skip.
+            #
+            # Implementation: Run with use_ttt=False to check SKIP loss.
             # If SKIP Loss > Threshold, we run with use_ttt=True.
-            
+
             outputs_skip = mdl(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=False)
             logits_skip = outputs_skip["logits"]
             
@@ -433,7 +402,8 @@ def make_adaptive_train_step(ssl_weight: float, threshold: float) -> Callable:
                 aux_loss = jnp.array(0.0)
                 if ssl_weight > 0 and ttt_stats:
                      ssl_values = [x.mean() for x in [ttt_stats.get("ttt_loss_init")] if x is not None]
-                     if ssl_values: aux_loss = jnp.asarray(ssl_weight * ssl_values[0])
+                     if ssl_values:
+                         aux_loss = jnp.asarray(ssl_weight * ssl_values[0])
                 
                 return ce_loss + aux_loss, (ce_loss, aux_loss, ttt_stats)
 

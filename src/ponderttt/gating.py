@@ -64,8 +64,8 @@ class LossSkipGating(GatingStrategy):
 
 class RandomGating(GatingStrategy):
     """Randomly update with probability p."""
-    
-    def __init__(self, probability: float = 0.5, rngs: nnx.Rngs):
+
+    def __init__(self, rngs: nnx.Rngs, probability: float = 0.5):
         self.probability = probability
         self.rng_key = rngs.params() # Use params rng for seed or separate gating rng?
         # Actually need a fresh key each time. 

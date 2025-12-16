@@ -2,8 +2,7 @@ import time
 import jax
 import jax.numpy as jnp
 from flax import nnx
-import numpy as np
-from ponderttt.models import TTTModel, TTTConfig, load_ttt_model
+from ponderttt.models import load_ttt_model
 
 def benchmark():
     print("Setting up latency benchmark...")
