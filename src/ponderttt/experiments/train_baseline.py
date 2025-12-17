@@ -49,7 +49,10 @@ def parse_args():
         help="Fixed action to use throughout training",
     )
     parser.add_argument(
-        "--max_chunks", type=int, default=100, help="Maximum number of chunks to process"
+        "--max_chunks",
+        type=int,
+        default=100,
+        help="Maximum number of chunks to process",
     )
     parser.add_argument(
         "--learning_rate", type=float, default=3e-4, help="Learning rate"
@@ -60,33 +63,31 @@ def parse_args():
         default="outputs/baselines_nnx",
         help="Output directory",
     )
-    parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed"
-    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
         "--load_pretrained",
         action="store_true",
         default=True,
-        help="Load pretrained GPT-2 weights (default: True, use --no-load-pretrained to disable)"
+        help="Load pretrained GPT-2 weights (default: True, use --no-load-pretrained to disable)",
     )
     parser.add_argument(
         "--no-load-pretrained",
         action="store_false",
         dest="load_pretrained",
-        help="Don't load pretrained weights (use random initialization)"
+        help="Don't load pretrained weights (use random initialization)",
     )
     parser.add_argument(
         "--fast_weight_type",
         type=str,
         choices=["ttt", "lora"],
         default="ttt",
-        help="Type of fast weights: 'ttt' (TTT Layer) or 'lora' (LoRA)"
+        help="Type of fast weights: 'ttt' (TTT Layer) or 'lora' (LoRA)",
     )
     parser.add_argument(
         "--lora_rank",
         type=int,
         default=64,
-        help="LoRA rank (only used if fast_weight_type='lora')"
+        help="LoRA rank (only used if fast_weight_type='lora')",
     )
     parser.add_argument(
         "--ssl_weight",
@@ -170,9 +171,22 @@ def count_params(model: nnx.Module) -> int:
     return sum(x.size for x in jax.tree.leaves(state))
 
 
+def get_base_model_checksum(model) -> float:
+    """Calculate checksum of base model weights to ensure they are frozen."""
+    _, base_state = nnx.split(model.base_model)
+    leaves = jax.tree.leaves(base_state)
+    if not leaves:
+        return 0.0
+    return float(jnp.sum(jnp.array([jnp.sum(x) for x in leaves])))
+
+
 def main():
     args = parse_args()
-    seeds = [args.seed] if args.seeds is None else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
+    seeds = (
+        [args.seed]
+        if args.seeds is None
+        else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
+    )
 
     print("=" * 60)
     print("PonderTTT Baseline Training (NNX)")
@@ -191,7 +205,7 @@ def main():
     model_name = get_model_name(args.model_scale)
     num_ttt_steps = action_to_steps(args.action)
     cost_multiplier = action_to_cost(args.action)
-    use_ttt = (num_ttt_steps > 0)
+    use_ttt = num_ttt_steps > 0
 
     print("\nConfiguration:")
     print(f"  Model: {model_name}")
@@ -235,14 +249,23 @@ def main():
         )
 
     def init_model(seed):
-        print(f"\nInitializing model with {args.fast_weight_type.upper()} fast weights (seed={seed})...")
+        print(
+            f"\nInitializing model with {args.fast_weight_type.upper()} fast weights (seed={seed})..."
+        )
         tok_vocab_size = tokenizer.get_vocab_size()
         print(f"  Tokenizer vocab_size: {tok_vocab_size}")
 
         if args.fast_weight_type == "lora":
             from ponderttt.models import LoRAConfig
+
             lora_config = LoRAConfig(
-                hidden_dim=768 if args.model_scale == "125m" else 1024 if args.model_scale == "350m" else 1280 if args.model_scale == "1b" else 1600,
+                hidden_dim=768
+                if args.model_scale == "125m"
+                else 1024
+                if args.model_scale == "350m"
+                else 1280
+                if args.model_scale == "1b"
+                else 1600,
                 rank=args.lora_rank,
                 alpha=float(args.lora_rank),
                 dropout_rate=0.1,
@@ -275,9 +298,13 @@ def main():
 
     # Set to training mode
     model, config = init_model(seeds[0])
-    # ... (Optim creation code follows below in loop, but we need it for count_params above loop? 
+    # ... (Optim creation code follows below in loop, but we need it for count_params above loop?
     # No, count_params uses model. The original code had optimizer creation outside for printing.
     # We'll keep original flow but adapt resume)
+
+    # [SAFEGUARD] Verify base model is frozen
+    initial_base_checksum = get_base_model_checksum(model)
+    print(f"\n[SAFEGUARD] Initial base model checksum: {initial_base_checksum:.6f}")
     model.train()
 
     print(f"OK Model loaded: {config.n_layer} layers, {config.n_embd} dim")
@@ -300,11 +327,11 @@ def main():
     # Get action configuration
     action_steps = action_to_steps(args.action)
     cost_multiplier = action_to_cost(args.action)
-    
+
     # Scale learning rate inversely with number of updates to prevent overfitting
     # UPDATE_1: lr = 3e-4, UPDATE_2: lr = 1.5e-4, UPDATE_4: lr = 0.75e-4
     effective_lr = args.learning_rate / max(action_steps, 1)
-    
+
     # Create optimizer for all parameters
     # Base model will be frozen via stop_gradient in the model's forward pass
     def create_optimizer():
@@ -316,8 +343,10 @@ def main():
             ),
             wrt=nnx.All(nnx.Param),
         )
-    
-    print(f"OK Optimizer: Adam (base_lr={args.learning_rate}, effective_lr={effective_lr}, scaled by 1/{max(action_steps, 1)})")
+
+    print(
+        f"OK Optimizer: Adam (base_lr={args.learning_rate}, effective_lr={effective_lr}, scaled by 1/{max(action_steps, 1)})"
+    )
     print("   Base model frozen via stop_gradient")
 
     # Training loop
@@ -339,24 +368,26 @@ def main():
 
         # Create optimizer once per seed
         optimizer = create_optimizer()
-        
+
         start_chunk = 0
-        
+
         # Resume Logic
         if args.resume_from and len(seeds) == 1:
             print(f"Resuming from checkpoint: {args.resume_from}")
-            load_target = {"state": {"model": nnx.state(model), "optimizer": nnx.state(optimizer)}}
+            load_target = {
+                "state": {"model": nnx.state(model), "optimizer": nnx.state(optimizer)}
+            }
             ckpt = load_checkpoint(args.resume_from, target=load_target)
             nnx.update(model, ckpt["state"]["model"])
             nnx.update(optimizer, ckpt["state"]["optimizer"])
-            
+
             if "metadata" in ckpt and "chunks" in ckpt["metadata"]:
                 start_chunk = ckpt["metadata"]["chunks"]
             elif "step" in ckpt:
                 start_chunk = ckpt["step"]
-                
+
             print(f"Resumed from chunk {start_chunk}")
-            
+
         data_iter = create_data_iterator(
             tokenizer=tokenizer,
             split="train",
@@ -374,16 +405,18 @@ def main():
         chunks_per_batch = batch_size * chunks_per_seq
         batches_to_skip = start_chunk // chunks_per_batch
         remainder_chunks = start_chunk % chunks_per_batch
-        
+
         if batches_to_skip > 0:
-            print(f"Skipping {batches_to_skip} batches to resume from chunk {start_chunk}...")
+            print(
+                f"Skipping {batches_to_skip} batches to resume from chunk {start_chunk}..."
+            )
             for _ in range(batches_to_skip):
                 try:
                     next(data_iter)
                 except StopIteration:
                     print("Warning: Data iterator exhausted during skipping!")
                     break
-        
+
         first_batch = True
 
         total_loss_ce = 0.0
@@ -393,7 +426,9 @@ def main():
 
         print(f"\n=== Running seed {seed} ===")
 
-        with tqdm(total=args.max_chunks, initial=start_chunk, desc=f"Training seed {seed}") as pbar:
+        with tqdm(
+            total=args.max_chunks, initial=start_chunk, desc=f"Training seed {seed}"
+        ) as pbar:
             while chunks_processed < args.max_chunks:
                 try:
                     batch = next(data_iter)
@@ -414,12 +449,14 @@ def main():
 
                     chunk_batch = {
                         "input_ids": batch["chunks"][:, chunk_idx, :],
-                        "attention_mask": batch["chunk_attention_mask"][:, chunk_idx, :],
+                        "attention_mask": batch["chunk_attention_mask"][
+                            :, chunk_idx, :
+                        ],
                         "position_ids": jnp.arange(
-                            chunk_idx * chunk_size, 
-                            (chunk_idx + 1) * chunk_size, 
-                            dtype=jnp.int32
-                        )[None, :].repeat(batch["chunks"].shape[0], axis=0)
+                            chunk_idx * chunk_size,
+                            (chunk_idx + 1) * chunk_size,
+                            dtype=jnp.int32,
+                        )[None, :].repeat(batch["chunks"].shape[0], axis=0),
                     }
 
                     # Check for valid tokens
@@ -449,12 +486,17 @@ def main():
                             )
 
                     assert metrics is not None
-                    
+
                     # Check for stability
-                    if not jnp.isfinite(metrics["loss_ce"]) or metrics["loss_ce"] > 20.0:
-                        print(f"Warning: Skipping unstable chunk (loss={metrics['loss_ce']:.4f})")
+                    if (
+                        not jnp.isfinite(metrics["loss_ce"])
+                        or metrics["loss_ce"] > 20.0
+                    ):
+                        print(
+                            f"Warning: Skipping unstable chunk (loss={metrics['loss_ce']:.4f})"
+                        )
                         continue
-                        
+
                     total_loss_ce += metrics["loss_ce"]
                     total_loss_total += metrics["loss_total"]
                     total_cost += cost_multiplier
@@ -469,16 +511,18 @@ def main():
                         }
                     )
                     pbar.update(batch_size)
-                    
+
                     # WandB Log
                     if args.wandb_project:
-                        wandb.log({
-                            f"seed_{seed}/loss_total": metrics['loss_total'],
-                            f"seed_{seed}/loss_ce": metrics['loss_ce'],
-                            f"seed_{seed}/loss_aux": metrics['loss_aux'],
-                            f"seed_{seed}/perplexity": metrics['perplexity'],
-                            "chunks": chunks_processed,
-                        })
+                        wandb.log(
+                            {
+                                f"seed_{seed}/loss_total": metrics["loss_total"],
+                                f"seed_{seed}/loss_ce": metrics["loss_ce"],
+                                f"seed_{seed}/loss_aux": metrics["loss_aux"],
+                                f"seed_{seed}/perplexity": metrics["perplexity"],
+                                "chunks": chunks_processed,
+                            }
+                        )
 
                     if chunks_processed % 10 == 0:
                         denom = chunks_processed - start_chunk + 1e-6
@@ -487,20 +531,28 @@ def main():
                         avg_ppl = math.exp(avg_ce_loss)
                         print(f"\nChunk {chunks_processed}/{args.max_chunks}:")
                         print(f"  Average CE loss (since start): {avg_ce_loss:.4f}")
-                        print(f"  Average total loss (since start): {avg_total_loss:.4f}")
+                        print(
+                            f"  Average total loss (since start): {avg_total_loss:.4f}"
+                        )
                         print(f"  Average perplexity: {avg_ppl:.2f}")
-                        
+
                     # Periodic Checkpoint
-                    if chunks_processed % args.save_every == 0 and chunks_processed < args.max_chunks:
+                    if (
+                        chunks_processed % args.save_every == 0
+                        and chunks_processed < args.max_chunks
+                    ):
                         checkpoint_dir = output_dir / "checkpoints"
                         print(f"Saving checkpoint at chunk {chunks_processed}...")
                         save_checkpoint(
                             checkpoint_dir=checkpoint_dir,
                             step=chunks_processed,
-                            state={"model": nnx.state(model), "optimizer": nnx.state(optimizer)},
+                            state={
+                                "model": nnx.state(model),
+                                "optimizer": nnx.state(optimizer),
+                            },
                             metadata={"chunks": chunks_processed},
                         )
-                
+
                 first_batch = False
 
         if chunks_processed > 0:
@@ -511,40 +563,60 @@ def main():
 
             seed_results.append(
                 {
-                    'seed': seed,
-                    'chunks_processed': chunks_processed,
-                    'final_loss': final_avg_ce_loss,
-                    'final_loss_ce': final_avg_ce_loss,
-                    'final_loss_total': final_avg_total_loss,
-                    'final_perplexity': final_avg_ppl,
-                    'total_cost': total_cost,
-                    'avg_cost_per_chunk': total_cost / chunks_processed,
+                    "seed": seed,
+                    "chunks_processed": chunks_processed,
+                    "final_loss": final_avg_ce_loss,
+                    "final_loss_ce": final_avg_ce_loss,
+                    "final_loss_total": final_avg_total_loss,
+                    "final_perplexity": final_avg_ppl,
+                    "total_cost": total_cost,
+                    "avg_cost_per_chunk": total_cost / chunks_processed,
                 }
             )
 
+            # [SAFEGUARD] Verify base model didn't change
+            final_base_checksum = get_base_model_checksum(model)
+            print(f"[SAFEGUARD] Final base model checksum: {final_base_checksum:.6f}")
+            if abs(final_base_checksum - initial_base_checksum) > 1e-4:
+                print(
+                    f"[SAFEGUARD] ❌ CRITICAL WARNING: Base model weights CHANGED! ({initial_base_checksum} -> {final_base_checksum})"
+                )
+                print(
+                    "[SAFEGUARD] This invalidates the SKIP baseline. Check stop_gradient logic."
+                )
+            else:
+                print(
+                    f"[SAFEGUARD] ✅ Base model weights preserved (Delta: {abs(final_base_checksum - initial_base_checksum):.6e})"
+                )
+
             results = {
-                'model_scale': args.model_scale,
-                'action': args.action,
-                'fast_weight_type': args.fast_weight_type,
-                'lora_rank': args.lora_rank if args.fast_weight_type == 'lora' else None,
-                'num_ttt_steps': num_ttt_steps,
-                'cost_multiplier': cost_multiplier,
-                'chunks_processed': chunks_processed,
-                'final_loss': final_avg_ce_loss,
-                'final_loss_ce': final_avg_ce_loss,
-                'final_loss_total': final_avg_total_loss,
-                'final_perplexity': final_avg_ppl,
-                'learning_rate': args.learning_rate,
-                'seed': seed,
-                'total_cost': total_cost,
-                'avg_cost_per_chunk': total_cost / chunks_processed,
+                "model_scale": args.model_scale,
+                "action": args.action,
+                "fast_weight_type": args.fast_weight_type,
+                "lora_rank": args.lora_rank
+                if args.fast_weight_type == "lora"
+                else None,
+                "num_ttt_steps": num_ttt_steps,
+                "cost_multiplier": cost_multiplier,
+                "chunks_processed": chunks_processed,
+                "final_loss": final_avg_ce_loss,
+                "final_loss_ce": final_avg_ce_loss,
+                "final_loss_total": final_avg_total_loss,
+                "final_perplexity": final_avg_ppl,
+                "learning_rate": args.learning_rate,
+                "seed": seed,
+                "total_cost": total_cost,
+                "avg_cost_per_chunk": total_cost / chunks_processed,
             }
 
             suffix = f"_{args.fast_weight_type}"
             if args.fast_weight_type == "lora":
                 suffix += f"_r{args.lora_rank}"
-            results_file = output_dir / f"results_{args.model_scale}_{args.action}{suffix}_seed{seed}.json"
-            with open(results_file, 'w') as f:
+            results_file = (
+                output_dir
+                / f"results_{args.model_scale}_{args.action}{suffix}_seed{seed}.json"
+            )
+            with open(results_file, "w") as f:
                 json.dump(results, f, indent=2)
 
             print(f"\nOK Results saved to: {results_file}")
@@ -561,13 +633,14 @@ def main():
     # Aggregate across seeds if multiple
     if seed_results:
         if len(seed_results) > 1:
-            losses = jnp.array([r['final_loss'] for r in seed_results])
-            perplexities = jnp.array([r['final_perplexity'] for r in seed_results])
+            losses = jnp.array([r["final_loss"] for r in seed_results])
+            perplexities = jnp.array([r["final_perplexity"] for r in seed_results])
             from ponderttt.utils.statistics import bootstrap_ci, compute_iqm
+
             loss_ci = bootstrap_ci(losses, n_bootstrap=1000)
             ppl_ci = bootstrap_ci(perplexities, n_bootstrap=1000)
             summary = {
-                "seeds": [r['seed'] for r in seed_results],
+                "seeds": [r["seed"] for r in seed_results],
                 "loss_mean": float(losses.mean()),
                 "loss_iqm": compute_iqm(losses),
                 "loss_ci": loss_ci,
