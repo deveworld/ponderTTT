@@ -178,7 +178,8 @@ def get_base_model_checksum(model) -> float:
 def get_base_model_checksum(model) -> float:
     """Calculate checksum of base model weights to ensure they are frozen."""
     # Filter for Param only to avoid summing RNG keys or other state
-    _, base_params = nnx.split(model.base_model, nnx.Param)
+    # Use ... to catch all remaining state (RNG keys, etc.) to satisfy exhaustiveness
+    base_params, _ = nnx.split(model.base_model, nnx.Param, ...)
     leaves = jax.tree.leaves(base_params)
     if not leaves:
         return 0.0
