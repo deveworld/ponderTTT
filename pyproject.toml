@@ -12,41 +12,43 @@ keywords = ["test-time-training", "adaptive-computation", "llm", "efficiency"]
 
 dependencies = [
     # JAX/Flax stack
-    "jax>=0.8.0",
-    "jaxlib>=0.8.0",
-    "flax>=0.12.0",
-    "optax>=0.2.6",
-    "orbax-checkpoint>=0.11.28",
+    "jax>=0.4.35",
+    "jaxlib>=0.4.35",
+    "flax>=0.10.0",
+    "optax>=0.2.0",
+    "orbax-checkpoint>=0.10.0",
     # ML utilities
-    "numpy>=2.3.4",
-    "einops>=0.8.1",
-    "ml_collections>=1.1.0",
+    "numpy>=1.26.0",
+    "einops>=0.8.0",
+    "ml_collections>=0.1.0",
     # Data and tokenization
-    "datasets>=4.4.1",
-    "tokenizers>=0.22.1",
-    "boto3>=1.40.74",
-    "smart-open[s3]>=7.5.0",
+    "datasets>=3.0.0",
+    "tokenizers>=0.19.0",
+    "boto3>=1.34.0",
+    "smart-open[s3]>=7.0.0",
     # Visualization and logging
-    "matplotlib>=3.10.7",
-    "seaborn>=0.13.2",
-    "tqdm>=4.67.1",
-    "wandb>=0.23.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "tqdm>=4.66.0",
+    "wandb>=0.16.0",
     # Scientific computing
-    "scipy>=1.16.3",
+    "scipy>=1.13.0",
     # Optimized weight loading (No torch/transformers required)
-    "safetensors>=0.4.1",
+    "safetensors>=0.4.0",
     "huggingface_hub>=0.20.0",
+    # GPU Monitoring
+    "nvidia-ml-py>=12.535.133",
 ]
 
 [dependency-groups]
 dev = [
-    "jaxtyping>=0.3.3",
-    "pyright>=1.1.407",
-    "pytest>=9.0.1",
-    "ruff>=0.14.5",
-    "ty>=0.0.1a26",
+    "jaxtyping>=0.2.28",
+    "pyright>=1.1.350",
+    "pytest>=8.0.0",
+    "ruff>=0.3.0",
+    "ty>=0.0.1",
 ]
-gpu = ["jax[cuda13]"]
+gpu = ["jax[cuda12]"]
 gpu12 = ["jax[cuda12]"]
 tpu = ["jax[tpu]"]
 
