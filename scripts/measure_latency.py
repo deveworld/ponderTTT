@@ -22,14 +22,13 @@ class GPUMonitor:
         self.stop_event = threading.Event()
         self.utilization_samples = []
         self.memory_samples = []
-        self.thread = threading.Thread(target=self._monitor_loop)
         self.nvml_initialized = False
+        self.thread = None
 
         if PYNVML_AVAILABLE:
             try:
                 pynvml.nvmlInit()
                 self.nvml_initialized = True
-                print("[GPUMonitor] Using pynvml for GPU monitoring.")
             except pynvml.NVMLError as e:
                 print(
                     f"[GPUMonitor] pynvml init failed: {e}. Falling back to nvidia-smi."
@@ -42,12 +41,16 @@ class GPUMonitor:
         self.stop_event.clear()
         self.utilization_samples = []
         self.memory_samples = []
+        self.thread = threading.Thread(target=self._monitor_loop)
         self.thread.start()
 
     def stop(self):
         self.stop_event.set()
-        if self.thread.is_alive():
+        if self.thread and self.thread.is_alive():
             self.thread.join()
+        # Do not shutdown NVML here to allow restart
+
+    def shutdown(self):
         if self.nvml_initialized:
             try:
                 pynvml.nvmlShutdown()
@@ -157,51 +160,56 @@ def benchmark():
 
     print("Warmup complete")
 
-    # GPU Monitor
+    # Init Monitor
     gpu_monitor = GPUMonitor(interval=0.05)
-    gpu_monitor.start()
 
     # Benchmark
     n_iters = 500
 
     # Measure SKIP
     block_leaves(input_ids)
+    print(f"Measuring SKIP ({n_iters} iters)...")
+    gpu_monitor.start()
     start = time.perf_counter()
     for _ in range(n_iters):
         out = forward_step(model, input_ids, use_ttt=False)
         block_leaves(out)
     end = time.perf_counter()
+    gpu_monitor.stop()
+
     skip_time_ms = (end - start) / n_iters * 1000
+    skip_util, skip_mem = gpu_monitor.get_results()
 
     # Measure UPDATE_1
     block_leaves(input_ids)
+    print(f"Measuring UPDATE_1 ({n_iters} iters)...")
+    gpu_monitor.start()
     start = time.perf_counter()
     for _ in range(n_iters):
         out = forward_step(model, input_ids, use_ttt=True)
         block_leaves(out)
     end = time.perf_counter()
-    update_time_ms = (end - start) / n_iters * 1000
-
-    # Stop Monitor
     gpu_monitor.stop()
-    avg_util, max_mem = gpu_monitor.get_results()
+
+    update_time_ms = (end - start) / n_iters * 1000
+    update_util, update_mem = gpu_monitor.get_results()
+
+    # Shutdown Monitor
+    gpu_monitor.shutdown()
 
     # Results
-    print("\n" + "=" * 40)
+    print("\n" + "=" * 60)
     print(f"Latency Benchmark Results (N={n_iters})")
-    print("=" * 40)
-    print(f"SKIP Latency:      {skip_time_ms:.2f} ms")
-    print(f"UPDATE_1 Latency:  {update_time_ms:.2f} ms")
-
+    print("=" * 60)
+    print(f"{'Metric':<15} | {'SKIP':<20} | {'UPDATE_1':<20}")
+    print("-" * 60)
+    print(f"{'Latency (ms)':<15} | {skip_time_ms:<20.2f} | {update_time_ms:<20.2f}")
     if skip_time_ms > 0:
         ratio = update_time_ms / skip_time_ms
-        print(f"Ratio (UPD/SKIP):  {ratio:.2f}x")
-    else:
-        print("Error: SKIP latency is 0!")
-
-    print(f"Avg GPU Util:      {avg_util}")
-    print(f"Max VMEM Used:     {max_mem}")
-    print("=" * 40 + "\n")
+        print(f"{'Ratio':<15} | {'1.00x':<20} | {f'{ratio:.2f}x':<20}")
+    print(f"{'Avg GPU Util':<15} | {skip_util:<20} | {update_util:<20}")
+    print(f"{'Max VMEM':<15} | {skip_mem:<20} | {update_mem:<20}")
+    print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
