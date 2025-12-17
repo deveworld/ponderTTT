@@ -173,11 +173,17 @@ def count_params(model: nnx.Module) -> int:
 
 def get_base_model_checksum(model) -> float:
     """Calculate checksum of base model weights to ensure they are frozen."""
-    _, base_state = nnx.split(model.base_model)
-    leaves = jax.tree.leaves(base_state)
+
+
+def get_base_model_checksum(model) -> float:
+    """Calculate checksum of base model weights to ensure they are frozen."""
+    # Filter for Param only to avoid summing RNG keys or other state
+    _, base_params = nnx.split(model.base_model, nnx.Param)
+    leaves = jax.tree.leaves(base_params)
     if not leaves:
         return 0.0
-    return float(jnp.sum(jnp.array([jnp.sum(x) for x in leaves])))
+    # Sum individual parameter sums to safely reduce
+    return float(sum(float(jnp.sum(x)) for x in leaves))
 
 
 def main():
