@@ -524,17 +524,15 @@ def load_ttt_model(
     # Load custom checkpoint if provided (e.g. fine-tuned TTT baseline)
     if checkpoint_path and not model_name.startswith("gemma3"):
         print(f"Loading checkpoint from {checkpoint_path}...")
-        from ponderttt.utils.checkpointing import load_checkpoint
+        from ponderttt.utils.checkpointing import load_checkpoint, unwrap_state
 
-        # Structure for loading: mimic what save_checkpoint saves
-        # We only need the model state, ignoring optimizer/metadata
-        # But we must provide the target structure for Orbax to restore into
-        target = {"state": {"model": nnx.state(model)}}
-
+        # Use target=None to load raw dict, then unwrap and update
+        # This is more robust than passing target structure which can cause "Source: MISSING" errors
         try:
-            ckpt = load_checkpoint(checkpoint_path, target=target)
+            ckpt = load_checkpoint(checkpoint_path, target=None)
             if "state" in ckpt and "model" in ckpt["state"]:
-                nnx.update(model, ckpt["state"]["model"])
+                model_state = unwrap_state(ckpt["state"]["model"])
+                nnx.update(model, model_state)
                 print(f"OK Successfully loaded checkpoint from {checkpoint_path}")
             else:
                 print(
