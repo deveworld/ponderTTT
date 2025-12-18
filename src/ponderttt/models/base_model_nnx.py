@@ -6,7 +6,15 @@ Supports both GPT-2 and Gemma 3 (4B, 12B) as base models.
 """
 
 from dataclasses import dataclass
-from typing import Any, Optional, Protocol, Tuple, Union, TYPE_CHECKING, runtime_checkable
+from typing import (
+    Any,
+    Optional,
+    Protocol,
+    Tuple,
+    Union,
+    TYPE_CHECKING,
+    runtime_checkable,
+)
 
 import jax
 import jax.numpy as jnp
@@ -26,6 +34,7 @@ class TTTModelProtocol(Protocol):
 
     Both TTTTransformerLM and Gemma3TTTModel implement this interface.
     """
+
     fast_layer: Union[TTTLayer, LoRALayer]
 
     def __call__(
@@ -83,7 +92,7 @@ class TTTTransformerLM(nnx.Module):
         ttt_config: Optional[TTTConfig] = None,
         lora_config: Optional[LoRAConfig] = None,
         model_config: Optional[ModelConfig] = None,
-        tie_word_embeddings: bool = True
+        tie_word_embeddings: bool = True,
     ):
         """Initialize TTT-augmented model.
 
@@ -110,6 +119,7 @@ class TTTTransformerLM(nnx.Module):
         # Slow weights: Pretrained GPT-2 (will be frozen during training)
         # Note: We use GPT2Model (without LM head) to get hidden states
         from ponderttt.models.gpt2_nnx import GPT2Model
+
         self.base_model = GPT2Model(gpt2_config, rngs)
 
         # Pre-normalization for fast-weight layer (following official TTT-LM pattern)
@@ -132,10 +142,7 @@ class TTTTransformerLM(nnx.Module):
         # LM head with weight tying
         if not tie_word_embeddings:
             self.lm_head = nnx.Linear(
-                gpt2_config.n_embd,
-                gpt2_config.vocab_size,
-                use_bias=False,
-                rngs=rngs
+                gpt2_config.n_embd, gpt2_config.vocab_size, use_bias=False, rngs=rngs
             )
 
     def freeze_base_model(self):
@@ -196,17 +203,17 @@ class TTTTransformerLM(nnx.Module):
         # Get hidden states from frozen base model
         # Apply stop_gradient to freeze theta_slow (PLAN.md: only theta_fast is trainable)
         train_flag = self.is_training
-        
+
         # If position_ids not provided, generate them (0..T)
         if position_ids is None:
             batch_size, seq_len = input_ids.shape
-            position_ids = jnp.arange(seq_len, dtype=jnp.int32)[None, :].repeat(batch_size, axis=0)
+            position_ids = jnp.arange(seq_len, dtype=jnp.int32)[None, :].repeat(
+                batch_size, axis=0
+            )
 
-        hidden_states = jax.lax.stop_gradient(self.base_model(
-            input_ids, 
-            position_ids=position_ids,
-            train=train_flag
-        ))
+        hidden_states = jax.lax.stop_gradient(
+            self.base_model(input_ids, position_ids=position_ids, train=train_flag)
+        )
 
         if use_ttt:
             # Following official TTT-LM Block pattern (model.py Line 696-714):
@@ -246,8 +253,12 @@ class TTTTransformerLM(nnx.Module):
                 # co-trained with TTT. This ensures SKIP path (hidden_states @ embedding.T)
                 # remains valid as a baseline. Without this, embedding weights drift to align
                 # with (hidden_states + fast_output) rather than raw hidden_states.
-                embedding_kernel = jax.lax.stop_gradient(self.base_model.wte.embedding[...])  # [vocab_size, n_embd]
-                logits = adapted_hidden @ embedding_kernel.T  # [batch, seq_len, vocab_size]
+                embedding_kernel = jax.lax.stop_gradient(
+                    self.base_model.wte.embedding[...]
+                )  # [vocab_size, n_embd]
+                logits = (
+                    adapted_hidden @ embedding_kernel.T
+                )  # [batch, seq_len, vocab_size]
             else:
                 logits = self.lm_head(adapted_hidden)
 
@@ -323,7 +334,9 @@ def load_ttt_model(
     base_vocab_size = gpt2_config.vocab_size
     if vocab_size is not None:
         if vocab_size < gpt2_config.vocab_size:
-            raise ValueError(f"vocab_size override ({vocab_size}) is smaller than base config ({gpt2_config.vocab_size})")
+            raise ValueError(
+                f"vocab_size override ({vocab_size}) is smaller than base config ({gpt2_config.vocab_size})"
+            )
         gpt2_config.vocab_size = vocab_size
         # If vocab was expanded (e.g., to add pad), assume the new last token is pad unless provided
         if pad_token_id is None and vocab_size > base_vocab_size:
@@ -390,7 +403,10 @@ def load_ttt_model(
         temp_model = load_huggingface_weights(temp_model, model_name)
 
         # Pad embeddings if vocab_size was expanded (e.g., added pad token)
-        vocab_diff = gpt2_config.vocab_size - temp_model.transformer.wte.embedding[...].shape[0]
+        vocab_diff = (
+            gpt2_config.vocab_size - temp_model.transformer.wte.embedding[...].shape[0]
+        )
+
         def _pad_vocab_matrix(x: Any) -> Any:
             if vocab_diff <= 0:
                 return x
@@ -401,7 +417,9 @@ def load_ttt_model(
         # Copy weights to our base_model
         _set_param_value(
             model.base_model.wte.embedding,
-            _pad_vocab_matrix(_get_param_value(temp_model.transformer.wte.embedding, "wte.embedding")),
+            _pad_vocab_matrix(
+                _get_param_value(temp_model.transformer.wte.embedding, "wte.embedding")
+            ),
             "wte.embedding",
         )
         _set_param_value(
@@ -428,22 +446,30 @@ def load_ttt_model(
 
             _set_param_value(
                 dst_block.attn.c_attn.kernel,
-                _get_param_value(src_block.attn.c_attn.kernel, f"h[{i}].attn.c_attn.kernel"),
+                _get_param_value(
+                    src_block.attn.c_attn.kernel, f"h[{i}].attn.c_attn.kernel"
+                ),
                 f"h[{i}].attn.c_attn.kernel",
             )
             _set_param_value(
                 dst_block.attn.c_attn.bias,
-                _get_param_value(src_block.attn.c_attn.bias, f"h[{i}].attn.c_attn.bias"),
+                _get_param_value(
+                    src_block.attn.c_attn.bias, f"h[{i}].attn.c_attn.bias"
+                ),
                 f"h[{i}].attn.c_attn.bias",
             )
             _set_param_value(
                 dst_block.attn.c_proj.kernel,
-                _get_param_value(src_block.attn.c_proj.kernel, f"h[{i}].attn.c_proj.kernel"),
+                _get_param_value(
+                    src_block.attn.c_proj.kernel, f"h[{i}].attn.c_proj.kernel"
+                ),
                 f"h[{i}].attn.c_proj.kernel",
             )
             _set_param_value(
                 dst_block.attn.c_proj.bias,
-                _get_param_value(src_block.attn.c_proj.bias, f"h[{i}].attn.c_proj.bias"),
+                _get_param_value(
+                    src_block.attn.c_proj.bias, f"h[{i}].attn.c_proj.bias"
+                ),
                 f"h[{i}].attn.c_proj.bias",
             )
 
@@ -470,7 +496,9 @@ def load_ttt_model(
             )
             _set_param_value(
                 dst_block.mlp.c_proj.kernel,
-                _get_param_value(src_block.mlp.c_proj.kernel, f"h[{i}].mlp.c_proj.kernel"),
+                _get_param_value(
+                    src_block.mlp.c_proj.kernel, f"h[{i}].mlp.c_proj.kernel"
+                ),
                 f"h[{i}].mlp.c_proj.kernel",
             )
             _set_param_value(
@@ -492,6 +520,29 @@ def load_ttt_model(
         )
 
         print(f"OK Loaded pretrained weights from {model_name}")
+
+    # Load custom checkpoint if provided (e.g. fine-tuned TTT baseline)
+    if checkpoint_path and not model_name.startswith("gemma3"):
+        print(f"Loading checkpoint from {checkpoint_path}...")
+        from ponderttt.utils.checkpointing import load_checkpoint
+
+        # Structure for loading: mimic what save_checkpoint saves
+        # We only need the model state, ignoring optimizer/metadata
+        # But we must provide the target structure for Orbax to restore into
+        target = {"state": {"model": nnx.state(model)}}
+
+        try:
+            ckpt = load_checkpoint(checkpoint_path, target=target)
+            if "state" in ckpt and "model" in ckpt["state"]:
+                nnx.update(model, ckpt["state"]["model"])
+                print(f"OK Successfully loaded checkpoint from {checkpoint_path}")
+            else:
+                print(
+                    f"Warning: Checkpoint loaded but 'state.model' key missing. Keys found: {ckpt.keys()}"
+                )
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            raise e
 
     return model, gpt2_config
 

@@ -2,7 +2,6 @@ import argparse
 import jax
 import jax.numpy as jnp
 import pandas as pd
-import numpy as np
 from flax import nnx
 from tqdm import tqdm
 import optax
@@ -17,10 +16,13 @@ def run_validation(
     batch_size=1,
     seed=42,
     language="Python",
+    checkpoint_path=None,
 ):
     print(
         f"Validating Inversion Hypothesis on {model_scale} (Gradient Clipping = {max_grad_norm})..."
     )
+    if checkpoint_path:
+        print(f"Target Checkpoint: {checkpoint_path}")
 
     # Load Model (1.5B usually)
     model_name = {
@@ -37,6 +39,7 @@ def run_validation(
         fast_weight_type="ttt",
         load_pretrained=True,
         vocab_size=tokenizer.get_vocab_size(),
+        checkpoint_path=checkpoint_path,
     )
 
     # Data Iterator
@@ -50,23 +53,18 @@ def run_validation(
         max_examples=num_chunks * 2,  # Fetch enough
     )
 
-    # CRITICAL FIX: Initialize 'wo' (Output Projection) to non-zero logic
-    # TTTLayer inits 'wo' to zeros to start as identity.
-    # However, for this validation on an UNTRAINED adapter, zero 'wo' means
-    # the TTT updates (W1) are multiplied by 0 and have NO effect on the output.
-    # We must poke 'wo' with small random noise to allow the internal updates to propagate.
-    # If gradients explode inside, this noise will amplify it to the output.
-    print(
-        "Initializing fast_layer.wo to small random values (to unmask TTT updates)..."
-    )
-    key = jax.random.key(seed)
-
-    # Access underlying parameter directly
-    # model.fast_layer.wo is nnx.Linear
-    # We want to set .kernel
-    wo_shape = model.fast_layer.wo.kernel.value.shape
-    random_wo = jax.random.normal(key, wo_shape) * 0.001  # Small scale
-    model.fast_layer.wo.kernel.value = random_wo
+    # Initialize fast_layer.wo to small random values (to unmask TTT updates)
+    if hasattr(model, "fast_layer") and hasattr(model.fast_layer, "wo"):
+        print(
+            "Initializing fast_layer.wo to small random values (to unmask TTT updates)..."
+        )
+        key = jax.random.PRNGKey(seed)
+        # FIX: DeprecationWarning: '.value' access is now deprecated.
+        # Used model.fast_layer.wo.kernel.shape instead of .value.shape
+        wo_param = model.fast_layer.wo.kernel
+        wo_shape = wo_param.shape
+        # Initialize with small noise
+        wo_param.value = jax.random.normal(key, wo_shape) * 0.02
 
     # Store results
     results = []
@@ -222,10 +220,12 @@ if __name__ == "__main__":
     parser.add_argument("--model_scale", type=str, default="xl")
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--num_chunks", type=int, default=50)
+    parser.add_argument("--checkpoint_path", type=str, default=None)
     args = parser.parse_args()
 
     run_validation(
         model_scale=args.model_scale,
         max_grad_norm=args.max_grad_norm,
         num_chunks=args.num_chunks,
+        checkpoint_path=args.checkpoint_path,
     )
