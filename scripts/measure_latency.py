@@ -138,16 +138,18 @@ def benchmark(batch_size):
     @nnx.jit
     def forward_skip_block(model, input_ids):
         # 10 Skips
+        out = None
         for _ in range(BLOCK_SIZE):
-            _ = model(input_ids, use_ttt=False)
-        return None
+            out = model(input_ids, use_ttt=False)
+        return out  # Return output to ensure sync
 
     @nnx.jit
     def forward_update_block(model, input_ids):
         # 10 Updates
+        out = None
         for _ in range(BLOCK_SIZE):
-            _ = model(input_ids, use_ttt=True)
-        return None
+            out = model(input_ids, use_ttt=True)
+        return out
 
     @nnx.jit
     def forward_sparse_20(model, input_ids):
@@ -193,10 +195,12 @@ def benchmark(batch_size):
 
     # Warmup
     print("Warmup SKIP Block...")
-    forward_skip_block(model, input_ids)
+    out = forward_skip_block(model, input_ids)
+    block_leaves(out)
 
     print("Warmup UPDATE Block...")
-    forward_update_block(model, input_ids)
+    out = forward_update_block(model, input_ids)
+    block_leaves(out)
 
     print("Warmup complete")
 
@@ -229,10 +233,6 @@ def benchmark(batch_size):
     start = time.perf_counter()
     for _ in range(n_blocks):
         out = forward_update_block(model, input_ids)
-        # For fair comparison with Sparse (which syncs stats), we could sync here too?
-        # But UPDATE_1 implies "blind update", maybe no check?
-        # Actually UPDATE_1 usually doesn't need to read stats to host to decide.
-        # So we keep it pure.
         block_leaves(out)
     end = time.perf_counter()
     gpu_monitor.stop()
@@ -250,13 +250,26 @@ def benchmark(batch_size):
         out = forward_update_block(model, input_ids)
         # + Gating Overhead (sync 10 times)
         # We assume we extracted stats 10 times.
-        # Simulating costs: 10 * float conversion
-        # This assumes the model outputted stats. Our block return None,
-        # but computation happened. We just pay the sync cost here.
+        # This assumes the model outputted stats. Computation happened.
+        # We pay the sync cost here using actual output if possible, or dummy
         block_leaves(out)
-        # Emulate 10 syncs
-        for _ in range(BLOCK_SIZE):
-            _ = float(0.0)
+
+        # Emulate 10 syncs using actual data from stats if available, else dummy
+        # To be consistently fair with Sparse, we should try to access stats if they exist
+        # But forward_update_block returns 'out'.
+        if out and "ttt_stats" in out and out["ttt_stats"]:
+            # Use real stats if update block returns them (it calls forward_step which calls TTTLayer)
+            # TTTLayer returns stats.
+            _ = float(jnp.mean(out["ttt_stats"]["ttt_loss_step_0"]))  # Sync 1
+            # We need 9 more syncs to match block size of 10?
+            # No, if we did 10 updates, we had 10 decisions.
+            # Ideally we sync 10 times.
+            for _ in range(BLOCK_SIZE - 1):
+                _ = float(0.0)
+        else:
+            # Fallback
+            for _ in range(BLOCK_SIZE):
+                _ = float(0.0)
     end = time.perf_counter()
     gpu_monitor.stop()
 
@@ -274,9 +287,44 @@ def benchmark(batch_size):
         out = forward_sparse_20(model, input_ids)
         # Simulate Gating Overhead (sync 10 times, since we did 10 steps)
         # Even Skips need to inspect stats to decide to skip!
-        if out["ttt_stats"]:
-            # Accessing the stats forces data to host
+        # Accessing the stats forces data to host
+        if out and "ttt_stats" in out and out["ttt_stats"]:
             _ = float(jnp.mean(out["ttt_stats"]["ttt_loss_step_0"]))
+            # We assume the fused kernel effectively batched the execution, but
+            # conceptually we made 10 serial decisions.
+            # If we only sync ONCE per block, we are underestimating overhead?
+            # Yes. But 'forward_sparse_20' is one fused graph.
+            # JAX/XLA likely fused all 10 steps.
+            # In a real online setting, we can't fuse future steps if they depend on current decision.
+            # HOWEVER, PonderTTT decision depends on current input reconstruction.
+            # If we know the schedule ahead of time (as we simulate here), we can fuse.
+            # But we want to measure the *potential* speedup if we could pipeline/fuse.
+            # If we claim "Faster than UPDATE_1", we imply we can be faster.
+            # Sycning once per block is fair IF we assume we can pipeline execution.
+            # But if strict step-by-step:
+            # We should probably stick to syncing once per block to represent "averaged amortized cost"
+            # OR sync 10 times to be "strictly sequential".
+            # The previous code synced once per block for Sparse, but 10 times for Dense?
+            # No, previous code loop: `if out['ttt_stats']: ...` -> Once per block.
+            # Wait, Dense loop had: `for _ in range(BLOCK_SIZE): _ = float(0.0)` -> 10 times!
+            # This is UNFAIR. Sparse should also pay 10 syncs if Dense pays 10.
+            # OR Dense should pay 1 sync.
+            # Let's make it consistent: We simulate "Batch of 10" processing?
+            # No, latency is per-token.
+            # If we use fused kernel, we are effectively processing a "chunk of 10 tokens" (or 10 steps).
+            # If we sync once, we say "we make decisions in batches".
+            # If we sync 10 times, we say "we make decisions sequentially".
+            # Let's sync ONCE per block for ALL to represent "Ideal Pipelined/Fused" performance,
+            # OR sync BLOCK_SIZE times for ALL to represent "Strict Sequential".
+            # Strict Sequential is closer to reality for autoregressive.
+            # Let's sync BLOCK_SIZE times for ALL Ponder scenarios.
+            for _ in range(BLOCK_SIZE - 1):
+                _ = float(
+                    0.0
+                )  # Add 9 more syncs (1 real + 9 dummy to emulate overhead)
+        else:
+            for _ in range(BLOCK_SIZE):
+                _ = float(0.0)
 
     end = time.perf_counter()
     gpu_monitor.stop()
@@ -294,11 +342,14 @@ def benchmark(batch_size):
 
     for _ in range(n_blocks):
         out = forward_sparse_50(model, input_ids)
-        # Simulate Gating Overhead (sync 10 times, since we did 10 steps)
-        # Even Skips need to inspect stats to decide to skip!
-        if out["ttt_stats"]:
-            # Accessing the stats forces data to host
+        # Simulate Gating Overhead (sync 10 times)
+        if out and "ttt_stats" in out and out["ttt_stats"]:
             _ = float(jnp.mean(out["ttt_stats"]["ttt_loss_step_0"]))
+            for _ in range(BLOCK_SIZE - 1):
+                _ = float(0.0)
+        else:
+            for _ in range(BLOCK_SIZE):
+                _ = float(0.0)
 
     end = time.perf_counter()
     gpu_monitor.stop()
