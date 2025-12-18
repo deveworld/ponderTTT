@@ -53,8 +53,8 @@ graph LR
 | :--- | :--- | :--- | :--- | :--- |
 | **125M** | 125M | **+0.86** | +0.84 | Normal Gating |
 | **350M** | 350M | **-0.60** | -0.82 | Inverted Gating |
-| **1B** | 774M | **-0.66** | -0.72 | Inverted Gating |
-| **XL** | 1.5B | **-0.86** | -0.89 | Inverted Gating |
+| **1B** | 774M | **-0.78** | -0.72 | Inverted Gating |
+| **XL** | 1.5B | **-0.94** | -0.89 | Inverted Gating |
 
 > **Scaling Law**: As model size increases, the correlation between reconstruction loss and Oracle Advantage becomes **more negative**. The correlation crosses zero between 125M and 350M, and continues to decrease. This means larger models require **Inverted Gating** (update on low loss instead of high loss).
 
@@ -66,10 +66,10 @@ Pure JAX/Flax NNX implementation with multi-scale model support.
 
 | Model | Parameters | Status |
 |-------|------------|--------|
-| GPT-2 125M | 125M | ✅ Validated (Normal Gating, r=+0.89) |
+| GPT-2 125M | 125M | ✅ Validated (Normal Gating, r=+0.86) |
 | GPT-2 350M | 350M | ✅ Validated (Inverted Gating, r=-0.60) |
-| GPT-2 Large | 774M | ✅ Validated (Inverted Gating, r=-0.66) |
-| GPT-2 XL | 1.5B | ✅ Validated (Inverted Gating, r=-0.86) |
+| GPT-2 Large | 774M | ✅ Validated (Inverted Gating, r=-0.78) |
+| GPT-2 XL | 1.5B | ✅ Validated (Inverted Gating, r=-0.94) |
 | Gemma 3 1B | 1B | In Progress |
 | Gemma 3 4B | 4B | In Progress |
 | Gemma 3 12B | 12B | In Progress (TPU) |

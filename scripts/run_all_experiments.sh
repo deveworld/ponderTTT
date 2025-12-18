@@ -34,21 +34,19 @@ NUM_WORKERS=128
 
 # Configuration - 125M Model
 BATCH_SIZE_125M=16
-MAX_CHUNKS_125M=100000
+MAX_CHUNKS_125M=160000
 NUM_EVAL_BATCHES_125M=1000
 NUM_EVAL_BATCHES_OOD_125M=500
 
 # Configuration - 350M Model
 BATCH_SIZE_350M=16
-MAX_CHUNKS_350M=100000
+MAX_CHUNKS_350M=160000
 NUM_EVAL_BATCHES_350M=1000
 NUM_EVAL_BATCHES_OOD_350M=500
 
 # Configuration - Larger Models
-
-# Configuration - Larger Models
 BATCH_SIZE_LARGE=16
-MAX_CHUNKS_LARGE=100000
+MAX_CHUNKS_LARGE=160000
 NUM_EVAL_BATCHES_LARGE=1000
 
 # Save frequency (auto-calculated: save once at midpoint)
@@ -215,7 +213,7 @@ phase2_eval_id() {
     # Training uses ~160K examples, so skip those for fair evaluation
     local SKIP_EXAMPLES=160000
 
-    # 125M Evaluation
+    # 125M Evaluation (Standard Gating)
     if [ "$RUN_125M" = true ]; then
         local ckpt_125m_update1=$(get_latest_checkpoint "outputs/baselines/125m_update1/checkpoints")
         if [ -z "$ckpt_125m_update1" ]; then
@@ -244,7 +242,10 @@ phase2_eval_id() {
             log_error "No UPDATE_1 checkpoint found for 350M. Run Phase 1 first!"
         else
             log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
-            run_experiment "Eval 350M Python" \
+            
+            # 1. Standard Gating (Comparison/Control - expected to fail/underperform)
+            log_info "Running 350M Standard Gating (Control)"
+            run_experiment "Eval 350M Python (Standard)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 350m \
                     --update1_checkpoint "$ckpt_350m_update1" \
@@ -256,6 +257,21 @@ phase2_eval_id() {
                     --eval_ttt_improvement \
                     $INVERT_SIGNAL \
                     $TTT_BASE_LR_ARG
+
+            # 2. Inverted Gating (Proposed Method)
+            log_info "Running 350M Inverted Gating (Proposed)"
+            run_experiment "Eval 350M Python (Inverted)" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 350m \
+                    --update1_checkpoint "$ckpt_350m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_350M \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/350m_python_inverted \
+                    --eval_ttt_loss \
+                    --eval_ttt_improvement \
+                    --invert_signal \
+                    $TTT_BASE_LR_ARG
         fi
     fi
 
@@ -266,7 +282,10 @@ phase2_eval_id() {
             log_error "No UPDATE_1 checkpoint found for 1B. Run Phase 1 first!"
         else
             log_info "Using UPDATE_1 checkpoint: $ckpt_1b_update1"
-            run_experiment "Eval 1B Python" \
+            
+            # 1. Standard Gating
+            log_info "Running 1B Standard Gating (Control)"
+            run_experiment "Eval 1B Python (Standard)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 1b \
                     --update1_checkpoint "$ckpt_1b_update1" \
@@ -279,6 +298,22 @@ phase2_eval_id() {
                     --eval_ttt_improvement \
                     $INVERT_SIGNAL \
                     $TTT_BASE_LR_ARG
+            
+            # 2. Inverted Gating
+            log_info "Running 1B Inverted Gating (Proposed)"
+            run_experiment "Eval 1B Python (Inverted)" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 1b \
+                    --update1_checkpoint "$ckpt_1b_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
+                    --batch_size $BATCH_SIZE_LARGE \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/1b_python_inverted \
+                    --eval_ttt_loss \
+                    --eval_ttt_improvement \
+                    --invert_signal \
+                    $TTT_BASE_LR_ARG
         fi
     fi
 
@@ -289,7 +324,10 @@ phase2_eval_id() {
             log_error "No UPDATE_1 checkpoint found for XL. Run Phase 1 first!"
         else
             log_info "Using UPDATE_1 checkpoint: $ckpt_xl_update1"
-            run_experiment "Eval XL Python" \
+            
+            # 1. Standard Gating
+            log_info "Running XL Standard Gating (Control)"
+            run_experiment "Eval XL Python (Standard)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale xl \
                     --update1_checkpoint "$ckpt_xl_update1" \
@@ -301,6 +339,22 @@ phase2_eval_id() {
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
                     $INVERT_SIGNAL \
+                    $TTT_BASE_LR_ARG
+            
+            # 2. Inverted Gating
+            log_info "Running XL Inverted Gating (Proposed)"
+            run_experiment "Eval XL Python (Inverted)" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale xl \
+                    --update1_checkpoint "$ckpt_xl_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
+                    --batch_size $BATCH_SIZE_LARGE \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/xl_python_inverted \
+                    --eval_ttt_loss \
+                    --eval_ttt_improvement \
+                    --invert_signal \
                     $TTT_BASE_LR_ARG
         fi
     fi
@@ -346,9 +400,12 @@ phase3_eval_ood() {
             log_error "No UPDATE_1 checkpoint found for 350M. Run Phase 1 first!"
         else
             log_info "Using 350M UPDATE_1 checkpoint: $ckpt_350m_update1"
+            
+            # 1. Standard Gating (Control - Verify Failure)
+            log_info "Running 350M OOD Standard Gating (Control)"
             for lang in "${languages[@]}"; do
                 local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
-                run_experiment "Eval 350M $lang" \
+                run_experiment "Eval 350M $lang (Standard)" \
                     python -m ponderttt.experiments.compare_methods \
                         --model_scale 350m \
                         --update1_checkpoint "$ckpt_350m_update1" \
@@ -358,6 +415,22 @@ phase3_eval_ood() {
                         --eval_ttt_loss \
                         --eval_ttt_improvement \
                         $INVERT_SIGNAL
+            done
+
+            # 2. Inverted Gating (Proposed)
+            log_info "Running 350M OOD Inverted Gating (Proposed)"
+            for lang in "${languages[@]}"; do
+                local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
+                run_experiment "Eval 350M $lang (Inverted)" \
+                    python -m ponderttt.experiments.compare_methods \
+                        --model_scale 350m \
+                        --update1_checkpoint "$ckpt_350m_update1" \
+                        --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
+                        --language "$lang" \
+                        --output_dir "outputs/eval/350m_${lang_lower}_inverted" \
+                        --eval_ttt_loss \
+                        --eval_ttt_improvement \
+                        --invert_signal
             done
         fi
     fi
@@ -415,9 +488,10 @@ phase5_shuffle() {
     if [ "$RUN_350M" = true ]; then
         local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
         if [ -z "$ckpt_350m_update1" ]; then
-            log_error "No UPDATE_1 checkpoint found for 350M. Cannot run Shuffle Ablation."
+            log_error "No UPDATE_1 checkpoint found for 350M. No Shuffle Ablation."
         else
             log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
+            # 350M uses Inverted Gating
             run_experiment "Shuffle Ablation 350M" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 350m \
@@ -425,10 +499,10 @@ phase5_shuffle() {
                     --num_eval_batches $NUM_EVAL_BATCHES_350M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/350m_shuffle \
+                    --output_dir outputs/eval/350m_shuffle_inverted \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL \
+                    --invert_signal \
                     --shuffle
         fi
     fi
@@ -471,9 +545,10 @@ phase6_diagonal() {
     if [ "$RUN_350M" = true ]; then
         local ckpt_350m_update1=$(get_latest_checkpoint "outputs/baselines/350m_update1/checkpoints")
         if [ -z "$ckpt_350m_update1" ]; then
-            log_error "No UPDATE_1 checkpoint found for 350M. Cannot run Diagonal Ablation."
+            log_error "No UPDATE_1 checkpoint found for 350M. No Diagonal Ablation."
         else
             log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
+            # 350M uses Inverted Gating
             run_experiment "Diagonal Ablation 350M (k=-1)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 350m \
@@ -481,10 +556,10 @@ phase6_diagonal() {
                     --num_eval_batches $NUM_EVAL_BATCHES_350M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/350m_diagonal_k_minus_1 \
+                    --output_dir outputs/eval/350m_diagonal_k_minus_1_inverted \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL \
+                    --invert_signal \
                     --diagonal_offset -1
         fi
     fi
@@ -563,6 +638,12 @@ for arg in "$@"; do
             ;;
         --ttt_base_lr=*)
             TTT_BASE_LR_ARG="${arg}"
+            ;;
+        --all-models)
+            RUN_125M=true
+            RUN_350M=true
+            RUN_1B=true
+            RUN_XL=true
             ;;
         *)
             PHASES+=("$arg")
