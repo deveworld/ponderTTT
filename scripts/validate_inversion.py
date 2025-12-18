@@ -50,6 +50,24 @@ def run_validation(
         max_examples=num_chunks * 2,  # Fetch enough
     )
 
+    # CRITICAL FIX: Initialize 'wo' (Output Projection) to non-zero logic
+    # TTTLayer inits 'wo' to zeros to start as identity.
+    # However, for this validation on an UNTRAINED adapter, zero 'wo' means
+    # the TTT updates (W1) are multiplied by 0 and have NO effect on the output.
+    # We must poke 'wo' with small random noise to allow the internal updates to propagate.
+    # If gradients explode inside, this noise will amplify it to the output.
+    print(
+        "Initializing fast_layer.wo to small random values (to unmask TTT updates)..."
+    )
+    key = jax.random.key(seed)
+
+    # Access underlying parameter directly
+    # model.fast_layer.wo is nnx.Linear
+    # We want to set .kernel
+    wo_shape = model.fast_layer.wo.kernel.value.shape
+    random_wo = jax.random.normal(key, wo_shape) * 0.001  # Small scale
+    model.fast_layer.wo.kernel.value = random_wo
+
     # Store results
     results = []
 
