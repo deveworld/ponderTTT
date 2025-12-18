@@ -1,10 +1,8 @@
 import jax
 import jax.numpy as jnp
-from flax import nnx
 import time
 
 from ponderttt.models.base_model_nnx import load_ttt_model
-from ponderttt.models.gpt2_nnx import GPT2Config
 
 from ponderttt.data.tokenization import get_tokenizer
 
@@ -35,13 +33,21 @@ def check_model(model_name):
         # Forward pass (SKIP path)
         output = model(input_ids, use_ttt=False)
         logits = output["logits"]
+        print(f"[{model_name}] Logits shape: {logits.shape}")
 
         # Calculate loss manually for last token
         # Predict "n"-like token or something reasonable?
-        # Actually just check perplexity on a common phrase
-        text_eval = "The quick brown fox jumps over the lazy dog."
+        # 1. Normal positions
+        text_eval = "def factorial(n):\n    if n == 0:\n        return 1\n    return n * factorial(n - 1)"
         encoding_eval = tokenizer.encode(text_eval)
         input_ids_eval = jnp.array([encoding_eval.ids], dtype=jnp.int32)
+
+        # 2. OOB positions (simulating chunk 2+)
+        pos_offset = 1024
+        position_ids_oob = (
+            jnp.arange(len(encoding_eval.ids), dtype=jnp.int32) + pos_offset
+        )
+        position_ids_oob = jnp.array([position_ids_oob])
 
         output_eval = model(input_ids_eval, use_ttt=False)
         logits_eval = output_eval["logits"]
@@ -51,14 +57,38 @@ def check_model(model_name):
         shift_logits = logits_eval[..., :-1, :]
         shift_labels = input_ids_eval[..., 1:]
 
-        loss_fn = lambda logits, labels: -jnp.take_along_axis(
-            jax.nn.log_softmax(logits, axis=-1), labels[..., None], axis=-1
-        ).mean()
+        def compute_loss(logits, labels):
+            return -jnp.take_along_axis(
+                jax.nn.log_softmax(logits, axis=-1), labels[..., None], axis=-1
+            ).mean()
 
-        loss = loss_fn(shift_logits, shift_labels)
+        loss = compute_loss(shift_logits, shift_labels)
         ppl = jnp.exp(loss)
 
         print(f"[{model_name}] Loss: {loss:.4f}, Perplexity: {ppl:.2f}")
+
+        if output_eval["ttt_stats"] is not None:
+            wte_stats = f"WTE mean: {jnp.mean(model.base_model.wte.embedding):.6f}, std: {jnp.std(model.base_model.wte.embedding):.6f}"
+            print(f"[{model_name}] {wte_stats}")
+
+        # Run OOB Test
+        print(f"[{model_name}] Testing OOB Positions (1024+)...")
+        try:
+            # Need to import optax for this to work
+            import optax
+
+            output_oob = model(
+                input_ids_eval, position_ids=position_ids_oob, use_ttt=False
+            )
+            logits_oob = output_oob["logits"]
+            shift_logits_oob = logits_oob[..., :-1, :]
+            shift_labels_oob = input_ids_eval[..., 1:]
+            loss_oob = optax.softmax_cross_entropy_with_integer_labels(
+                shift_logits_oob, shift_labels_oob
+            ).mean()
+            print(f"[{model_name}] OOB Loss: {loss_oob:.4f}")
+        except Exception as e:
+            print(f"[{model_name}] OOB Test Failed: {e}")
 
         # Basic sanity check on weights
         # Check if weights are non-zero and reasonable stats

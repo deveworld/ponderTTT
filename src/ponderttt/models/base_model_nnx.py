@@ -116,14 +116,12 @@ class TTTTransformerLM(nnx.Module):
         self.is_training = False
         self.pad_token_id = model_config.pad_token_id
 
-        # Slow weights: Pretrained GPT-2 (will be frozen during training)
-        # Note: We use GPT2Model (without LM head) to get hidden states
+        # Slow weights: Pretrained GPT-2 (frozen during training)
         from ponderttt.models.gpt2_nnx import GPT2Model
 
         self.base_model = GPT2Model(gpt2_config, rngs)
 
-        # Pre-normalization for fast-weight layer (following official TTT-LM pattern)
-        # Official implementation: hidden_states_pre_normed = self.seq_norm(hidden_states)
+        # Pre-normalization for fast-weight layer
         self.fast_norm = nnx.LayerNorm(gpt2_config.n_embd, epsilon=1e-5, rngs=rngs)
 
         # Fast weights: TTT layer or LoRA (adaptive, trainable)
@@ -200,8 +198,7 @@ class TTTTransformerLM(nnx.Module):
         Note:
             Use model.train() / model.eval() to control dropout.
         """
-        # Get hidden states from frozen base model
-        # Apply stop_gradient to freeze theta_slow (PLAN.md: only theta_fast is trainable)
+        # Get hidden states from frozen base model (stop_gradient freezes theta_slow)
         train_flag = self.is_training
 
         # If position_ids not provided, generate them (0..T)
@@ -211,17 +208,23 @@ class TTTTransformerLM(nnx.Module):
                 batch_size, axis=0
             )
 
+        # Prepare position_ids for Base Model (GPT-2)
+        # GPT-2 uses absolute positional embeddings with limited context (1024)
+        # We wrap global position_ids to the context window (local/chunked attention)
+        # to prevent Out-Of-Bounds errors or Garbage output when pos >= 1024.
+        # fast_layer (TTT) continues to use global position_ids for RoPE.
+        base_position_ids = position_ids
+        if hasattr(self.gpt2_config, "n_positions"):
+            max_pos = self.gpt2_config.n_positions
+            # Wrap positions: effective local position within context window
+            base_position_ids = position_ids % max_pos
+
         hidden_states = jax.lax.stop_gradient(
-            self.base_model(input_ids, position_ids=position_ids, train=train_flag)
+            self.base_model(input_ids, position_ids=base_position_ids, train=train_flag)
         )
 
         if use_ttt:
-            # Following official TTT-LM Block pattern (model.py Line 696-714):
-            # 1. Pre-normalization
-            # 2. Fast-weight layer (TTT or LoRA)
-            # 3. Residual connection (no scaling)
-
-            # Pre-normalize hidden states (official pattern)
+            # TTT Block: pre-norm → fast-weight layer → residual
             hidden_states_normed = self.fast_norm(hidden_states)
 
             # Apply fast-weight layer (TTT or LoRA)
@@ -242,23 +245,15 @@ class TTTTransformerLM(nnx.Module):
                     train=train_flag,
                 )
 
-            # Residual connection (official pattern: hidden_states = hidden_states + seq_modeling_output)
+            # Residual connection
             adapted_hidden = hidden_states + fast_output
 
-            # Project adapted hidden states to vocabulary logits with weight tying
+            # Project to logits with weight tying (stop_gradient keeps embedding frozen)
             if self.tie_word_embeddings:
-                # Use shared embedding weights for LM head
-                # Following official TTT-LM-JAX implementation
-                # CRITICAL: Apply stop_gradient to embedding kernel to prevent it from being
-                # co-trained with TTT. This ensures SKIP path (hidden_states @ embedding.T)
-                # remains valid as a baseline. Without this, embedding weights drift to align
-                # with (hidden_states + fast_output) rather than raw hidden_states.
                 embedding_kernel = jax.lax.stop_gradient(
                     self.base_model.wte.embedding[...]
-                )  # [vocab_size, n_embd]
-                logits = (
-                    adapted_hidden @ embedding_kernel.T
-                )  # [batch, seq_len, vocab_size]
+                )
+                logits = adapted_hidden @ embedding_kernel.T
             else:
                 logits = self.lm_head(adapted_hidden)
 
