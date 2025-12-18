@@ -24,7 +24,6 @@ def run_validation(
     if checkpoint_path:
         print(f"Target Checkpoint: {checkpoint_path}")
 
-    # Load Model (1.5B usually)
     model_name = {
         "125m": "gpt2",
         "350m": "gpt2-medium",
@@ -42,67 +41,49 @@ def run_validation(
         checkpoint_path=checkpoint_path,
     )
 
-    # Data Iterator
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
-        split="train",  # Use train or validation split
+        split="train",
         language=language,
         batch_size=batch_size,
         seq_length=1024,
         chunk_size=512,
-        max_examples=num_chunks * 2,  # Fetch enough
+        max_examples=num_chunks * 2,
     )
 
-    # Initialize fast_layer.wo to small random values (to unmask TTT updates)
+    # Initialize fast_layer.wo to small random values to unmask TTT updates
     if hasattr(model, "fast_layer") and hasattr(model.fast_layer, "wo"):
-        print(
-            "Initializing fast_layer.wo to small random values (to unmask TTT updates)..."
-        )
+        print("Initializing fast_layer.wo to small random values...")
         key = jax.random.PRNGKey(seed)
-        # FIX: DeprecationWarning: '.value' access is now deprecated.
-        # Used model.fast_layer.wo.kernel.shape instead of .value.shape
         wo_param = model.fast_layer.wo.kernel
-        wo_shape = wo_param.shape
-        # Initialize with small noise
-        wo_param.value = jax.random.normal(key, wo_shape) * 0.02
+        wo_param.value = jax.random.normal(key, wo_param.shape) * 0.02
 
-    # Store results
     results = []
 
-    # JIT functions
     @nnx.jit
     def forward_no_clip(model, input_ids):
-        # Regular UPDATE_1
-        # Ensure clipping is OFF
+        """UPDATE_1 without gradient clipping."""
         if hasattr(model.fast_layer, "config"):
             model.fast_layer.config.max_grad_norm = None
 
-        # Get Stats (Recon Loss) + Update + Loss
-        # We need to run TTT with use_ttt=True
         out = model(input_ids, use_ttt=True)
-
-        # Loss calculation (next token prediction)
         logits = out["logits"][:, :-1]
         labels = input_ids[:, 1:]
-        mask = jnp.ones_like(labels)  # Full mask for simplicity in this focused test
+        mask = jnp.ones_like(labels)
 
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
         loss = (loss * mask).sum() / mask.sum()
-
-        # Recon Loss (Step 0)
         recon_loss = out["ttt_stats"]["ttt_loss_step_0"].mean()
 
         return loss, recon_loss
 
     @nnx.jit
     def forward_with_clip(model, input_ids):
-        # Clipped UPDATE_1
-        # Ensure clipping is ON
+        """UPDATE_1 with gradient clipping."""
         if hasattr(model.fast_layer, "config"):
             model.fast_layer.config.max_grad_norm = max_grad_norm
 
         out = model(input_ids, use_ttt=True)
-
         logits = out["logits"][:, :-1]
         labels = input_ids[:, 1:]
         mask = jnp.ones_like(labels)
@@ -122,10 +103,7 @@ def run_validation(
         loss = (loss * mask).sum() / mask.sum()
         return loss
 
-    # Loop
     print("Running inference...")
-    # Skip a few batches to get into steady state if needed, or just run
-
     chunk_counter = 0
     for i, batch in enumerate(tqdm(data_iter)):
         if chunk_counter >= num_chunks:
@@ -135,16 +113,10 @@ def run_validation(
         for c_idx in range(chunks.shape[1]):
             input_ids = chunks[:, c_idx]
 
-            # 1. Measure Baseline (SKIP)
             loss_skip = float(forward_skip(model, input_ids))
-
-            # 2. Measure Standard Update (No Clip)
-            # This also gives us the "Reconstruction Loss" to categorize the chunk
             loss_update_nc, recon_loss = forward_no_clip(model, input_ids)
             loss_update_nc = float(loss_update_nc)
             recon_loss = float(recon_loss)
-
-            # 3. Measure Clipped Update
             loss_update_c = float(forward_with_clip(model, input_ids))
 
             results.append(
@@ -163,13 +135,8 @@ def run_validation(
                 break
 
     df = pd.DataFrame(results)
-
-    # Analysis
-    # Sort by Reconstruction Loss (High -> Low)
     df_sorted = df.sort_values("recon_loss", ascending=False)
-
-    # Top 20% High Reconstruction Loss Chunks
-    k = max(1, len(df) // 5)
+    k = max(1, len(df) // 5)  # Top 20%
     top_k = df_sorted.head(k)
 
     print("\n" + "=" * 60)
@@ -189,20 +156,11 @@ def run_validation(
     print("-" * 60)
 
     if avg_c < avg_nc and (avg_skip - avg_c) > 0 and (avg_skip - avg_nc) < 0:
-        print(
-            "RESULT: Clipping FIXED the degradation! -> Inversion Hypothesis WEAKENED."
-        )
-        print(
-            "        (High loss was due to gradient instability, just needed clipping)"
-        )
+        print("RESULT: Clipping FIXED the degradation! -> Inversion Hypothesis WEAKENED.")
+        print("        (High loss was due to gradient instability)")
     elif avg_c >= avg_skip or (avg_skip - avg_c) < (avg_skip - avg_nc) + 0.01:
-        # allow small noise margin, or if both promote degradation
-        print(
-            "RESULT: Clipping did NOT fix degradation! -> Inversion Hypothesis STRENGTHENED."
-        )
-        print(
-            "        (High reconstruction loss truly indicates 'updating is harmful')"
-        )
+        print("RESULT: Clipping did NOT fix degradation! -> Inversion Hypothesis STRENGTHENED.")
+        print("        (High reconstruction loss indicates 'updating is harmful')")
     else:
         print("RESULT: Mixed/Inconclusive. See details.")
 

@@ -292,23 +292,6 @@ class CodeDataset:
                     break
 
             while futures:
-                # Wait for the first completed future
-                # Note: as_completed yields futures as they complete
-                # We use a small batch approach to replenish the pool
-
-                # Check for completed futures without blocking too long on any single one
-                # But we need to yield results in order or out of order?
-                # Out of order is fine for training data.
-
-                # Simple strategy: wait for at least one, then collect all currently done
-                # and replenish.
-
-                # Using as_completed on the current set of futures
-                # We need to be careful not to create a new as_completed iterator every loop
-                # if we are modifying the list.
-
-                # Better approach: Use a list of futures and check them, or use a queue.
-                # Since we want to use ThreadPoolExecutor, let's use a simple loop with wait.
                 from concurrent.futures import wait, FIRST_COMPLETED
 
                 done, not_done = wait(futures, return_when=FIRST_COMPLETED)
@@ -637,13 +620,8 @@ def create_data_iterator(
                 cached_sequences = existing_metadata.get("total_sequences", 0)
                 sequences_still_needed = total_needed - cached_sequences
             else:
-                # Fresh download
                 sequences_still_needed = total_needed
-            # With concatenation, we need many more files because:
-            # 1. Many code files are short (< seq_length tokens)
-            # 2. Decontamination filters out files containing benchmark solutions
-            # 3. Some files may be mostly whitespace/comments
-            # Using 2x multiplier to be safe (empirically determined)
+            # 2x multiplier for concatenation (many files are short or filtered)
             files_to_download = sequences_still_needed * 2 if concatenate_documents else sequences_still_needed
             files_to_download = max(files_to_download, 10000)  # Download at least 10k files
 

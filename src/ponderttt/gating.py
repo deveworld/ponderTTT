@@ -67,18 +67,9 @@ class RandomGating(GatingStrategy):
 
     def __init__(self, rngs: nnx.Rngs, probability: float = 0.5):
         self.probability = probability
-        self.rng_key = rngs.params() # Use params rng for seed or separate gating rng?
-        # Actually need a fresh key each time. 
-        # For NNX, we usually pass rngs to call or hold a stateful rng.
-        # Let's use a stateful approach for simplicity if compatible with JIT.
-        # But for JAX purity, it's better to pass a key. 
-        # Simple hack: use a counter-based hash or just stateless if rng passed in kwargs.
-        pass
 
     def __call__(self, inputs: Any, rng: jax.Array | None = None, **kwargs) -> GatingDecision:
         if rng is None:
-             # Deterministic fallback if no RNG
             return GatingDecision(should_update=jnp.array(True))
-            
         should_update = jax.random.bernoulli(rng, p=self.probability)
         return GatingDecision(should_update=should_update.astype(jnp.float32))
