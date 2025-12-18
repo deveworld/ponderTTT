@@ -202,6 +202,14 @@ def benchmark(batch_size):
     out = forward_update_block(model, input_ids)
     block_leaves(out)
 
+    print("Warmup Ponder Sparse 20%...")
+    out = forward_sparse_20(model, input_ids)
+    block_leaves(out)
+
+    print("Warmup Ponder Sparse 50%...")
+    out = forward_sparse_50(model, input_ids)
+    block_leaves(out)
+
     print("Warmup complete")
 
     # Init Monitor
