@@ -52,9 +52,9 @@ def scan_remat_every_n_iterations_scan(f, n, carry, x):
         return jax.lax.scan(f, c, xs)
 
     carry, y_grouped = jax.lax.scan(
-        jax.remat(inner_scan, prevent_cse=False), # type: ignore[arg-type]
+        jax.remat(inner_scan, prevent_cse=False),  # type: ignore[arg-type]
         carry,
-        x_grouped
+        x_grouped,
     )
     y = tree_map(lambda x: x.reshape((-1, *x.shape[2:])), y_grouped)
     return carry, y
@@ -86,16 +86,38 @@ class TTTConfig:
     eta_decay_rate: float = 0.0
     # Sharding configuration (for multi-host TPU)
     axis_rules: Optional[Callable[..., P]] = None
+    # Gradient clipping for inner loop (optional)
+    max_grad_norm: Optional[float] = None
 
     @classmethod
     def for_gpt2(cls, model_size: str = "125m") -> "TTTConfig":
         """TTT config for GPT-2 models."""
         configs: dict[str, dict] = {
-            "125m": {"hidden_dim": 768, "num_heads": 12, "head_dim": 64, "eta_decay_rate": 0.0},
+            "125m": {
+                "hidden_dim": 768,
+                "num_heads": 12,
+                "head_dim": 64,
+                "eta_decay_rate": 0.0,
+            },
             # 350M+ needs eta_decay_rate to fix gradient misalignment across positions
-            "350m": {"hidden_dim": 1024, "num_heads": 16, "head_dim": 64, "eta_decay_rate": 0.3},
-            "1b": {"hidden_dim": 1280, "num_heads": 20, "head_dim": 64, "eta_decay_rate": 0.3},
-            "xl": {"hidden_dim": 1600, "num_heads": 25, "head_dim": 64, "eta_decay_rate": 0.3},
+            "350m": {
+                "hidden_dim": 1024,
+                "num_heads": 16,
+                "head_dim": 64,
+                "eta_decay_rate": 0.3,
+            },
+            "1b": {
+                "hidden_dim": 1280,
+                "num_heads": 20,
+                "head_dim": 64,
+                "eta_decay_rate": 0.3,
+            },
+            "xl": {
+                "hidden_dim": 1600,
+                "num_heads": 25,
+                "head_dim": 64,
+                "eta_decay_rate": 0.3,
+            },
         }
         config = configs.get(model_size, configs["125m"])
         return cls(
@@ -170,7 +192,10 @@ def precompute_freqs_cis(
 
 
 def apply_rotary_emb(
-    xq: jnp.ndarray, xk: jnp.ndarray, freqs_cis: jnp.ndarray, dtype: jnp.dtype = jnp.float32
+    xq: jnp.ndarray,
+    xk: jnp.ndarray,
+    freqs_cis: jnp.ndarray,
+    dtype: jnp.dtype = jnp.float32,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Apply Rotary Position Embedding to queries and keys."""
     reshape_xq = xq.astype(jnp.float32).reshape(*xq.shape[:-1], -1, 2)
@@ -182,10 +207,14 @@ def apply_rotary_emb(
     freqs_cis = jnp.reshape(freqs_cis, (*freqs_cis.shape[:2], 1, *freqs_cis.shape[2:]))
 
     xq_out = xq_ * freqs_cis
-    xq_out = jnp.stack((jnp.real(xq_out), jnp.imag(xq_out)), axis=-1).reshape(*xq_out.shape[:-1], -1)
+    xq_out = jnp.stack((jnp.real(xq_out), jnp.imag(xq_out)), axis=-1).reshape(
+        *xq_out.shape[:-1], -1
+    )
 
     xk_out = xk_ * freqs_cis
-    xk_out = jnp.stack((jnp.real(xk_out), jnp.imag(xk_out)), axis=-1).reshape(*xk_out.shape[:-1], -1)
+    xk_out = jnp.stack((jnp.real(xk_out), jnp.imag(xk_out)), axis=-1).reshape(
+        *xk_out.shape[:-1], -1
+    )
 
     return xq_out.astype(dtype), xk_out.astype(dtype)
 
@@ -265,7 +294,7 @@ class TTTLayer(nnx.Module):
             kernel_init=maybe_with_partitioning(
                 nnx.initializers.lecun_normal(),
                 axis_rules,
-                ('embed', 'kv'),
+                ("embed", "kv"),
             ),
             rngs=rngs,
         )
@@ -276,7 +305,7 @@ class TTTLayer(nnx.Module):
             kernel_init=maybe_with_partitioning(
                 nnx.initializers.lecun_normal(),
                 axis_rules,
-                ('embed', 'kv'),
+                ("embed", "kv"),
             ),
             rngs=rngs,
         )
@@ -289,7 +318,7 @@ class TTTLayer(nnx.Module):
             kernel_init=maybe_with_partitioning(
                 nnx.initializers.zeros,
                 axis_rules,
-                ('kv', 'embed'),
+                ("kv", "embed"),
             ),
             rngs=rngs,
         )
@@ -302,7 +331,7 @@ class TTTLayer(nnx.Module):
             kernel_init=maybe_with_partitioning(
                 nnx.initializers.lecun_normal(),
                 axis_rules,
-                ('embed', 'kv'),
+                ("embed", "kv"),
             ),
             rngs=rngs,
         )
@@ -328,36 +357,50 @@ class TTTLayer(nnx.Module):
         )
 
         # Token position indices for learning rate
-        self.token_idx = 1.0 / jnp.arange(1, self.mini_batch_size + 1, dtype=jnp.float32)
-        self.learnable_token_idx = nnx.Param(jnp.zeros((self.mini_batch_size,), dtype=jnp.float32))
+        self.token_idx = 1.0 / jnp.arange(
+            1, self.mini_batch_size + 1, dtype=jnp.float32
+        )
+        self.learnable_token_idx = nnx.Param(
+            jnp.zeros((self.mini_batch_size,), dtype=jnp.float32)
+        )
 
         # Exponential decay weight for position-dependent eta
         # This gives more weight to recent positions, fixing gradient misalignment for larger models
         # position 15: exp(0) = 1.0, position 0: exp(-15 * decay_rate)
         position_offset = jnp.arange(self.mini_batch_size) - (self.mini_batch_size - 1)
-        self.exp_decay_weight = jnp.exp(config.eta_decay_rate * position_offset.astype(jnp.float32))
+        self.exp_decay_weight = jnp.exp(
+            config.eta_decay_rate * position_offset.astype(jnp.float32)
+        )
 
         # Learnable learning rate (per-head)
         # Use Dict with string keys to avoid int/str comparison issues in sorting
-        self.learnable_ttt_lr_layers = nnx.Dict({
-            str(i): nnx.Linear(config.hidden_dim, 1, rngs=rngs) 
-            for i in range(config.num_heads)
-        })
+        self.learnable_ttt_lr_layers = nnx.Dict(
+            {
+                str(i): nnx.Linear(config.hidden_dim, 1, rngs=rngs)
+                for i in range(config.num_heads)
+            }
+        )
 
         # Per-head TTT normalization
         self.ttt_norm = TTTLayerNorm(config.num_heads, config.head_dim, 1e-5, rngs)
 
         # Post-normalization
-        self.post_norm = nnx.LayerNorm(config.num_heads * config.head_dim, epsilon=1e-5, rngs=rngs)
+        self.post_norm = nnx.LayerNorm(
+            config.num_heads * config.head_dim, epsilon=1e-5, rngs=rngs
+        )
 
         # Fast weights for TTT (per-head)
         # Sharding: [num_heads, head_dim, head_dim] -> ('kv', None, None) - shard across heads
         normal_init = maybe_with_partitioning(
             nnx.initializers.normal(config.initializer_range),
             axis_rules,
-            ('kv', None, None),
+            ("kv", None, None),
         )
-        self.W1 = nnx.Param(normal_init(rngs.params(), (config.num_heads, config.head_dim, config.head_dim)))
+        self.W1 = nnx.Param(
+            normal_init(
+                rngs.params(), (config.num_heads, config.head_dim, config.head_dim)
+            )
+        )
         self.b1 = nnx.Param(jnp.zeros((config.num_heads, 1, config.head_dim)))
 
     def _apply_causal_conv(self, conv_layer: nnx.Conv, x: jax.Array) -> jax.Array:
@@ -373,7 +416,7 @@ class TTTLayer(nnx.Module):
         # Pad left with kernel_width - 1 zeros for causal conv
         kernel_width = self.config.conv_width
         original_seq_len = x.shape[1]
-        x_padded = jnp.pad(x, ((0, 0), (kernel_width - 1, 0), (0, 0)), mode='constant')
+        x_padded = jnp.pad(x, ((0, 0), (kernel_width - 1, 0), (0, 0)), mode="constant")
         # Apply conv (NNX conv expects [batch, length, features])
         out = conv_layer(x_padded)
         # Trim to original sequence length
@@ -381,42 +424,48 @@ class TTTLayer(nnx.Module):
 
     def _split_heads(self, hidden_states: jax.Array) -> jax.Array:
         """Reshape to multi-head format."""
-        return hidden_states.reshape(hidden_states.shape[:2] + (self.num_heads, self.head_dim))
+        return hidden_states.reshape(
+            hidden_states.shape[:2] + (self.num_heads, self.head_dim)
+        )
 
     def _split_mini_batches(self, hidden_states: jax.Array) -> jax.Array:
         """Split sequence into mini-batches."""
         B, N, num_head, head_dim = hidden_states.shape
         n_mini_batch = N // self.mini_batch_size
         seq_shape = (n_mini_batch, self.mini_batch_size)
-        hidden_states = hidden_states.reshape(B, *seq_shape, self.num_heads, self.head_dim).transpose(
-            0, 3, 1, 2, 4
-        )
+        hidden_states = hidden_states.reshape(
+            B, *seq_shape, self.num_heads, self.head_dim
+        ).transpose(0, 3, 1, 2, 4)
         return hidden_states
 
-    def get_qkv_projections(self, batch: jax.Array) -> Tuple[jax.Array, jax.Array, jax.Array]:
+    def get_qkv_projections(
+        self, batch: jax.Array
+    ) -> Tuple[jax.Array, jax.Array, jax.Array]:
         """Get Q, K, V projections with causal convolution."""
         B, N, C = batch.shape
-        
+
         # Flatten for Linear layers
         batch_flat = batch.astype(jnp.float32).reshape(-1, C)
-        
+
         xqk = self.wq(batch_flat)
         xqk = xqk.reshape(B, N, -1)  # Reshape back
-        
+
         XV = self.wv(batch_flat)
         XV = XV.reshape(B, N, -1)  # Reshape back
-        
+
         XQ = self._apply_causal_conv(self.conv_q, xqk)
         XK = self._apply_causal_conv(self.conv_k, xqk)
         return XQ, XK, XV
 
-    def get_eta(self, X: jax.Array, gating_scale: Optional[jax.Array] = None) -> jax.Array:
+    def get_eta(
+        self, X: jax.Array, gating_scale: Optional[jax.Array] = None
+    ) -> jax.Array:
         """Compute learnable learning rate (per-head, position-dependent)."""
         # Per-head learnable learning rate
         # X shape: [B, n_mini_batch, mini_batch_size, width]
         B, N_mini, Mini, W = X.shape
         X_flat = X.astype(jnp.float32).reshape(-1, W)
-        
+
         learnable_lrs = []
         for head_idx in range(len(self.learnable_ttt_lr_layers)):
             lr_layer = self.learnable_ttt_lr_layers[str(head_idx)]
@@ -424,7 +473,9 @@ class TTTLayer(nnx.Module):
             lr = lr.reshape(B, N_mini, Mini, 1)
             learnable_lrs.append(lr)
 
-        learnable_ttt_lr = jnp.stack(learnable_lrs, axis=1)  # [B, num_heads, n_mini_batch, mini_batch_size, 1]
+        learnable_ttt_lr = jnp.stack(
+            learnable_lrs, axis=1
+        )  # [B, num_heads, n_mini_batch, mini_batch_size, 1]
         learnable_ttt_lr = jax.nn.sigmoid(learnable_ttt_lr)
 
         # Position-dependent base learning rate
@@ -442,7 +493,9 @@ class TTTLayer(nnx.Module):
         # (350M with hidden_dim=1024 needs 25% smaller eta than 125M with hidden_dim=768)
         hidden_dim_scale = 768.0 / self.config.hidden_dim
         eta = (
-            (self.config.ttt_base_lr * token_idx).reshape(1, 1, 1, token_idx.shape[0], -1)
+            (self.config.ttt_base_lr * token_idx).reshape(
+                1, 1, 1, token_idx.shape[0], -1
+            )
             * learnable_ttt_lr
             * hidden_dim_scale
             / self.head_dim
@@ -456,14 +509,14 @@ class TTTLayer(nnx.Module):
             elif gating_scale.ndim == 3:
                 # [B, N_mini, 1]
                 gating_scale = gating_scale[:, None, :, None, :]
-                
+
             eta = eta * gating_scale
-            
+
         return eta
 
     def get_ttt_inputs(
-        self, 
-        batch: jax.Array, 
+        self,
+        batch: jax.Array,
         position_ids: jax.Array,
         gating_scale: Optional[jax.Array] = None,
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, Tuple]:
@@ -497,10 +550,14 @@ class TTTLayer(nnx.Module):
             XK_last_in_mini_batch = jnp.take(XK_heads, last_indices, axis=1)
 
             ssl_tgt_last_in_mini_batch = XV_last_in_mini_batch - XK_last_in_mini_batch
-            ssl_tgt_mean = (XV_heads - XK_heads).mean(axis=1, keepdims=True).reshape(B, 1, self.num_heads, self.head_dim)
-            ssl_tgt_last_in_mini_batch_from_mean_mse = ((ssl_tgt_last_in_mini_batch - ssl_tgt_mean) ** 2).mean(
-                axis=(0, 2, 3)
+            ssl_tgt_mean = (
+                (XV_heads - XK_heads)
+                .mean(axis=1, keepdims=True)
+                .reshape(B, 1, self.num_heads, self.head_dim)
             )
+            ssl_tgt_last_in_mini_batch_from_mean_mse = (
+                (ssl_tgt_last_in_mini_batch - ssl_tgt_mean) ** 2
+            ).mean(axis=(0, 2, 3))
         else:
             ssl_tgt_last_in_mini_batch_from_mean_mse = None
 
@@ -563,6 +620,13 @@ class TTTLayer(nnx.Module):
         grad_l_wrt_ttt_norm_out = ttt_norm_out - ssl_target
         grad_l_wrt_Z1 = ttt_norm_vjp(grad_l_wrt_ttt_norm_out)[0]
 
+        # Gradient Clipping (Optional)
+        if self.config.max_grad_norm is not None:
+            # Clip gradient by norm
+            grad_norm = jnp.linalg.norm(grad_l_wrt_Z1)
+            scale = jnp.minimum(1.0, self.config.max_grad_norm / (grad_norm + 1e-6))
+            grad_l_wrt_Z1 = grad_l_wrt_Z1 * scale
+
         # Calculate TTT loss
         if self.config.output_ttt_stats:
             ttt_loss_mse_step_0 = (grad_l_wrt_ttt_norm_out[-1] ** 2).mean()
@@ -576,13 +640,19 @@ class TTTLayer(nnx.Module):
 
         # Causal processing with updated weights
         X1_bar = XQ_mini_batch
-        Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0), k=self.config.causal_k)  # Causal mask!
-        
+        Attn1 = jnp.tril(
+            X1_bar @ X1.transpose(1, 0), k=self.config.causal_k
+        )  # Causal mask!
+
         # Fix: Scale columns by eta (eta_k), not rows (eta_t)
         # square_eta_mini_batch is [M, 1], we need [1, M] for broadcasting over columns
         eta_row = square_eta_mini_batch.reshape(1, -1)
-        
-        b1_bar = b1_init - (jnp.tril(jnp.ones_like(Attn1), k=self.config.causal_k) * eta_row) @ grad_l_wrt_Z1
+
+        b1_bar = (
+            b1_init
+            - (jnp.tril(jnp.ones_like(Attn1), k=self.config.causal_k) * eta_row)
+            @ grad_l_wrt_Z1
+        )
         Z1_bar = X1_bar @ W1_init - (Attn1 * eta_row) @ grad_l_wrt_Z1 + b1_bar
         ttt_norm_out_bar = ttt_norm_fn(Z1_bar)
 
@@ -592,7 +662,9 @@ class TTTLayer(nnx.Module):
         # Weight update for next mini-batch
         # Fix: Use all etas in mini-batch, not just the last one
         W1_bar_last = W1_init - (eta_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
-        b1_bar_last = b1_init - jnp.sum(eta_mini_batch * grad_l_wrt_Z1, axis=0, keepdims=True)
+        b1_bar_last = b1_init - jnp.sum(
+            eta_mini_batch * grad_l_wrt_Z1, axis=0, keepdims=True
+        )
 
         # Calculate ttt loss with updated weights
         if self.config.output_ttt_stats:
@@ -606,7 +678,12 @@ class TTTLayer(nnx.Module):
 
         return (
             ttt_params_mini_batch_new,
-            (output_mini_batch, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1),
+            (
+                output_mini_batch,
+                ttt_loss_mse_init,
+                ttt_loss_mse_step_0,
+                ttt_loss_mse_step_1,
+            ),
         )
 
     def ttt(
@@ -639,10 +716,15 @@ class TTTLayer(nnx.Module):
                     compute_mini_batch,
                     self.config.remat_mini_batch_group_size,
                     ttt_params_init,
-                    inputs
+                    inputs,
                 )
                 Z, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1 = outputs
-                return (Z.reshape(-1, self.head_dim), ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1)
+                return (
+                    Z.reshape(-1, self.head_dim),
+                    ttt_loss_mse_init,
+                    ttt_loss_mse_step_0,
+                    ttt_loss_mse_step_1,
+                )
 
             # Create head indices
             head_indices = jnp.arange(self.num_heads)
@@ -693,7 +775,7 @@ class TTTLayer(nnx.Module):
 
         # Get TTT inputs
         XQ, XK, XV, eta, precompute_stats = self.get_ttt_inputs(
-            hidden_states, 
+            hidden_states,
             position_ids=position_ids,
             gating_scale=gating_scale,
         )
