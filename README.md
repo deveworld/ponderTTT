@@ -40,21 +40,21 @@ graph LR
 
 | Model | Language | Baseline (SKIP) | Oracle | **Recon Gating** | **Oracle Capture** |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **125M** | Python | 3.935 | 2.684 | **2.698** | **98.9%** |
-| **125M** | JavaScript | 4.374 | 3.020 | **3.099** | **94.2%** |
-| **125M** | Java | 4.927 | 3.344 | **3.403** | **96.3%** |
-| **125M** | Go | 10.07 | 6.311 | **6.472** | **95.7%** |
+| **125M** | Python | 3.935 | 2.663 | **2.673** | **99.2%** |
+| **125M** | JavaScript | 4.374 | 3.014 | **3.083** | **95.0%** |
+| **125M** | Java | 4.927 | 3.346 | **3.401** | **96.5%** |
+| **125M** | Go | 10.07 | 6.289 | **6.453** | **95.7%** |
 
-> **Note**: 350M Python shows negative correlation (r=-0.60). Standard Recon Gating fails (3.78 > Random 3.27). **Inverted Gating** (update on low loss) is required for 350M+ models.
+> **Note**: 350M Python shows negative correlation (r=-0.58). Standard Recon Gating fails (3.78 > Random 3.27). **Inverted Gating** (update on low loss) is required for 350M+ models.
 
 ### Scaling Law: Correlation vs Model Size
 
 | Model | Parameters | **Recon Loss (r)** | TTT Improvement (r) | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **125M** | 125M | **+0.86** | +0.84 | Normal Gating |
-| **350M** | 350M | **-0.60** | -0.82 | Inverted Gating |
-| **1B** | 774M | **-0.78** | -0.72 | Inverted Gating |
-| **XL** | 1.5B | **-0.94** | -0.89 | Inverted Gating |
+| **350M** | 350M | **-0.58** | -0.69 | Inverted Gating |
+| **1B** | 774M | **-0.84** | -0.88 | Inverted Gating |
+| **XL** | 1.5B | **-0.94** | -0.96 | Inverted Gating |
 
 > **Scaling Law**: As model size increases, the correlation between reconstruction loss and Oracle Advantage becomes **more negative**. The correlation crosses zero between 125M and 350M, and continues to decrease. This means larger models require **Inverted Gating** (update on low loss instead of high loss).
 
@@ -67,8 +67,8 @@ Pure JAX/Flax NNX implementation with multi-scale model support.
 | Model | Parameters | Status |
 |-------|------------|--------|
 | GPT-2 125M | 125M | ✅ Validated (Normal Gating, r=+0.86) |
-| GPT-2 350M | 350M | ✅ Validated (Inverted Gating, r=-0.60) |
-| GPT-2 Large | 774M | ✅ Validated (Inverted Gating, r=-0.78) |
+| GPT-2 350M | 350M | ✅ Validated (Inverted Gating, r=-0.58) |
+| GPT-2 Large | 774M | ✅ Validated (Inverted Gating, r=-0.84) |
 | GPT-2 XL | 1.5B | ✅ Validated (Inverted Gating, r=-0.94) |
 | Gemma 3 1B | 1B | In Progress |
 | Gemma 3 4B | 4B | In Progress |
