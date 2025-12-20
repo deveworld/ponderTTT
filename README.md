@@ -45,7 +45,7 @@ graph LR
 | **125M** | Java | 4.927 | 3.346 | **3.401** | **96.5%** |
 | **125M** | Go | 10.07 | 6.289 | **6.453** | **95.7%** |
 
-> **Note**: 350M Python shows negative correlation (r=-0.58). Standard Recon Gating fails (3.78 > Random 3.27). **Inverted Gating** (update on low loss) is required for 350M+ models.
+> **Note**: 350M Python shows negative correlation (r=-0.58). Standard Recon Gating fails (3.75 > Random 3.23). **Inverted Gating** (update on low loss) is required for 350M+ models.
 
 ### Scaling Law: Correlation vs Model Size
 

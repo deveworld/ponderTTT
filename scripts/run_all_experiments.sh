@@ -548,8 +548,22 @@ phase6_diagonal() {
             log_error "No UPDATE_1 checkpoint found for 350M. No Diagonal Ablation."
         else
             log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
-            # 350M uses Inverted Gating
-            run_experiment "Diagonal Ablation 350M (k=-1)" \
+
+            # 1. 350M Standard Gating k=-1 (for Paper Table 12 verification)
+            run_experiment "Diagonal Ablation 350M (k=-1, Standard)" \
+                python -m ponderttt.experiments.compare_methods \
+                    --model_scale 350m \
+                    --update1_checkpoint "$ckpt_350m_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_350M \
+                    --language Python \
+                    --skip_examples $SKIP_EXAMPLES \
+                    --output_dir outputs/eval/350m_diagonal_k_minus_1 \
+                    --eval_ttt_loss \
+                    --eval_ttt_improvement \
+                    --diagonal_offset -1
+
+            # 2. 350M Inverted Gating k=-1 (existing)
+            run_experiment "Diagonal Ablation 350M (k=-1, Inverted)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 350m \
                     --update1_checkpoint "$ckpt_350m_update1" \
