@@ -22,6 +22,7 @@ from flax import nnx
 
 # Add parent to path for imports
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from ponderttt.models import load_ttt_model
@@ -33,19 +34,19 @@ def analyze_from_csv(csv_path: str):
     """Analyze gating signals from existing detailed_results.csv"""
     df = pd.read_csv(csv_path)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Analyzing: {csv_path}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Total samples: {len(df)}")
 
     # Filter to relevant columns if they exist
-    required_cols = ['ttt_improvement', 'advantage']
+    required_cols = ["ttt_improvement", "advantage"]
     if not all(col in df.columns for col in required_cols):
         print(f"Missing columns. Available: {df.columns.tolist()}")
         return
 
-    ttt_imp = df['ttt_improvement'].values
-    advantage = df['advantage'].values
+    ttt_imp = df["ttt_improvement"].values
+    advantage = df["advantage"].values
 
     print("\n--- Correlation Analysis ---")
 
@@ -57,8 +58,8 @@ def analyze_from_csv(csv_path: str):
     print(f"   Spearman ρ: {rho_ttt:.4f}")
 
     # 2. Check if loss_skip is available
-    if 'loss_skip' in df.columns:
-        loss_skip = df['loss_skip'].values
+    if "loss_skip" in df.columns:
+        loss_skip = df["loss_skip"].values
         r_skip, p_skip = stats.pearsonr(loss_skip, advantage)
         rho_skip, _ = stats.spearmanr(loss_skip, advantage)
         print("\n2. Loss Skip vs Oracle Advantage:")
@@ -70,12 +71,12 @@ def analyze_from_csv(csv_path: str):
     print("Target update rate: 50%")
 
     # Get loss values if available
-    if 'loss_skip' not in df.columns:
+    if "loss_skip" not in df.columns:
         print("loss_skip column not available for simulation")
         return
 
-    loss_skip = df['loss_skip'].values
-    loss_update = df['loss_update'].values if 'loss_update' in df.columns else None
+    loss_skip = df["loss_skip"].values
+    loss_update = df["loss_update"].values if "loss_update" in df.columns else None
 
     # Strategy 1: TTT Improvement (current)
     threshold_ttt = np.median(ttt_imp)
@@ -100,25 +101,39 @@ def analyze_from_csv(csv_path: str):
 
     if loss_update is not None:
         print("\nAverage Loss by Strategy:")
-        print(f"  Oracle (upper bound):     {compute_loss(decisions_oracle, loss_skip, loss_update):.4f}")
-        print(f"  TTT Improvement:          {compute_loss(decisions_ttt, loss_skip, loss_update):.4f}")
-        print(f"  Loss Skip (high→update):  {compute_loss(decisions_skip, loss_skip, loss_update):.4f}")
-        print(f"  Random:                   {compute_loss(decisions_random, loss_skip, loss_update):.4f}")
+        print(
+            f"  Oracle (upper bound):     {compute_loss(decisions_oracle, loss_skip, loss_update):.4f}"
+        )
+        print(
+            f"  TTT Improvement:          {compute_loss(decisions_ttt, loss_skip, loss_update):.4f}"
+        )
+        print(
+            f"  Loss Skip (high→update):  {compute_loss(decisions_skip, loss_skip, loss_update):.4f}"
+        )
+        print(
+            f"  Random:                   {compute_loss(decisions_random, loss_skip, loss_update):.4f}"
+        )
         print(f"  Always Skip:              {loss_skip.mean():.4f}")
         print(f"  Always Update:            {loss_update.mean():.4f}")
 
     # Decision overlap with oracle
     print("\nDecision Overlap with Oracle:")
-    print(f"  TTT Improvement:          {np.mean(decisions_ttt == decisions_oracle):.2%}")
-    print(f"  Loss Skip (high→update):  {np.mean(decisions_skip == decisions_oracle):.2%}")
-    print(f"  Random:                   {np.mean(decisions_random == decisions_oracle):.2%}")
+    print(
+        f"  TTT Improvement:          {np.mean(decisions_ttt == decisions_oracle):.2%}"
+    )
+    print(
+        f"  Loss Skip (high→update):  {np.mean(decisions_skip == decisions_oracle):.2%}"
+    )
+    print(
+        f"  Random:                   {np.mean(decisions_random == decisions_oracle):.2%}"
+    )
 
 
 def collect_and_analyze(model_scale: str, checkpoint_path: str, num_batches: int = 100):
     """Collect fresh data and analyze gating signals"""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Collecting data for {model_scale}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # Model name mapping
     model_map = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}
@@ -135,11 +150,13 @@ def collect_and_analyze(model_scale: str, checkpoint_path: str, num_batches: int
 
     # Restore exp_decay_weight
     for name, module in model.iter_modules():
-        if hasattr(module, 'exp_decay_weight') and hasattr(module, 'config'):
+        if hasattr(module, "exp_decay_weight") and hasattr(module, "config"):
             eta_decay_rate = module.config.eta_decay_rate
             mini_batch_size = module.config.mini_batch_size
             position_offset = jnp.arange(mini_batch_size) - (mini_batch_size - 1)
-            module.exp_decay_weight = jnp.exp(eta_decay_rate * position_offset.astype(jnp.float32))
+            module.exp_decay_weight = jnp.exp(
+                eta_decay_rate * position_offset.astype(jnp.float32)
+            )
             print(f"  Applied eta_decay_rate={eta_decay_rate}")
 
     # Setup data
@@ -157,20 +174,32 @@ def collect_and_analyze(model_scale: str, checkpoint_path: str, num_batches: int
     @nnx.jit
     def forward_with_stats(model, input_ids, attention_mask, position_ids):
         # SKIP path
-        out_skip = model(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=False)
+        out_skip = model(
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            use_ttt=False,
+        )
         logits_skip = out_skip["logits"][:, :-1]
         targets = input_ids[:, 1:]
         loss_skip = -jnp.sum(
-            jax.nn.log_softmax(logits_skip, axis=-1) * jax.nn.one_hot(targets, logits_skip.shape[-1]),
-            axis=-1
+            jax.nn.log_softmax(logits_skip, axis=-1)
+            * jax.nn.one_hot(targets, logits_skip.shape[-1]),
+            axis=-1,
         ).mean()
 
         # UPDATE path
-        out_update = model(input_ids, attention_mask=attention_mask, position_ids=position_ids, use_ttt=True)
+        out_update = model(
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            use_ttt=True,
+        )
         logits_update = out_update["logits"][:, :-1]
         loss_update = -jnp.sum(
-            jax.nn.log_softmax(logits_update, axis=-1) * jax.nn.one_hot(targets, logits_update.shape[-1]),
-            axis=-1
+            jax.nn.log_softmax(logits_update, axis=-1)
+            * jax.nn.one_hot(targets, logits_update.shape[-1]),
+            axis=-1,
         ).mean()
 
         ttt_stats = out_update.get("ttt_stats", {})
@@ -202,8 +231,8 @@ def collect_and_analyze(model_scale: str, checkpoint_path: str, num_batches: int
             input_ids = chunks[:, c_idx]
             attention_mask = masks[:, c_idx]
             chunk_len = input_ids.shape[-1]
+            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
-            position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(position_ids, input_ids.shape)
 
             loss_skip, loss_update, ttt_0, ttt_1 = forward_with_stats(
@@ -237,9 +266,13 @@ def collect_and_analyze(model_scale: str, checkpoint_path: str, num_batches: int
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_scale", type=str, default="350m", choices=["125m", "350m"])
+    parser.add_argument(
+        "--model_scale", type=str, default="350m", choices=["125m", "350m"]
+    )
     parser.add_argument("--csv", type=str, help="Path to existing detailed_results.csv")
-    parser.add_argument("--checkpoint", type=str, help="Checkpoint path for fresh collection")
+    parser.add_argument(
+        "--checkpoint", type=str, help="Checkpoint path for fresh collection"
+    )
     parser.add_argument("--num_batches", type=int, default=100)
     args = parser.parse_args()
 

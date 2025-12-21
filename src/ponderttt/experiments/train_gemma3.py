@@ -769,11 +769,10 @@ def main() -> None:
                     chunk_attention_mask = batch["chunk_attention_mask"][
                         :, chunk_idx, :
                     ]
-                    chunk_position_ids = jnp.arange(
-                        chunk_idx * chunk_size,
-                        (chunk_idx + 1) * chunk_size,
-                        dtype=jnp.int32,
-                    )[None, :].repeat(batch["chunks"].shape[0], axis=0)
+                    # Use LOCAL position IDs (0 to chunk_size-1) for each chunk
+                    chunk_position_ids = jnp.arange(chunk_size, dtype=jnp.int32)[
+                        None, :
+                    ].repeat(batch["chunks"].shape[0], axis=0)
 
                     # Apply data sharding if enabled
                     if data_sharding is not None:

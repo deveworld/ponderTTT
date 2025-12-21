@@ -257,8 +257,9 @@ def evaluate_oracle(
             }
 
             chunk_len = chunk_batch["input_ids"].shape[-1]
+            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
+            # This ensures fair evaluation across all chunks without context dependency
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
-            position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(
                 position_ids, chunk_batch["input_ids"].shape
             )
@@ -473,8 +474,8 @@ def evaluate_ttt_improvement_gating(
             }
 
             chunk_len = chunk_batch["input_ids"].shape[-1]
+            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
-            position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(
                 position_ids, chunk_batch["input_ids"].shape
             )
@@ -744,8 +745,8 @@ def evaluate_loss_skip_gating(
             }
 
             chunk_len = chunk_batch["input_ids"].shape[-1]
+            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
-            position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(
                 position_ids, chunk_batch["input_ids"].shape
             )
@@ -974,8 +975,8 @@ def evaluate_ttt_loss_gating(
             }
 
             chunk_len = chunk_batch["input_ids"].shape[-1]
+            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
-            position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(
                 position_ids, chunk_batch["input_ids"].shape
             )
@@ -1194,8 +1195,8 @@ def evaluate_threshold_gating(
                 "attention_mask": masks[:, c_idx],
             }
             chunk_len = chunk_batch["input_ids"].shape[-1]
+            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
-            position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(
                 position_ids, chunk_batch["input_ids"].shape
             )
@@ -1582,8 +1583,8 @@ def evaluate_model(
                 text = "[Decode Error]"
 
             chunk_len = chunk_batch["input_ids"].shape[-1]
+            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
-            position_ids = position_ids + c_idx * chunk_len
             position_ids = jnp.broadcast_to(
                 position_ids, chunk_batch["input_ids"].shape
             )

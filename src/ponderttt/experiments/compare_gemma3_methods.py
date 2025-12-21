@@ -175,9 +175,8 @@ def evaluate_oracle_gemma(
                 continue
 
             chunk_len = chunk_input.shape[-1]
-            position_ids = (
-                jnp.arange(chunk_len, dtype=jnp.int32)[None, :] + c_idx * chunk_len
-            )
+            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)[None, :]
             position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
 
             # Apply sharding
