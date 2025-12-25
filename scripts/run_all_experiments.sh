@@ -370,6 +370,29 @@ phase3_eval_ood() {
         fi
     fi
 
+    # XL OOD (Important: Full-Seq Gating shows r=0.53-0.79 on XL OOD)
+    if [ "$RUN_XL" = true ]; then
+        local ckpt_xl_update1=$(get_latest_checkpoint "outputs/baselines/xl_update1/checkpoints")
+        if [ -z "$ckpt_xl_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for XL. Run Phase 1 first!"
+        else
+            log_info "Using XL UPDATE_1 checkpoint: $ckpt_xl_update1"
+            for lang in "${languages[@]}"; do
+                local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
+                run_experiment "Eval XL $lang" \
+                    python -m ponderttt.experiments.compare_methods \
+                        --model_scale xl \
+                        --update1_checkpoint "$ckpt_xl_update1" \
+                        --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
+                        --batch_size $BATCH_SIZE_LARGE \
+                        --language "$lang" \
+                        --output_dir "outputs/eval/xl_${lang_lower}" \
+                        --eval_ttt_loss \
+                        --eval_ttt_improvement
+            done
+        fi
+    fi
+
     log_info "Phase 3 Complete!"
 }
 
