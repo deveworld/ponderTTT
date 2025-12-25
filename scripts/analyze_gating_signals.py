@@ -23,13 +23,12 @@ import argparse
 import os
 import sys
 from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple
+from typing import Dict, List
 import json
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pandas as pd
 from scipy import stats as scipy_stats
 
 # Setup path
@@ -37,6 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from ponderttt.models.base_model_nnx import load_ttt_model
 from ponderttt.data.dataset import create_data_iterator
+from ponderttt.data.tokenization import get_tokenizer
 
 
 @dataclass
@@ -240,9 +240,14 @@ def main():
     }
     model_name = scale_to_model_name.get(args.model_scale, "gpt2")
 
+    # Load tokenizer (separate from model)
+    print("\nLoading tokenizer...")
+    tokenizer = get_tokenizer(model_name)
+    print(f"Tokenizer loaded: {model_name}")
+
     # Load model
     print("\nLoading model...")
-    model, tokenizer = load_ttt_model(
+    model, _ = load_ttt_model(
         model_name,
         checkpoint_path=args.update1_checkpoint,
         load_pretrained=True,
