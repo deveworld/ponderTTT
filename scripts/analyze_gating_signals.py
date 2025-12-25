@@ -131,14 +131,24 @@ def analyze_chunk(
     # Oracle advantage (positive = update helps)
     oracle_advantage = loss_skip - loss_update
 
+    # Helper to safely convert JAX arrays to float
+    def to_float(x):
+        if x is None:
+            return 0.0
+        if hasattr(x, "mean"):
+            return float(x.mean())
+        return float(x)
+
     # === Candidate Signals ===
 
     # 1. Reconstruction Loss (last token only) - current baseline
-    recon_loss_last_token = float(ttt_stats.get("ttt_loss_step_0", 0.0))
+    recon_loss_last_token = to_float(ttt_stats.get("ttt_loss_step_0"))
 
     # 2. Full-Sequence Reconstruction Loss - computed from ttt_loss_init
     # Note: We'll approximate this using ttt_loss_init as it covers more positions
-    recon_loss_full_seq = float(ttt_stats.get("ttt_loss_init", recon_loss_last_token))
+    recon_loss_full_seq = (
+        to_float(ttt_stats.get("ttt_loss_init")) or recon_loss_last_token
+    )
 
     # 3. Output Entropy (before TTT update)
     output_entropy = compute_entropy(logits_skip)
@@ -147,12 +157,12 @@ def analyze_chunk(
     token_confidence = compute_token_confidence(logits_skip)
 
     # 5. TTT Improvement (step_0 - step_1)
-    ttt_step_0 = float(ttt_stats.get("ttt_loss_step_0", 0.0))
-    ttt_step_1 = float(ttt_stats.get("ttt_loss_step_1", 0.0))
+    ttt_step_0 = to_float(ttt_stats.get("ttt_loss_step_0"))
+    ttt_step_1 = to_float(ttt_stats.get("ttt_loss_step_1"))
     ttt_improvement = ttt_step_0 - ttt_step_1
 
     # Check if real code (>10% valid tokens)
-    valid_ratio = float(attention_mask.sum() / attention_mask.size)
+    valid_ratio = float(attention_mask.mean())
     is_real_code = valid_ratio > 0.1
 
     return {
