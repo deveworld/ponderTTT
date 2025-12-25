@@ -257,7 +257,6 @@ def main():
         seq_length=args.chunk_size * 2,  # 2 chunks per sequence
         language=args.language,
         split=args.split,
-        seed=args.seed,
     )
 
     # Collect results
