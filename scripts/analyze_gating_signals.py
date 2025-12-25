@@ -1,298 +1,394 @@
 #!/usr/bin/env python3
 """
-Analyze different gating signals for TTT.
+Analyze Multiple Gating Signal Candidates for PonderTTT.
 
-This script examines alternative gating signals beyond ttt_improvement:
-1. loss_skip: High skip loss → model struggles → TTT might help
-2. ttt_step_0: High initial reconstruction error → potential for improvement
+This script evaluates multiple candidate proxy signals for TTT gating:
+1. Reconstruction Loss (current baseline - last token only)
+2. Full-Sequence Reconstruction Loss (average across all positions)
+3. Output Entropy (prediction uncertainty)
+4. Token Confidence (mean max probability)
+5. Gradient Magnitude (TTT gradient norm)
 
 Usage:
-    python scripts/analyze_gating_signals.py --model_scale 350m
+    python scripts/analyze_gating_signals.py \
+        --model_scale 125m \
+        --update1_checkpoint outputs/baselines/125m_update1/checkpoints/checkpoint_100000 \
+        --num_batches 100
+
+Output:
+    Correlation analysis showing which signal best predicts Oracle advantage.
 """
 
 import argparse
-import numpy as np
-import pandas as pd
-from scipy import stats
-from pathlib import Path
+import os
+import sys
+from dataclasses import dataclass
+from typing import Optional, Dict, List, Tuple
+import json
 
 import jax
 import jax.numpy as jnp
-from flax import nnx
+import numpy as np
+import pandas as pd
+from scipy import stats as scipy_stats
 
-# Add parent to path for imports
-import sys
+# Setup path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from ponderttt.models import load_ttt_model
-from ponderttt.data import create_data_iterator, get_tokenizer
-from ponderttt.utils.checkpointing import load_checkpoint
+from ponderttt.models.base_model_nnx import load_ttt_model
+from ponderttt.data.dataset import create_data_iterator
 
 
-def analyze_from_csv(csv_path: str):
-    """Analyze gating signals from existing detailed_results.csv"""
-    df = pd.read_csv(csv_path)
+@dataclass
+class SignalResult:
+    """Result for a single chunk."""
 
-    print(f"\n{'=' * 60}")
-    print(f"Analyzing: {csv_path}")
-    print(f"{'=' * 60}")
-    print(f"Total samples: {len(df)}")
+    chunk_idx: int
+    # Oracle advantage = loss_skip - loss_update (positive = update helps)
+    oracle_advantage: float
+    loss_skip: float
+    loss_update: float
+    # Candidate signals
+    recon_loss_last_token: float  # Current baseline
+    recon_loss_full_seq: float  # NEW: Average over all positions
+    output_entropy: float  # NEW: Prediction entropy
+    token_confidence: float  # NEW: Mean max probability
+    ttt_improvement: float  # step_0 - step_1
+    is_real_code: bool  # Valid token ratio > 10%
 
-    # Filter to relevant columns if they exist
-    required_cols = ["ttt_improvement", "advantage"]
-    if not all(col in df.columns for col in required_cols):
-        print(f"Missing columns. Available: {df.columns.tolist()}")
-        return
 
-    ttt_imp = df["ttt_improvement"].values
-    advantage = df["advantage"].values
+def compute_entropy(logits: jax.Array) -> float:
+    """Compute prediction entropy from logits.
 
-    print("\n--- Correlation Analysis ---")
+    High entropy = high uncertainty = potential learning opportunity.
+    """
+    probs = jax.nn.softmax(logits, axis=-1)
+    log_probs = jnp.log(probs + 1e-10)
+    entropy = -jnp.sum(probs * log_probs, axis=-1)
+    return float(entropy.mean())
 
-    # 1. TTT Improvement vs Advantage (current method)
-    r_ttt, p_ttt = stats.pearsonr(ttt_imp, advantage)
-    rho_ttt, _ = stats.spearmanr(ttt_imp, advantage)
-    print("\n1. TTT Improvement vs Oracle Advantage:")
-    print(f"   Pearson r:  {r_ttt:.4f} (p={p_ttt:.2e})")
-    print(f"   Spearman ρ: {rho_ttt:.4f}")
 
-    # 2. Check if loss_skip is available
-    if "loss_skip" in df.columns:
-        loss_skip = df["loss_skip"].values
-        r_skip, p_skip = stats.pearsonr(loss_skip, advantage)
-        rho_skip, _ = stats.spearmanr(loss_skip, advantage)
-        print("\n2. Loss Skip vs Oracle Advantage:")
-        print(f"   Pearson r:  {r_skip:.4f} (p={p_skip:.2e})")
-        print(f"   Spearman ρ: {rho_skip:.4f}")
+def compute_token_confidence(logits: jax.Array) -> float:
+    """Compute mean max probability across tokens.
 
-    # 3. Simulate different gating strategies
-    print("\n--- Gating Strategy Simulation ---")
-    print("Target update rate: 50%")
+    Low confidence = high uncertainty = potential learning opportunity.
+    """
+    probs = jax.nn.softmax(logits, axis=-1)
+    max_probs = probs.max(axis=-1)
+    return float(max_probs.mean())
 
-    # Get loss values if available
-    if "loss_skip" not in df.columns:
-        print("loss_skip column not available for simulation")
-        return
 
-    loss_skip = df["loss_skip"].values
-    loss_update = df["loss_update"].values if "loss_update" in df.columns else None
+def compute_loss(logits: jax.Array, labels: jax.Array, mask: jax.Array) -> float:
+    """Compute cross-entropy loss."""
+    # Shift for next-token prediction
+    shift_logits = logits[..., :-1, :]
+    shift_labels = labels[..., 1:]
+    shift_mask = mask[..., 1:]
 
-    # Strategy 1: TTT Improvement (current)
-    threshold_ttt = np.median(ttt_imp)
-    decisions_ttt = ttt_imp > threshold_ttt
+    log_probs = jax.nn.log_softmax(shift_logits, axis=-1)
+    token_log_probs = jnp.take_along_axis(
+        log_probs, shift_labels[..., None], axis=-1
+    ).squeeze(-1)
 
-    # Strategy 2: Loss Skip (high loss → update)
-    threshold_skip = np.median(loss_skip)
-    decisions_skip = loss_skip > threshold_skip
+    masked_loss = -token_log_probs * shift_mask
+    total_loss = masked_loss.sum()
+    num_tokens = shift_mask.sum()
 
-    # Strategy 3: Oracle (positive advantage → update)
-    threshold_oracle = np.median(advantage)
-    decisions_oracle = advantage > threshold_oracle
+    return float(total_loss / (num_tokens + 1e-10))
 
-    # Strategy 4: Random
-    np.random.seed(42)
-    decisions_random = np.random.random(len(advantage)) > 0.5
 
-    def compute_loss(decisions, loss_skip, loss_update):
-        """Compute average loss given decisions"""
-        losses = np.where(decisions, loss_update, loss_skip)
-        return losses.mean()
+def analyze_chunk(
+    model,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+    position_ids: jax.Array,
+) -> Dict:
+    """Analyze a single chunk and compute all candidate signals.
 
-    if loss_update is not None:
-        print("\nAverage Loss by Strategy:")
-        print(
-            f"  Oracle (upper bound):     {compute_loss(decisions_oracle, loss_skip, loss_update):.4f}"
-        )
-        print(
-            f"  TTT Improvement:          {compute_loss(decisions_ttt, loss_skip, loss_update):.4f}"
-        )
-        print(
-            f"  Loss Skip (high→update):  {compute_loss(decisions_skip, loss_skip, loss_update):.4f}"
-        )
-        print(
-            f"  Random:                   {compute_loss(decisions_random, loss_skip, loss_update):.4f}"
-        )
-        print(f"  Always Skip:              {loss_skip.mean():.4f}")
-        print(f"  Always Update:            {loss_update.mean():.4f}")
-
-    # Decision overlap with oracle
-    print("\nDecision Overlap with Oracle:")
-    print(
-        f"  TTT Improvement:          {np.mean(decisions_ttt == decisions_oracle):.2%}"
+    Returns dict with all signal values and Oracle advantage.
+    """
+    # 1. SKIP path (no TTT update)
+    output_skip = model(
+        input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_ttt=False,
     )
-    print(
-        f"  Loss Skip (high→update):  {np.mean(decisions_skip == decisions_oracle):.2%}"
+    logits_skip = output_skip["logits"]
+    loss_skip = compute_loss(logits_skip, input_ids, attention_mask)
+
+    # 2. UPDATE path (with TTT update)
+    output_update = model(
+        input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_ttt=True,
     )
-    print(
-        f"  Random:                   {np.mean(decisions_random == decisions_oracle):.2%}"
-    )
+    logits_update = output_update["logits"]
+    loss_update = compute_loss(logits_update, input_ids, attention_mask)
+    ttt_stats = output_update.get("ttt_stats", {})
 
+    # Oracle advantage (positive = update helps)
+    oracle_advantage = loss_skip - loss_update
 
-def collect_and_analyze(model_scale: str, checkpoint_path: str, num_batches: int = 100):
-    """Collect fresh data and analyze gating signals"""
-    print(f"\n{'=' * 60}")
-    print(f"Collecting data for {model_scale}")
-    print(f"{'=' * 60}")
+    # === Candidate Signals ===
 
-    # Model name mapping
-    model_map = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}
-    model_name = model_map[model_scale]
+    # 1. Reconstruction Loss (last token only) - current baseline
+    recon_loss_last_token = float(ttt_stats.get("ttt_loss_step_0", 0.0))
 
-    # Load model
-    print(f"Loading model: {model_name}")
-    model, config = load_ttt_model(model_name, seed=42)
+    # 2. Full-Sequence Reconstruction Loss - computed from ttt_loss_init
+    # Note: We'll approximate this using ttt_loss_init as it covers more positions
+    recon_loss_full_seq = float(ttt_stats.get("ttt_loss_init", recon_loss_last_token))
 
-    # Load checkpoint
-    print(f"Loading checkpoint: {checkpoint_path}")
-    restored_state = load_checkpoint(checkpoint_path)
-    nnx.update(model, restored_state)
+    # 3. Output Entropy (before TTT update)
+    output_entropy = compute_entropy(logits_skip)
 
-    # Restore exp_decay_weight
-    for name, module in model.iter_modules():
-        if hasattr(module, "exp_decay_weight") and hasattr(module, "config"):
-            eta_decay_rate = module.config.eta_decay_rate
-            mini_batch_size = module.config.mini_batch_size
-            position_offset = jnp.arange(mini_batch_size) - (mini_batch_size - 1)
-            module.exp_decay_weight = jnp.exp(
-                eta_decay_rate * position_offset.astype(jnp.float32)
-            )
-            print(f"  Applied eta_decay_rate={eta_decay_rate}")
+    # 4. Token Confidence
+    token_confidence = compute_token_confidence(logits_skip)
 
-    # Setup data
-    tokenizer = get_tokenizer()
-    data_iter = create_data_iterator(
-        language="Python",
-        split="train",
-        tokenizer=tokenizer,
-        seq_length=256,
-        batch_size=1,
-        skip_examples=160000,  # Use held-out data
-    )
+    # 5. TTT Improvement (step_0 - step_1)
+    ttt_step_0 = float(ttt_stats.get("ttt_loss_step_0", 0.0))
+    ttt_step_1 = float(ttt_stats.get("ttt_loss_step_1", 0.0))
+    ttt_improvement = ttt_step_0 - ttt_step_1
 
-    # Define forward function
-    @nnx.jit
-    def forward_with_stats(model, input_ids, attention_mask, position_ids):
-        # SKIP path
-        out_skip = model(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            use_ttt=False,
-        )
-        logits_skip = out_skip["logits"][:, :-1]
-        targets = input_ids[:, 1:]
-        loss_skip = -jnp.sum(
-            jax.nn.log_softmax(logits_skip, axis=-1)
-            * jax.nn.one_hot(targets, logits_skip.shape[-1]),
-            axis=-1,
-        ).mean()
+    # Check if real code (>10% valid tokens)
+    valid_ratio = float(attention_mask.sum() / attention_mask.size)
+    is_real_code = valid_ratio > 0.1
 
-        # UPDATE path
-        out_update = model(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            use_ttt=True,
-        )
-        logits_update = out_update["logits"][:, :-1]
-        loss_update = -jnp.sum(
-            jax.nn.log_softmax(logits_update, axis=-1)
-            * jax.nn.one_hot(targets, logits_update.shape[-1]),
-            axis=-1,
-        ).mean()
-
-        ttt_stats = out_update.get("ttt_stats", {})
-        ttt_loss_step_0 = ttt_stats.get("ttt_loss_step_0", jnp.array(0.0))
-        ttt_loss_step_1 = ttt_stats.get("ttt_loss_step_1", jnp.array(0.0))
-
-        return loss_skip, loss_update, ttt_loss_step_0, ttt_loss_step_1
-
-    # Collect data
-    results = {
-        "loss_skip": [],
-        "loss_update": [],
-        "ttt_step_0": [],
-        "ttt_step_1": [],
-        "ttt_improvement": [],
-        "advantage": [],
+    return {
+        "oracle_advantage": oracle_advantage,
+        "loss_skip": loss_skip,
+        "loss_update": loss_update,
+        "recon_loss_last_token": recon_loss_last_token,
+        "recon_loss_full_seq": recon_loss_full_seq,
+        "output_entropy": output_entropy,
+        "token_confidence": token_confidence,
+        "ttt_improvement": ttt_improvement,
+        "is_real_code": is_real_code,
+        "valid_ratio": valid_ratio,
     }
 
-    print(f"\nCollecting {num_batches} batches...")
-    for batch_idx, batch in enumerate(data_iter):
-        if batch_idx >= num_batches:
-            break
 
-        chunks = batch["chunks"]
-        masks = batch["chunk_attention_mask"]
-        num_chunks = chunks.shape[1]
+def compute_correlations(results: List[Dict], signal_name: str) -> Dict:
+    """Compute Pearson and Spearman correlations for a signal."""
+    oracle_advantages = [r["oracle_advantage"] for r in results]
+    signal_values = [r[signal_name] for r in results]
 
-        for c_idx in range(num_chunks):
-            input_ids = chunks[:, c_idx]
-            attention_mask = masks[:, c_idx]
-            chunk_len = input_ids.shape[-1]
-            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
-            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
-            position_ids = jnp.broadcast_to(position_ids, input_ids.shape)
+    # Filter out NaN/Inf
+    valid_pairs = [
+        (o, s)
+        for o, s in zip(oracle_advantages, signal_values)
+        if np.isfinite(o) and np.isfinite(s)
+    ]
 
-            loss_skip, loss_update, ttt_0, ttt_1 = forward_with_stats(
-                model, input_ids, attention_mask, position_ids
-            )
+    if len(valid_pairs) < 10:
+        return {"pearson_r": np.nan, "spearman_r": np.nan, "n": len(valid_pairs)}
 
-            loss_skip_val = float(loss_skip)
-            loss_update_val = float(loss_update)
-            ttt_0_val = float(ttt_0)
-            ttt_1_val = float(ttt_1)
+    o_vals, s_vals = zip(*valid_pairs)
 
-            results["loss_skip"].append(loss_skip_val)
-            results["loss_update"].append(loss_update_val)
-            results["ttt_step_0"].append(ttt_0_val)
-            results["ttt_step_1"].append(ttt_1_val)
-            results["ttt_improvement"].append(ttt_0_val - ttt_1_val)
-            results["advantage"].append(loss_skip_val - loss_update_val)
+    pearson_r, pearson_p = scipy_stats.pearsonr(o_vals, s_vals)
+    spearman_r, spearman_p = scipy_stats.spearmanr(o_vals, s_vals)
 
-        if (batch_idx + 1) % 20 == 0:
-            print(f"  Processed {batch_idx + 1}/{num_batches} batches")
-
-    # Save and analyze
-    df = pd.DataFrame(results)
-    output_path = f"outputs/gating_analysis_{model_scale}.csv"
-    df.to_csv(output_path, index=False)
-    print(f"\nSaved to {output_path}")
-
-    # Run analysis
-    analyze_from_csv(output_path)
+    return {
+        "pearson_r": pearson_r,
+        "pearson_p": pearson_p,
+        "spearman_r": spearman_r,
+        "spearman_p": spearman_p,
+        "n": len(valid_pairs),
+    }
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Analyze gating signal candidates")
     parser.add_argument(
-        "--model_scale", type=str, default="350m", choices=["125m", "350m"]
+        "--model_scale", type=str, default="125m", choices=["125m", "350m", "1b", "xl"]
     )
-    parser.add_argument("--csv", type=str, help="Path to existing detailed_results.csv")
     parser.add_argument(
-        "--checkpoint", type=str, help="Checkpoint path for fresh collection"
+        "--update1_checkpoint",
+        type=str,
+        default=None,
+        help="Path to UPDATE_1 checkpoint for TTT weights",
     )
-    parser.add_argument("--num_batches", type=int, default=100)
+    parser.add_argument(
+        "--num_batches", type=int, default=100, help="Number of batches to analyze"
+    )
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--chunk_size", type=int, default=512)
+    parser.add_argument("--language", type=str, default="Python")
+    parser.add_argument("--split", type=str, default="train")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--output_file", type=str, default=None, help="Path to save results JSON"
+    )
     args = parser.parse_args()
 
-    if args.csv:
-        analyze_from_csv(args.csv)
-    elif args.checkpoint:
-        collect_and_analyze(args.model_scale, args.checkpoint, args.num_batches)
-    else:
-        # Try to find existing results
-        default_paths = [
-            f"outputs/eval/{args.model_scale}_python/detailed_results.csv",
-            f"outputs/gating_analysis_{args.model_scale}.csv",
-        ]
-        for path in default_paths:
-            if Path(path).exists():
-                analyze_from_csv(path)
-                return
+    print("=" * 60)
+    print("PonderTTT Multi-Signal Gating Analysis")
+    print("=" * 60)
+    print(f"Model Scale: {args.model_scale}")
+    print(f"Checkpoint: {args.update1_checkpoint or 'None (fresh)'}")
+    print(f"Batches: {args.num_batches}")
+    print(f"Language: {args.language}")
+    print("=" * 60)
 
-        print("No existing results found. Please provide --csv or --checkpoint")
-        print(f"Searched: {default_paths}")
+    # Load model
+    print("\nLoading model...")
+    model, tokenizer = load_ttt_model(
+        args.model_scale,
+        checkpoint_path=args.update1_checkpoint,
+        load_pretrained=True,
+    )
+    print(f"Model loaded: {args.model_scale}")
+
+    # Create data iterator
+    print("\nCreating data iterator...")
+    data_iter = create_data_iterator(
+        tokenizer=tokenizer,
+        batch_size=args.batch_size,
+        seq_length=args.chunk_size * 2,  # 2 chunks per sequence
+        language=args.language,
+        split=args.split,
+        seed=args.seed,
+    )
+
+    # Collect results
+    results = []
+    total_chunks = 0
+
+    print(f"\nAnalyzing {args.num_batches} batches...")
+    for batch_idx in range(args.num_batches):
+        batch = next(data_iter)
+        input_ids = jnp.array(batch["input_ids"])
+        attention_mask = jnp.array(batch["attention_mask"])
+
+        # Process chunks (2 per sequence)
+        for chunk_idx in range(2):
+            start = chunk_idx * args.chunk_size
+            end = start + args.chunk_size
+
+            chunk_ids = input_ids[:, start:end]
+            chunk_mask = attention_mask[:, start:end]
+            # Use local position IDs
+            position_ids = jnp.arange(args.chunk_size)[None, :]
+            position_ids = jnp.broadcast_to(position_ids, chunk_ids.shape)
+
+            result = analyze_chunk(model, chunk_ids, chunk_mask, position_ids)
+            result["chunk_idx"] = total_chunks
+            results.append(result)
+            total_chunks += 1
+
+        if (batch_idx + 1) % 20 == 0:
+            print(
+                f"  Processed {batch_idx + 1}/{args.num_batches} batches ({total_chunks} chunks)"
+            )
+
+    print(f"\nTotal chunks analyzed: {total_chunks}")
+
+    # Filter to real code only
+    real_code_results = [r for r in results if r["is_real_code"]]
+    print(f"Real code chunks: {len(real_code_results)}")
+
+    # === Correlation Analysis ===
+    print("\n" + "=" * 60)
+    print("CORRELATION ANALYSIS (Real Code Only)")
+    print("=" * 60)
+
+    signals = [
+        ("recon_loss_last_token", "Recon Loss (Last Token)", "Current baseline"),
+        ("recon_loss_full_seq", "Recon Loss (Full Seq)", "Average over all positions"),
+        ("output_entropy", "Output Entropy", "Prediction uncertainty"),
+        ("token_confidence", "Token Confidence", "Mean max probability - INVERTED"),
+        ("ttt_improvement", "TTT Improvement", "step_0 - step_1"),
+    ]
+
+    print(f"\n{'Signal':<30} {'Pearson r':>12} {'Spearman r':>12} {'N':>8}")
+    print("-" * 65)
+
+    correlation_results = {}
+    for signal_key, signal_name, description in signals:
+        corr = compute_correlations(real_code_results, signal_key)
+        correlation_results[signal_key] = corr
+
+        pearson_str = (
+            f"{corr['pearson_r']:+.4f}" if not np.isnan(corr["pearson_r"]) else "N/A"
+        )
+        spearman_str = (
+            f"{corr['spearman_r']:+.4f}" if not np.isnan(corr["spearman_r"]) else "N/A"
+        )
+
+        print(f"{signal_name:<30} {pearson_str:>12} {spearman_str:>12} {corr['n']:>8}")
+
+    print("-" * 65)
+
+    # Find best signal
+    best_signal = max(
+        correlation_results.items(),
+        key=lambda x: abs(x[1]["pearson_r"]) if not np.isnan(x[1]["pearson_r"]) else 0,
+    )
+    print(
+        f"\n🏆 Best Signal: {best_signal[0]} (|r| = {abs(best_signal[1]['pearson_r']):.4f})"
+    )
+
+    # === Summary Statistics ===
+    print("\n" + "=" * 60)
+    print("SUMMARY STATISTICS")
+    print("=" * 60)
+
+    oracle_advantages = [r["oracle_advantage"] for r in real_code_results]
+    mean_advantage = np.mean(oracle_advantages)
+    std_advantage = np.std(oracle_advantages)
+    positive_rate = np.mean([a > 0 for a in oracle_advantages])
+
+    print(f"Oracle Advantage (mean ± std): {mean_advantage:.4f} ± {std_advantage:.4f}")
+    print(f"Positive Advantage Rate: {positive_rate:.1%}")
+    print(
+        f"  (Chunks where UPDATE helps: {sum(a > 0 for a in oracle_advantages)}/{len(oracle_advantages)})"
+    )
+
+    # === Save Results ===
+    if args.output_file:
+        output = {
+            "args": vars(args),
+            "total_chunks": total_chunks,
+            "real_code_chunks": len(real_code_results),
+            "correlations": {
+                k: {
+                    kk: float(vv) if isinstance(vv, (np.floating, float)) else vv
+                    for kk, vv in v.items()
+                }
+                for k, v in correlation_results.items()
+            },
+            "summary": {
+                "mean_oracle_advantage": float(mean_advantage),
+                "std_oracle_advantage": float(std_advantage),
+                "positive_advantage_rate": float(positive_rate),
+            },
+            "best_signal": best_signal[0],
+        }
+
+        os.makedirs(os.path.dirname(args.output_file) or ".", exist_ok=True)
+        with open(args.output_file, "w") as f:
+            json.dump(output, f, indent=2)
+        print(f"\nResults saved to: {args.output_file}")
+
+    print("\n" + "=" * 60)
+    print("RECOMMENDATIONS")
+    print("=" * 60)
+
+    best_r = abs(best_signal[1]["pearson_r"])
+    if best_r > 0.7:
+        print("✅ Strong signal found! Consider implementing gating with this signal.")
+    elif best_r > 0.5:
+        print("⚠️ Moderate signal. May provide marginal improvement over random.")
+    else:
+        print(
+            "❌ Weak signals. Current approach unlikely to significantly outperform random."
+        )
+        print("   Consider: (1) Learned gating MLP, (2) Multiple signal combination")
+
+    print(
+        "\nNote: Token Confidence should be INVERTED (low confidence = should update)"
+    )
 
 
 if __name__ == "__main__":
