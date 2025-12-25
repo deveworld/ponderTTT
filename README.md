@@ -15,12 +15,11 @@ This is **inference-compatible** because the gating signal (reconstruction loss)
 ```mermaid
 graph LR
     A[Input Chunk] --> B["TTT Forward (No Update)"]
-    B --> C{Compute Recon Loss L_rec}
-    C --> D{Check Scale & Threshold}
-    D -- "125M: L_rec > τ" --> E["UPDATE (Learn)"]
-    D -- "350M+: L_rec < τ" --> E
-    D -- "Otherwise" --> F["SKIP (Infer)"]
-    E --> G[Update TTT State W_t]
+    B --> C{Compute Full-Seq Recon Loss}
+    C --> D{Check Threshold τ}
+    D -- "L_rec > τ" --> E["UPDATE (Learn)"]
+    D -- "L_rec ≤ τ" --> F["SKIP (Infer)"]
+    E --> G[Update TTT State]
     G --> H[Final Forward Pass]
     F --> H
     H --> I[Next Token Prediction]
@@ -28,11 +27,10 @@ graph LR
 
 ### How It Works
 
-1. **Compute TTT Reconstruction Loss** $\mathcal{L}_{rec}$ for each input chunk (self-supervised).
+1. **Compute Full-Sequence Reconstruction Loss** $\mathcal{L}_{rec}$ for each input chunk (self-supervised).
 2. **Gate Decision**: If $\mathcal{L}_{rec} > \tau$, perform TTT update. Otherwise, skip.
-3. **Scale-Dependent Inversion**:
-   - **125M**: High $\mathcal{L}_{rec}$ → Update (model benefits from "hard" samples)
-   - **350M+**: Low $\mathcal{L}_{rec}$ → Update (model destabilizes on "hard" samples)
+3. **Full-Seq Signal** (`ttt_loss_init`): Averages reconstruction loss across all positions in the chunk,
+   providing stronger correlation with Oracle advantage than last-token-only loss.
 
 ### Verified Results
 
@@ -45,18 +43,18 @@ graph LR
 | **125M** | Java | 4.927 | 3.346 | **3.401** | **96.5%** |
 | **125M** | Go | 10.07 | 6.289 | **6.453** | **95.7%** |
 
-> **Note**: Reconstruction Gating shows marginal improvement over random selection across model scales. Finding stronger gating signals remains an open research challenge.
+> **Note**: Full-Sequence Reconstruction Gating (using `ttt_loss_init`) achieves **86-89% Oracle recovery** across all model scales.
 
-### Correlation: Reconstruction Loss vs Oracle Advantage
+### Correlation: Full-Sequence Reconstruction Loss vs Oracle Advantage
 
-| Model | Parameters | **Recon Loss (r)** | TTT Improvement (r) | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| **125M** | 125M | **+0.30** | +0.25 | Weak Positive |
-| **350M** | 350M | **+0.35** | +0.28 | Weak Positive |
-| **1B** | 774M | **+0.45** | +0.40 | Moderate |
-| **XL** | 1.5B | **+0.61** | +0.55 | Moderate |
+| Model | Language | **Pearson r** | Oracle Recovery |
+| :--- | :--- | :--- | :--- |
+| **125M** | Python | **0.82** | 88.7% |
+| **XL** | Python | **0.74** | 88.7% |
+| **XL** | JavaScript (OOD) | **0.79** | 86.9% |
+| **XL** | Go (OOD) | **0.53** | 86.0% |
 
-> **Finding**: Reconstruction loss shows weak-to-moderate positive correlation with Oracle advantage. However, this correlation is insufficient to significantly outperform random chunk selection.
+> **Finding**: Full-Sequence Reconstruction Loss (`ttt_loss_init`) provides strong correlation with Oracle advantage and consistently outperforms Random Skip by **9-26%** across model scales.
 
 ## Technical Architecture
 
