@@ -231,14 +231,23 @@ def main():
     print(f"Language: {args.language}")
     print("=" * 60)
 
+    # Map scale to HuggingFace model name
+    scale_to_model_name = {
+        "125m": "gpt2",
+        "350m": "gpt2-medium",
+        "1b": "gpt2-large",
+        "xl": "gpt2-xl",
+    }
+    model_name = scale_to_model_name.get(args.model_scale, "gpt2")
+
     # Load model
     print("\nLoading model...")
     model, tokenizer = load_ttt_model(
-        args.model_scale,
+        model_name,
         checkpoint_path=args.update1_checkpoint,
         load_pretrained=True,
     )
-    print(f"Model loaded: {args.model_scale}")
+    print(f"Model loaded: {args.model_scale} ({model_name})")
 
     # Create data iterator
     print("\nCreating data iterator...")
