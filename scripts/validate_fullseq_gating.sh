@@ -54,10 +54,13 @@ check_checkpoint "125m" || exit 1
 check_checkpoint "xl" || exit 1
 echo ""
 
-# Helper function to find latest checkpoint
+# Helper function to find latest checkpoint (highest step number)
 find_checkpoint() {
     local scale=$1
-    ls -d outputs/baselines/${scale}_update1/checkpoints/checkpoint_* | sort -t_ -k2 -n | tail -1
+    # Extract step number from path like checkpoint_160000 and sort numerically
+    ls -d outputs/baselines/${scale}_update1/checkpoints/checkpoint_* 2>/dev/null | \
+        sed 's/.*checkpoint_//' | sort -n | tail -1 | \
+        xargs -I{} echo "outputs/baselines/${scale}_update1/checkpoints/checkpoint_{}"
 }
 
 # ============================================================
