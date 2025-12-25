@@ -260,6 +260,7 @@ def main():
         tokenizer=tokenizer,
         batch_size=args.batch_size,
         seq_length=args.chunk_size * 2,  # 2 chunks per sequence
+        chunk_size=args.chunk_size,  # Must match our chunk_size
         language=args.language,
         split=args.split,
     )
