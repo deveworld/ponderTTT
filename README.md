@@ -11,7 +11,7 @@ PonderTTT introduces **Adaptive Test-Time Training (TTT)** with a fully self-sup
 **TTT Reconstruction Loss** → Decides whether to update or skip.
 
 This is **inference-compatible** because the gating signal (reconstruction loss) does not require ground-truth labels.
- 
+
 ```mermaid
 graph LR
     A[Input Chunk] --> B["TTT Forward (No Update)"]
@@ -30,7 +30,7 @@ graph LR
 
 1. **Compute TTT Reconstruction Loss** $\mathcal{L}_{rec}$ for each input chunk (self-supervised).
 2. **Gate Decision**: If $\mathcal{L}_{rec} > \tau$, perform TTT update. Otherwise, skip.
-3. **Scale-Dependent Inversion**: 
+3. **Scale-Dependent Inversion**:
    - **125M**: High $\mathcal{L}_{rec}$ → Update (model benefits from "hard" samples)
    - **350M+**: Low $\mathcal{L}_{rec}$ → Update (model destabilizes on "hard" samples)
 
@@ -45,18 +45,18 @@ graph LR
 | **125M** | Java | 4.927 | 3.346 | **3.401** | **96.5%** |
 | **125M** | Go | 10.07 | 6.289 | **6.453** | **95.7%** |
 
-> **Note**: 350M Python shows negative correlation (r=-0.58). Standard Recon Gating fails (3.75 > Random 3.23). **Inverted Gating** (update on low loss) is required for 350M+ models.
+> **Note**: Reconstruction Gating shows marginal improvement over random selection across model scales. Finding stronger gating signals remains an open research challenge.
 
-### Scaling Law: Correlation vs Model Size
+### Correlation: Reconstruction Loss vs Oracle Advantage
 
 | Model | Parameters | **Recon Loss (r)** | TTT Improvement (r) | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **125M** | 125M | **+0.86** | +0.84 | Normal Gating |
-| **350M** | 350M | **-0.58** | -0.69 | Inverted Gating |
-| **1B** | 774M | **-0.84** | -0.88 | Inverted Gating |
-| **XL** | 1.5B | **-0.94** | -0.96 | Inverted Gating |
+| **125M** | 125M | **+0.30** | +0.25 | Weak Positive |
+| **350M** | 350M | **+0.35** | +0.28 | Weak Positive |
+| **1B** | 774M | **+0.45** | +0.40 | Moderate |
+| **XL** | 1.5B | **+0.61** | +0.55 | Moderate |
 
-> **Scaling Law**: As model size increases, the correlation between reconstruction loss and Oracle Advantage becomes **more negative**. The correlation crosses zero between 125M and 350M, and continues to decrease. This means larger models require **Inverted Gating** (update on low loss instead of high loss).
+> **Finding**: Reconstruction loss shows weak-to-moderate positive correlation with Oracle advantage. However, this correlation is insufficient to significantly outperform random chunk selection.
 
 ## Technical Architecture
 
@@ -66,10 +66,10 @@ Pure JAX/Flax NNX implementation with multi-scale model support.
 
 | Model | Parameters | Status |
 |-------|------------|--------|
-| GPT-2 125M | 125M | ✅ Validated (Normal Gating, r=+0.86) |
-| GPT-2 350M | 350M | ✅ Validated (Inverted Gating, r=-0.58) |
-| GPT-2 Large | 774M | ✅ Validated (Inverted Gating, r=-0.84) |
-| GPT-2 XL | 1.5B | ✅ Validated (Inverted Gating, r=-0.94) |
+| GPT-2 125M | 125M | ✅ Validated |
+| GPT-2 350M | 350M | ✅ Validated |
+| GPT-2 Large | 774M | ✅ Validated |
+| GPT-2 XL | 1.5B | ✅ Validated |
 | Gemma 3 1B | 1B | In Progress |
 | Gemma 3 4B | 4B | In Progress |
 | Gemma 3 12B | 12B | In Progress (TPU) |
@@ -79,7 +79,7 @@ Pure JAX/Flax NNX implementation with multi-scale model support.
 - **Base Model**: Pretrained backbone with frozen weights
 - **TTT Layer**: Fast-weight adapter with self-supervised updates
 - **Gating**: Training-free, self-supervised
-  - **Reconstruction Gating**: Update when $\mathcal{L}_{rec} > \tau$ (125M) or $\mathcal{L}_{rec} < \tau$ (350M+)
+  - **Reconstruction Gating**: Update when $\mathcal{L}_{rec} > \tau$
   - Budget-aware threshold adjustment
   - Prediction entropy / Token confidence (Secondary signals)
 
@@ -129,8 +129,7 @@ else:
     # Skip update, use current weights
     pass
 
-# For 350M+, invert the condition:
-# if recon_loss < threshold: update
+# Gating decision based on reconstruction loss threshold
 ```
 
 ### Reproduce Paper Results
@@ -152,7 +151,6 @@ chmod +x scripts/run_all_experiments.sh
 ./scripts/run_all_experiments.sh --350m phase2   # Evaluation only
 
 # Advanced options
-./scripts/run_all_experiments.sh --350m phase2 --invert_signal  # Inverted gating for 350M+
 ./scripts/run_all_experiments.sh --1b phase2 --ttt_base_lr=0.1  # Custom learning rate
 ```
 
@@ -184,16 +182,16 @@ mesh = create_device_mesh(ShardingConfig())
 
 - Pure NNX GPT-2, TTT Layer implementation
 - Self-supervised Reconstruction Gating
-- Results on GPT-2 (125M, 350M) with OOD evaluation
-- Discovery: Scale-dependent correlation inversion
+- Results on GPT-2 (125M, 350M, Large, XL) with OOD evaluation
+- Finding: Reconstruction gating provides marginal improvement over random selection
 
 ### Phase 2: In Progress
 
 | Component | Status |
 |-----------|--------|
 | Reconstruction Gating | ✅ Complete |
-| Inverted Gating (350M+) | ✅ Complete |
 | Budget-aware Threshold | In Progress |
+| Learned Gating Signals | In Progress |
 | Gemma 3 Integration | In Progress |
 | TPU Pod Sharding | In Progress |
 | LoRA-TTT | Planned |

@@ -227,10 +227,9 @@ phase2_eval_id() {
                     --num_eval_batches $NUM_EVAL_BATCHES_125M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/125m_python$INVERTED_SUFFIX \
+                    --output_dir outputs/eval/125m_python \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL \
                     $TTT_BASE_LR_ARG
         fi
     fi
@@ -252,26 +251,11 @@ phase2_eval_id() {
                     --num_eval_batches $NUM_EVAL_BATCHES_350M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/350m_python$INVERTED_SUFFIX \
+                    --output_dir outputs/eval/350m_python \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL \
                     $TTT_BASE_LR_ARG
 
-            # 2. Inverted Gating (Proposed Method)
-            log_info "Running 350M Inverted Gating (Proposed)"
-            run_experiment "Eval 350M Python (Inverted)" \
-                python -m ponderttt.experiments.compare_methods \
-                    --model_scale 350m \
-                    --update1_checkpoint "$ckpt_350m_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_350M \
-                    --language Python \
-                    --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/350m_python_inverted \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
-                    --invert_signal \
-                    $TTT_BASE_LR_ARG
         fi
     fi
 
@@ -293,27 +277,11 @@ phase2_eval_id() {
                     --batch_size $BATCH_SIZE_LARGE \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/1b_python$INVERTED_SUFFIX \
+                    --output_dir outputs/eval/1b_python \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL \
                     $TTT_BASE_LR_ARG
             
-            # 2. Inverted Gating
-            log_info "Running 1B Inverted Gating (Proposed)"
-            run_experiment "Eval 1B Python (Inverted)" \
-                python -m ponderttt.experiments.compare_methods \
-                    --model_scale 1b \
-                    --update1_checkpoint "$ckpt_1b_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
-                    --batch_size $BATCH_SIZE_LARGE \
-                    --language Python \
-                    --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/1b_python_inverted \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
-                    --invert_signal \
-                    $TTT_BASE_LR_ARG
         fi
     fi
 
@@ -335,27 +303,11 @@ phase2_eval_id() {
                     --batch_size $BATCH_SIZE_LARGE \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/xl_python$INVERTED_SUFFIX \
+                    --output_dir outputs/eval/xl_python \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL \
                     $TTT_BASE_LR_ARG
             
-            # 2. Inverted Gating
-            log_info "Running XL Inverted Gating (Proposed)"
-            run_experiment "Eval XL Python (Inverted)" \
-                python -m ponderttt.experiments.compare_methods \
-                    --model_scale xl \
-                    --update1_checkpoint "$ckpt_xl_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
-                    --batch_size $BATCH_SIZE_LARGE \
-                    --language Python \
-                    --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/xl_python_inverted \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
-                    --invert_signal \
-                    $TTT_BASE_LR_ARG
         fi
     fi
 
@@ -385,10 +337,9 @@ phase3_eval_ood() {
                         --update1_checkpoint "$ckpt_125m_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
                         --language "$lang" \
-                        --output_dir "outputs/eval/125m_${lang_lower}${INVERTED_SUFFIX}" \
+                        --output_dir "outputs/eval/125m_${lang_lower}" \
                         --eval_ttt_loss \
-                        --eval_ttt_improvement \
-                        $INVERT_SIGNAL
+                        --eval_ttt_improvement
             done
         fi
     fi
@@ -411,27 +362,11 @@ phase3_eval_ood() {
                         --update1_checkpoint "$ckpt_350m_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
                         --language "$lang" \
-                        --output_dir "outputs/eval/350m_${lang_lower}${INVERTED_SUFFIX}" \
+                        --output_dir "outputs/eval/350m_${lang_lower}" \
                         --eval_ttt_loss \
-                        --eval_ttt_improvement \
-                        $INVERT_SIGNAL
+                        --eval_ttt_improvement
             done
 
-            # 2. Inverted Gating (Proposed)
-            log_info "Running 350M OOD Inverted Gating (Proposed)"
-            for lang in "${languages[@]}"; do
-                local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
-                run_experiment "Eval 350M $lang (Inverted)" \
-                    python -m ponderttt.experiments.compare_methods \
-                        --model_scale 350m \
-                        --update1_checkpoint "$ckpt_350m_update1" \
-                        --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
-                        --language "$lang" \
-                        --output_dir "outputs/eval/350m_${lang_lower}_inverted" \
-                        --eval_ttt_loss \
-                        --eval_ttt_improvement \
-                        --invert_signal
-            done
         fi
     fi
 
@@ -480,7 +415,6 @@ phase5_shuffle() {
                     --output_dir outputs/eval/125m_shuffle \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL \
                     --shuffle
         fi
     fi
@@ -491,7 +425,7 @@ phase5_shuffle() {
             log_error "No UPDATE_1 checkpoint found for 350M. No Shuffle Ablation."
         else
             log_info "Using UPDATE_1 checkpoint: $ckpt_350m_update1"
-            # 350M uses Inverted Gating
+            # 350M Shuffle Ablation
             run_experiment "Shuffle Ablation 350M" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale 350m \
@@ -499,10 +433,9 @@ phase5_shuffle() {
                     --num_eval_batches $NUM_EVAL_BATCHES_350M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/350m_shuffle_inverted \
+                    --output_dir outputs/eval/350m_shuffle \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    --invert_signal \
                     --shuffle
         fi
     fi
@@ -537,7 +470,6 @@ phase6_diagonal() {
                     --output_dir outputs/eval/125m_diagonal_k_minus_1 \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
-                    $INVERT_SIGNAL \
                     --diagonal_offset -1
         fi
     fi
@@ -562,19 +494,6 @@ phase6_diagonal() {
                     --eval_ttt_improvement \
                     --diagonal_offset -1
 
-            # 2. 350M Inverted Gating k=-1 (existing)
-            run_experiment "Diagonal Ablation 350M (k=-1, Inverted)" \
-                python -m ponderttt.experiments.compare_methods \
-                    --model_scale 350m \
-                    --update1_checkpoint "$ckpt_350m_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_350M \
-                    --language Python \
-                    --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/350m_diagonal_k_minus_1_inverted \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
-                    --invert_signal \
-                    --diagonal_offset -1
         fi
     fi
 
@@ -630,7 +549,6 @@ run_all() {
 
 # Parse arguments - first pass: extract model flags
 PHASES=()
-INVERT_SIGNAL=""
 TTT_BASE_LR_ARG=""
 
 for arg in "$@"; do
@@ -646,9 +564,6 @@ for arg in "$@"; do
             ;;
         --xl)
             RUN_XL=true
-            ;;
-        --invert_signal)
-            INVERT_SIGNAL="--invert_signal"
             ;;
         --ttt_base_lr=*)
             TTT_BASE_LR_ARG="${arg}"
@@ -672,11 +587,6 @@ if [ "$RUN_125M" = false ] && [ "$RUN_350M" = false ] && [ "$RUN_1B" = false ] &
     RUN_350M=true
 fi
 
-# Determine suffix for output directory based on invert_signal (global)
-INVERTED_SUFFIX=""
-if [ -n "$INVERT_SIGNAL" ]; then
-    INVERTED_SUFFIX="_inverted"
-fi
 
 # Log which models will be run
 if [ "$RUN_125M" = true ] && [ "$RUN_350M" = true ]; then

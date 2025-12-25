@@ -272,21 +272,19 @@ def evaluate_oracle_gemma(
     # We want to know if high recon loss correlates with high advantage
     if len(df) > 0:
         # Check TTT Recon Loss vs Advantage
-        # Positive Correlation => Standard Gating (High Loss -> High Improvement)
-        # Negative Correlation => Inverted Gating (Low Loss -> High Improvement)
         corr_recon = df["ttt_recon_loss"].corr(df["advantage"])
         print(f"  Correlation (TTT Recon Loss vs Advantage): {corr_recon:.4f}")
 
-        if corr_recon < 0:
+        if corr_recon > 0.5:
+            print(f"  [Insight] Strong positive correlation - gating may be effective.")
+        elif corr_recon > 0.2:
             print(
-                f"  [Insight] Negative correlation suggests INVERTED GATING might be optimal."
+                f"  [Insight] Weak positive correlation - marginal gating benefit expected."
             )
-            print(f"  (i.e., Update when Reconstruction Loss is LOW)")
         else:
             print(
-                f"  [Insight] Positive correlation suggests STANDARD GATING is optimal."
+                f"  [Insight] Very weak correlation - gating unlikely to help significantly."
             )
-            print(f"  (i.e., Update when Reconstruction Loss is HIGH)")
 
         # Also check Loss Skip vs Advantage (for comparison)
         corr_skip = df["loss_skip_val"].corr(df["advantage"])

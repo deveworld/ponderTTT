@@ -16,7 +16,7 @@ Note: Reconstruction Loss Gating (method 8) is the main contribution from the pa
 
 Usage:
     python -m ponderttt.experiments.compare_methods --model_scale 125m --budget 2.0
-    python -m ponderttt.experiments.compare_methods --model_scale 350m --budget 2.0 --invert_signal
+    python -m ponderttt.experiments.compare_methods --model_scale 350m --budget 2.0
 """
 
 import argparse
@@ -866,7 +866,6 @@ def evaluate_ttt_loss_gating(
     num_workers: int = 32,
     shuffle: bool = False,
     diagonal_offset: int = 0,
-    invert_signal: bool = False,
     ttt_base_lr: Optional[float] = None,
 ):
     r"""
@@ -878,14 +877,12 @@ def evaluate_ttt_loss_gating(
     Logic:
     1. Run partial TTT forward (or full, extracting stats) to get `ttt_loss_step_0`.
        $$ \text{score} = \mathcal{L}_{rec}(\theta_{fast}; x_t) $$
-    2. If score > threshold (Top-k): UPDATE. (If invert_signal=True, score < threshold)
+    2. If score > threshold (Top-k): UPDATE.
     3. Else: SKIP.
 
     Key Properties:
     - Inference-Compatible: $\mathcal{L}_{rec}$ does not require ground-truth labels.
     - Efficient: Can compute reconstruction loss without full UPDATE (just forward pass).
-    - Scale-Dependent: Requires normal gating (high loss → update) for 125M,
-      inverted gating (low loss → update) for 350M+.
 
     Cost Analysis:
     - Evaluation Mode (this implementation): Runs both SKIP and UPDATE for comparison
@@ -893,15 +890,11 @@ def evaluate_ttt_loss_gating(
     - Deployment Mode (theoretical): Compute ttt_loss_step_0 during forward (~1.0x),
       then conditionally run UPDATE (additional 2.0x). Average: 1.0 + 2.0 × update_rate.
 
-    Args:
-        invert_signal: If True, update on LOW reconstruction loss (for 350M+ models).
-                       If False, update on HIGH reconstruction loss (for 125M models).
-
     Note: See paper Section 3.2 "Reconstruction Gating" for details.
           Compare with evaluate_ttt_improvement_gating (analysis only, inefficient).
     """
     print(
-        f"\nEvaluating {method_name} (update_rate={update_rate:.1%}, invert={invert_signal}) on {language}..."
+        f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}..."
     )
 
     model_name = {
@@ -1024,10 +1017,8 @@ def evaluate_ttt_loss_gating(
         # Step 2: Select top-k% chunks by Reconstruction Loss
         num_to_update = max(1, int(len(chunk_data) * update_rate))
 
-        # Determine sort order
-        # Normal: Higher reconstruction error -> Needs update (reverse=True)
-        # Inverted: Lower reconstruction error -> Needs update (reverse=False)
-        reverse_sort = not invert_signal
+        # Determine sort order: Higher reconstruction error -> Needs update (reverse=True)
+        reverse_sort = True
 
         sorted_chunks = sorted(
             chunk_data, key=lambda x: x["ttt_recon_loss"], reverse=reverse_sort
@@ -1410,11 +1401,6 @@ def parse_args():
         "--eval_ttt_loss",
         action="store_true",
         help="Evaluate TTT Reconstruction Loss-based gating (training-free, high recon loss -> update)",
-    )
-    parser.add_argument(
-        "--invert_signal",
-        action="store_true",
-        help="Invert gating signal (e.g. for TTT Loss: Low Loss -> Update)",
     )
     parser.add_argument(
         "--shuffle", action="store_true", help="Shuffle tokens within chunks (ablation)"
@@ -1891,7 +1877,7 @@ def main():
     if args.eval_ttt_loss:
         model_source = "UPDATE_1" if update1_ttt_model else "fresh"
         print(
-            f"\n=== Running TTT Reconstruction Gating (update_rate={target_update_rate:.2%}, invert={args.invert_signal}) ==="
+            f"\n=== Running TTT Reconstruction Gating (update_rate={target_update_rate:.2%}) ==="
         )
         print(f"    (Using {model_source} TTT weights)")
         df_ttt_loss = evaluate_ttt_loss_gating(
@@ -1908,7 +1894,6 @@ def main():
             num_workers=args.num_workers,
             shuffle=args.shuffle,
             diagonal_offset=args.diagonal_offset,
-            invert_signal=args.invert_signal,
             ttt_base_lr=args.ttt_base_lr,
         )
         all_results.append(df_ttt_loss)
