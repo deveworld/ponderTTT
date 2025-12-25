@@ -73,7 +73,6 @@ echo "Checkpoint: $CKPT_125M"
 python -m ponderttt.experiments.compare_methods \
     --model_scale 125m \
     --update1_checkpoint "$CKPT_125M" \
-    --eval_random_skip \
     --eval_ttt_loss \
     --budget $BUDGET \
     --num_eval_batches $NUM_BATCHES \
@@ -98,7 +97,6 @@ echo "Checkpoint: $CKPT_XL"
 python -m ponderttt.experiments.compare_methods \
     --model_scale xl \
     --update1_checkpoint "$CKPT_XL" \
-    --eval_random_skip \
     --eval_ttt_loss \
     --budget $BUDGET \
     --num_eval_batches $NUM_BATCHES \
@@ -119,7 +117,6 @@ echo "============================================================"
 python -m ponderttt.experiments.compare_methods \
     --model_scale xl \
     --update1_checkpoint "$CKPT_XL" \
-    --eval_random_skip \
     --eval_ttt_loss \
     --budget $BUDGET \
     --num_eval_batches $NUM_BATCHES \
@@ -140,7 +137,6 @@ echo "============================================================"
 python -m ponderttt.experiments.compare_methods \
     --model_scale xl \
     --update1_checkpoint "$CKPT_XL" \
-    --eval_random_skip \
     --eval_ttt_loss \
     --budget $BUDGET \
     --num_eval_batches $NUM_BATCHES \
