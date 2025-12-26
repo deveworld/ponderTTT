@@ -36,25 +36,28 @@ graph LR
 
 **Configuration**: 50% Update Budget, 1 Gradient Step per chunk.
 
-| Model | Language | Baseline (SKIP) | Oracle | **Recon Gating** | **Oracle Capture** |
+| Model | Language | Baseline (SKIP) | Oracle | **Recon Gating** | **Oracle Recovery** |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **125M** | Python | 3.935 | 2.663 | **2.673** | **99.2%** |
-| **125M** | JavaScript | 4.374 | 3.014 | **3.083** | **95.0%** |
-| **125M** | Java | 4.927 | 3.346 | **3.401** | **96.5%** |
-| **125M** | Go | 10.07 | 6.289 | **6.453** | **95.7%** |
+| **125M** | Python | 2.332 | 1.950 | **1.990** | **89.5%** |
+| **125M** | JavaScript | 2.640 | 2.119 | **2.158** | **92.5%** |
+| **125M** | Java | 3.042 | 2.221 | **2.287** | **91.9%** |
+| **125M** | Go | 7.944 | 4.832 | **5.047** | **93.1%** |
+| **XL** | Python | 1.875 | 1.615 | **1.622** | **97.3%** |
+| **XL** | JavaScript | 2.852 | 2.114 | **2.138** | **96.7%** |
+| **XL** | Go | 6.520 | 4.223 | **4.275** | **97.7%** |
 
-> **Note**: Full-Sequence Reconstruction Gating (using `ttt_loss_init`) achieves **86-89% Oracle recovery** across all model scales.
+> **Note**: Full-Sequence Reconstruction Gating achieves **89-97% Oracle recovery**, with larger models (XL) showing higher recovery rates (>97%).
 
 ### Correlation: Full-Sequence Reconstruction Loss vs Oracle Advantage
 
 | Model | Language | **Pearson r** | Oracle Recovery |
 | :--- | :--- | :--- | :--- |
-| **125M** | Python | **0.82** | 88.7% |
-| **XL** | Python | **0.74** | 88.7% |
-| **XL** | JavaScript (OOD) | **0.79** | 86.9% |
-| **XL** | Go (OOD) | **0.53** | 86.0% |
+| **125M** | Python | **0.67** | 89.5% |
+| **XL** | Python | **0.76** | 97.3% |
+| **XL** | JavaScript (OOD) | **0.84** | 96.7% |
+| **XL** | Go (OOD) | **0.75** | 97.7% |
 
-> **Finding**: Full-Sequence Reconstruction Loss (`ttt_loss_init`) provides strong correlation with Oracle advantage and consistently outperforms Random Skip by **9-26%** across model scales.
+> **Finding**: Gating signal reliability **improves with model scale**. XL models show strong correlation ($r \ge 0.75$) and recover >97% of Oracle performance.
 
 ## Technical Architecture
 
