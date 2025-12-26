@@ -370,6 +370,29 @@ phase3_eval_ood() {
         fi
     fi
 
+    # 1B OOD
+    if [ "$RUN_1B" = true ]; then
+        local ckpt_1b_update1=$(get_latest_checkpoint "outputs/baselines/1b_update1/checkpoints")
+        if [ -z "$ckpt_1b_update1" ]; then
+            log_error "No UPDATE_1 checkpoint found for 1B. Run Phase 1 first!"
+        else
+            log_info "Using 1B UPDATE_1 checkpoint: $ckpt_1b_update1"
+            for lang in "${languages[@]}"; do
+                local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
+                run_experiment "Eval 1B $lang" \
+                    python -m ponderttt.experiments.compare_methods \
+                        --model_scale 1b \
+                        --update1_checkpoint "$ckpt_1b_update1" \
+                        --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
+                        --batch_size $BATCH_SIZE_LARGE \
+                        --language "$lang" \
+                        --output_dir "outputs/eval/1b_${lang_lower}" \
+                        --eval_ttt_loss \
+                        --eval_ttt_improvement
+            done
+        fi
+    fi
+
     # XL OOD (Important: Full-Seq Gating shows r=0.53-0.79 on XL OOD)
     if [ "$RUN_XL" = true ]; then
         local ckpt_xl_update1=$(get_latest_checkpoint "outputs/baselines/xl_update1/checkpoints")
