@@ -276,14 +276,14 @@ def evaluate_oracle_gemma(
         print(f"  Correlation (TTT Recon Loss vs Advantage): {corr_recon:.4f}")
 
         if corr_recon > 0.5:
-            print(f"  [Insight] Strong positive correlation - gating may be effective.")
+            print("  [Insight] Strong positive correlation - gating may be effective.")
         elif corr_recon > 0.2:
             print(
-                f"  [Insight] Weak positive correlation - marginal gating benefit expected."
+                "  [Insight] Weak positive correlation - marginal gating benefit expected."
             )
         else:
             print(
-                f"  [Insight] Very weak correlation - gating unlikely to help significantly."
+                "  [Insight] Very weak correlation - gating unlikely to help significantly."
             )
 
         # Also check Loss Skip vs Advantage (for comparison)
