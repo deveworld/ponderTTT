@@ -44,6 +44,7 @@ graph LR
 | **125M** | Go | 7.944 | 4.832 | **5.047** | **93.1%** |
 | **XL** | Python | 1.875 | 1.615 | **1.622** | **97.3%** |
 | **XL** | JavaScript | 2.852 | 2.114 | **2.138** | **96.7%** |
+| **XL** | Java | 3.213 | 2.268 | **2.292** | **97.5%** |
 | **XL** | Go | 6.520 | 4.223 | **4.275** | **97.7%** |
 
 > **Note**: Full-Sequence Reconstruction Gating achieves **89-97% Oracle recovery**, with larger models (XL) showing higher recovery rates (>97%).
@@ -55,6 +56,7 @@ graph LR
 | **125M** | Python | **0.67** | 89.5% |
 | **XL** | Python | **0.76** | 97.3% |
 | **XL** | JavaScript (OOD) | **0.84** | 96.7% |
+| **XL** | Java (OOD) | **0.90** | 97.5% |
 | **XL** | Go (OOD) | **0.75** | 97.7% |
 
 > **Finding**: Gating signal reliability **improves with model scale**. XL models show strong correlation ($r \ge 0.75$) and recover >97% of Oracle performance.
