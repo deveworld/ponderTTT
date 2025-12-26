@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from ponderttt.models.base_model_nnx import load_ttt_model
 from ponderttt.data.dataset import create_data_iterator
 from ponderttt.data.tokenization import get_tokenizer
+from flax import nnx
 
 
 @dataclass
@@ -65,7 +66,7 @@ def compute_entropy(logits: jax.Array) -> float:
     probs = jax.nn.softmax(logits, axis=-1)
     log_probs = jnp.log(probs + 1e-10)
     entropy = -jnp.sum(probs * log_probs, axis=-1)
-    return float(entropy.mean())
+    return entropy.mean()
 
 
 def compute_token_confidence(logits: jax.Array) -> float:
@@ -75,7 +76,7 @@ def compute_token_confidence(logits: jax.Array) -> float:
     """
     probs = jax.nn.softmax(logits, axis=-1)
     max_probs = probs.max(axis=-1)
-    return float(max_probs.mean())
+    return max_probs.mean()
 
 
 def compute_loss(logits: jax.Array, labels: jax.Array, mask: jax.Array) -> float:
@@ -94,19 +95,17 @@ def compute_loss(logits: jax.Array, labels: jax.Array, mask: jax.Array) -> float
     total_loss = masked_loss.sum()
     num_tokens = shift_mask.sum()
 
-    return float(total_loss / (num_tokens + 1e-10))
+    return total_loss / (num_tokens + 1e-10)
 
 
-def analyze_chunk(
+@nnx.jit
+def compute_raw_signals(
     model,
     input_ids: jax.Array,
     attention_mask: jax.Array,
     position_ids: jax.Array,
-) -> Dict:
-    """Analyze a single chunk and compute all candidate signals.
-
-    Returns dict with all signal values and Oracle advantage.
-    """
+):
+    """Jitted function to compute all signals on GPU."""
     # 1. SKIP path (no TTT update)
     output_skip = model(
         input_ids,
@@ -116,6 +115,10 @@ def analyze_chunk(
     )
     logits_skip = output_skip["logits"]
     loss_skip = compute_loss(logits_skip, input_ids, attention_mask)
+
+    # Compute metrics on logits_skip (inside JIT)
+    output_entropy = compute_entropy(logits_skip)
+    token_confidence = compute_token_confidence(logits_skip)
 
     # 2. UPDATE path (with TTT update)
     output_update = model(
@@ -128,6 +131,34 @@ def analyze_chunk(
     loss_update = compute_loss(logits_update, input_ids, attention_mask)
     ttt_stats = output_update.get("ttt_stats", {})
 
+    return loss_skip, loss_update, output_entropy, token_confidence, ttt_stats
+
+
+def analyze_chunk(
+    model,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+    position_ids: jax.Array,
+) -> Dict:
+    """Analyze a single chunk and compute all candidate signals.
+
+    Returns dict with all signal values and Oracle advantage.
+    """
+    # Call Jitted compute function
+    (
+        loss_skip_jax,
+        loss_update_jax,
+        output_entropy_jax,
+        token_confidence_jax,
+        ttt_stats_jax,
+    ) = compute_raw_signals(model, input_ids, attention_mask, position_ids)
+
+    # Convert JAX arrays to Python values (blocking/sync here)
+    loss_skip = float(loss_skip_jax)
+    loss_update = float(loss_update_jax)
+    output_entropy = float(output_entropy_jax)
+    token_confidence = float(token_confidence_jax)
+
     # Oracle advantage (positive = update helps)
     oracle_advantage = loss_skip - loss_update
 
@@ -137,28 +168,35 @@ def analyze_chunk(
             return 0.0
         if hasattr(x, "mean"):
             return float(x.mean())
+        if isinstance(x, (jax.Array, np.ndarray)):
+            return float(x)
         return float(x)
 
     # === Candidate Signals ===
 
     # 1. Reconstruction Loss (last token only) - current baseline
-    recon_loss_last_token = to_float(ttt_stats.get("ttt_loss_step_0"))
+    recon_loss_last_token = to_float(ttt_stats_jax.get("ttt_loss_step_0"))
 
     # 2. Full-Sequence Reconstruction Loss - computed from ttt_loss_init
     # Note: We'll approximate this using ttt_loss_init as it covers more positions
     recon_loss_full_seq = (
-        to_float(ttt_stats.get("ttt_loss_init")) or recon_loss_last_token
+        to_float(ttt_stats_jax.get("ttt_loss_init")) or recon_loss_last_token
     )
 
-    # 3. Output Entropy (before TTT update)
-    output_entropy = compute_entropy(logits_skip)
+    # 3. Output Entropy (Computed in JIT)
+    # output_entropy already converted above
 
-    # 4. Token Confidence
-    token_confidence = compute_token_confidence(logits_skip)
+    # 4. Token Confidence (Computed in JIT)
+    # token_confidence already converted above
 
     # 5. TTT Improvement (step_0 - step_1)
-    ttt_step_0 = to_float(ttt_stats.get("ttt_loss_step_0"))
-    ttt_step_1 = to_float(ttt_stats.get("ttt_loss_step_1"))
+    # Handle scalar or array cases safely
+    def get_val(key):
+        val = ttt_stats_jax.get(key)
+        return to_float(val) if val is not None else 0.0
+
+    ttt_step_0 = get_val("ttt_loss_step_0")
+    ttt_step_1 = get_val("ttt_loss_step_1")
     ttt_improvement = ttt_step_0 - ttt_step_1
 
     # Check if real code (>10% valid tokens)
@@ -281,7 +319,12 @@ def main():
 
     print(f"\nAnalyzing {args.num_batches} batches...")
     for batch_idx in range(args.num_batches):
-        batch = next(data_iter)
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            print(f"\nWarning: Dataset exhausted after {batch_idx} batches.")
+            break
+
         input_ids = jnp.array(batch["input_ids"])
         attention_mask = jnp.array(batch["attention_mask"])
 
