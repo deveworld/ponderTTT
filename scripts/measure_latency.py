@@ -181,8 +181,8 @@ def benchmark(batch_size, model_scale="125m"):
         return out
 
     @nnx.jit
-    def forward_sparse_50(model, input_ids):
-        """50% update rate: S-U-S-U-S-U-S-U-S-U"""
+    def forward_periodic_50(model, input_ids):
+        """Periodic 50% update rate (fixed schedule): S-U-S-U-S-U-S-U-S-U"""
         _ = model(input_ids, use_ttt=False)
         _ = model(input_ids, use_ttt=True)
         _ = model(input_ids, use_ttt=False)
@@ -216,8 +216,8 @@ def benchmark(batch_size, model_scale="125m"):
     out = forward_sparse_20(model, input_ids)
     block_leaves(out)
 
-    print("Warmup Ponder Sparse 50%...")
-    out = forward_sparse_50(model, input_ids)
+    print("Warmup Periodic 50%...")
+    out = forward_periodic_50(model, input_ids)
     block_leaves(out)
 
     print("Warmup complete")
@@ -308,13 +308,13 @@ def benchmark(batch_size, model_scale="125m"):
 
     # 5. Measure PonderTTT [Sparse 50%]
     # Fused pattern
-    print(f"Measuring PonderTTT [Sparse 50%] ({n_iters} iters, blocked)...")
+    print(f"Measuring Periodic 50% ({n_iters} iters, blocked)...")
 
     gpu_monitor.start()
     start = time.perf_counter()
 
     for _ in range(n_blocks):
-        out = forward_sparse_50(model, input_ids)
+        out = forward_periodic_50(model, input_ids)
         # Emulate gating overhead: sync BLOCK_SIZE times for consistency
         if out and "ttt_stats" in out and out["ttt_stats"]:
             _ = float(jnp.mean(out["ttt_stats"]["ttt_loss_step_0"]))
@@ -387,7 +387,7 @@ def benchmark(batch_size, model_scale="125m"):
     )
     output_lines.append("=" * 100)
     output_lines.append(
-        f"{'Metric':<15} | {'SKIP':<18} | {'UPDATE_1':<18} | {'Ponder[Dense]':<18} | {'Ponder[Sparse 20%]':<18} | {'Ponder[Sparse 50%]':<18}"
+        f"{'Metric':<15} | {'SKIP':<18} | {'UPDATE_1':<18} | {'Ponder[Dense]':<18} | {'Ponder[Sparse 20%]':<18} | {'Periodic 50%':<18}"
     )
     output_lines.append("-" * 100)
     output_lines.append(
@@ -414,7 +414,7 @@ def benchmark(batch_size, model_scale="125m"):
         "Note: Ponder[Sparse 20%] simulates 20% update rate using fused kernel."
     )
     output_lines.append(
-        "      Ponder[Sparse 50%] simulates 50% update rate using fused kernel."
+        "      Periodic 50% = fixed schedule baseline (every other chunk update)."
     )
     output_lines.append(
         "      Ponder[Dense] simulates 100% update rate + gating overhead (Worst Case)."
