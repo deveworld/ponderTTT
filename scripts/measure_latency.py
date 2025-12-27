@@ -136,7 +136,24 @@ def benchmark(batch_size, model_scale="125m"):
     model_name = scale_to_model[model_scale]
 
     # Determine device
-    print(f"JAX Devices: {jax.devices()}")
+    devices = jax.devices()
+    print(f"JAX Devices: {devices}")
+
+    # Get GPU name
+    gpu_name = "Unknown"
+    if PYNVML_AVAILABLE:
+        try:
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            gpu_name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(gpu_name, bytes):
+                gpu_name = gpu_name.decode("utf-8")
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
+    if gpu_name == "Unknown" and devices:
+        # Fallback to JAX device description
+        gpu_name = str(devices[0])
 
     print(f"Initializing {model_scale.upper()} model ({model_name})...")
     try:
@@ -337,6 +354,8 @@ def benchmark(batch_size, model_scale="125m"):
     # Build results dictionary for logging
     results = {
         "model_scale": model_scale,
+        "model_name": model_name,
+        "gpu_name": gpu_name,
         "batch_size": batch_size,
         "seq_len": seq_len,
         "n_iters": n_iters,
