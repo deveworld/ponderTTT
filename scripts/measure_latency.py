@@ -435,13 +435,7 @@ def benchmark(batch_size, model_scale="125m"):
     json_path = os.path.join(log_dir, f"latency_{model_scale}.json")
     with open(json_path, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\n[LOG] JSON results saved to: {json_path}")
-
-    # Save text log
-    txt_path = os.path.join(log_dir, f"latency_{model_scale}.txt")
-    with open(txt_path, "w") as f:
-        f.write("\n".join(output_lines))
-    print(f"[LOG] Text results saved to: {txt_path}")
+    print(f"\n[LOG] Results saved to: {json_path}")
 
 
 if __name__ == "__main__":
