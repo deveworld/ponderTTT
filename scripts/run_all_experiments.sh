@@ -425,14 +425,26 @@ phase3_eval_ood() {
 phase4_latency() {
     log_phase "Phase 4: Latency Benchmark"
 
-    # Latency script handles both 125M and 350M if we pass arguments, 
-    # but the script provided seems to hardcode setups or expect modifications.
-    # Let's check measure_latency.py usage. It seems to just run.
-    # We will assume it's standalone or update it if needed. 
-    # For now, running it directly as it appears to measure TTT overhead generally.
-    
-    run_experiment "Latency Benchmark" \
-        python scripts/measure_latency.py
+    # GPU Utilization Benchmark (more meaningful metric than wall-clock latency)
+    if [ "$RUN_125M" = true ]; then
+        run_experiment "GPU Util 125M" \
+            python scripts/measure_gpu_util.py --model_scale 125m --batch_size 1
+    fi
+
+    if [ "$RUN_350M" = true ]; then
+        run_experiment "GPU Util 350M" \
+            python scripts/measure_gpu_util.py --model_scale 350m --batch_size 1
+    fi
+
+    if [ "$RUN_1B" = true ]; then
+        run_experiment "GPU Util 1B" \
+            python scripts/measure_gpu_util.py --model_scale 1b --batch_size 1
+    fi
+
+    if [ "$RUN_XL" = true ]; then
+        run_experiment "GPU Util XL" \
+            python scripts/measure_gpu_util.py --model_scale xl --batch_size 1
+    fi
 
     log_info "Phase 4 Complete!"
 }
