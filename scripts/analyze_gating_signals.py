@@ -97,16 +97,14 @@ def compute_loss(logits: jax.Array, labels: jax.Array, mask: jax.Array) -> float
     return float(total_loss / (num_tokens + 1e-10))
 
 
-def analyze_chunk(
+@nnx.jit
+def compute_raw_signals(
     model,
     input_ids: jax.Array,
     attention_mask: jax.Array,
     position_ids: jax.Array,
-) -> Dict:
-    """Analyze a single chunk and compute all candidate signals.
-
-    Returns dict with all signal values and Oracle advantage.
-    """
+):
+    """Jitted function to compute all signals on GPU."""
     # 1. SKIP path (no TTT update)
     output_skip = model(
         input_ids,
@@ -116,6 +114,10 @@ def analyze_chunk(
     )
     logits_skip = output_skip["logits"]
     loss_skip = compute_loss(logits_skip, input_ids, attention_mask)
+
+    # Compute metrics on logits_skip (inside JIT)
+    output_entropy = compute_entropy(logits_skip)
+    token_confidence = compute_token_confidence(logits_skip)
 
     # 2. UPDATE path (with TTT update)
     output_update = model(
@@ -128,8 +130,27 @@ def analyze_chunk(
     loss_update = compute_loss(logits_update, input_ids, attention_mask)
     ttt_stats = output_update.get("ttt_stats", {})
 
-    # Oracle advantage (positive = update helps)
-    oracle_advantage = loss_skip - loss_update
+    return loss_skip, loss_update, output_entropy, token_confidence, ttt_stats
+
+
+def analyze_chunk(
+    model,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+    position_ids: jax.Array,
+) -> Dict:
+    """Analyze a single chunk and compute all candidate signals.
+
+    Returns dict with all signal values and Oracle advantage.
+    """
+    # Call Jitted compute function
+    (
+        loss_skip_jax,
+        loss_update_jax,
+        output_entropy_jax,
+        token_confidence_jax,
+        ttt_stats_jax,
+    ) = compute_raw_signals(model, input_ids, attention_mask, position_ids)
 
     # Helper to safely convert JAX arrays to float
     def to_float(x):
@@ -137,28 +158,44 @@ def analyze_chunk(
             return 0.0
         if hasattr(x, "mean"):
             return float(x.mean())
+        if isinstance(x, (jax.Array, np.ndarray)):
+            return float(x)
         return float(x)
+
+    # Convert JAX arrays to Python values (blocking/sync here)
+    loss_skip = float(loss_skip_jax)
+    loss_update = float(loss_update_jax)
+    output_entropy = float(output_entropy_jax)
+    token_confidence = float(token_confidence_jax)
+
+    # Oracle advantage (positive = update helps)
+    oracle_advantage = loss_skip - loss_update
 
     # === Candidate Signals ===
 
     # 1. Reconstruction Loss (last token only) - current baseline
-    recon_loss_last_token = to_float(ttt_stats.get("ttt_loss_step_0"))
+    recon_loss_last_token = to_float(ttt_stats_jax.get("ttt_loss_step_0"))
 
     # 2. Full-Sequence Reconstruction Loss - computed from ttt_loss_init
     # Note: We'll approximate this using ttt_loss_init as it covers more positions
     recon_loss_full_seq = (
-        to_float(ttt_stats.get("ttt_loss_init")) or recon_loss_last_token
+        to_float(ttt_stats_jax.get("ttt_loss_init")) or recon_loss_last_token
     )
 
-    # 3. Output Entropy (before TTT update)
-    output_entropy = compute_entropy(logits_skip)
+    # 3. Output Entropy (Computed in JIT)
+    # output_entropy already converted above
 
-    # 4. Token Confidence
-    token_confidence = compute_token_confidence(logits_skip)
+    # 4. Token Confidence (Computed in JIT)
+    # token_confidence already converted above
 
     # 5. TTT Improvement (step_0 - step_1)
-    ttt_step_0 = to_float(ttt_stats.get("ttt_loss_step_0"))
-    ttt_step_1 = to_float(ttt_stats.get("ttt_loss_step_1"))
+    # Handle scalar or array cases safely
+    def get_val(key):
+        val = ttt_stats_jax.get(key)
+        return to_float(val) if val is not None else 0.0
+
+    ttt_step_0 = get_val("ttt_loss_step_0")
+    ttt_step_1 = get_val("ttt_loss_step_1")
     ttt_improvement = ttt_step_0 - ttt_step_1
 
     # Check if real code (>10% valid tokens)
@@ -266,6 +303,7 @@ def main():
 
     # Create data iterator
     print("\nCreating data iterator...")
+    required_examples = args.num_batches * args.batch_size
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         batch_size=args.batch_size,
@@ -273,6 +311,7 @@ def main():
         chunk_size=args.chunk_size,  # Must match our chunk_size
         language=args.language,
         split=args.split,
+        max_examples=required_examples,
     )
 
     # Collect results
@@ -297,8 +336,8 @@ def main():
 
             chunk_ids = input_ids[:, start:end]
             chunk_mask = attention_mask[:, start:end]
-            # Use local position IDs
-            position_ids = jnp.arange(args.chunk_size)[None, :]
+            # Use absolute position IDs (don't reset to 0 for second chunk)
+            position_ids = jnp.arange(start, end)[None, :]
             position_ids = jnp.broadcast_to(position_ids, chunk_ids.shape)
 
             result = analyze_chunk(model, chunk_ids, chunk_mask, position_ids)
