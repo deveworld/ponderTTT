@@ -306,7 +306,7 @@ def benchmark(batch_size, model_scale="125m"):
     sparse_20_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
     sparse_20_util, sparse_20_mem = gpu_monitor.get_results()
 
-    # 5. Measure PonderTTT [Sparse 50%]
+    # 5. Measure Periodic 50% (fixed schedule baseline)
     # Fused pattern
     print(f"Measuring Periodic 50% ({n_iters} iters, blocked)...")
 
@@ -328,8 +328,8 @@ def benchmark(batch_size, model_scale="125m"):
     gpu_monitor.stop()
 
     # Total time covers n_blocks * 10 steps
-    sparse_50_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
-    sparse_50_util, sparse_50_mem = gpu_monitor.get_results()
+    periodic_50_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
+    periodic_50_util, periodic_50_mem = gpu_monitor.get_results()
 
     # Shutdown Monitor
     gpu_monitor.shutdown()
@@ -346,7 +346,7 @@ def benchmark(batch_size, model_scale="125m"):
             "update_1": round(update_time_ms, 3),
             "ponder_dense": round(ponder_time_ms, 3),
             "ponder_sparse_20": round(sparse_20_time_ms, 3),
-            "ponder_sparse_50": round(sparse_50_time_ms, 3),
+            "periodic_50": round(periodic_50_time_ms, 3),
         },
         "relative_latency": {
             "skip": 1.0,
@@ -359,7 +359,7 @@ def benchmark(batch_size, model_scale="125m"):
             "ponder_sparse_20": round(sparse_20_time_ms / skip_time_ms, 3)
             if skip_time_ms > 0
             else None,
-            "ponder_sparse_50": round(sparse_50_time_ms / skip_time_ms, 3)
+            "periodic_50": round(periodic_50_time_ms / skip_time_ms, 3)
             if skip_time_ms > 0
             else None,
         },
@@ -368,14 +368,14 @@ def benchmark(batch_size, model_scale="125m"):
             "update_1": update_util,
             "ponder_dense": ponder_util,
             "ponder_sparse_20": sparse_20_util,
-            "ponder_sparse_50": sparse_50_util,
+            "periodic_50": periodic_50_util,
         },
         "max_vmem": {
             "skip": skip_mem,
             "update_1": update_mem,
             "ponder_dense": ponder_mem,
             "ponder_sparse_20": sparse_20_mem,
-            "ponder_sparse_50": sparse_50_mem,
+            "periodic_50": periodic_50_mem,
         },
     }
 
@@ -391,23 +391,23 @@ def benchmark(batch_size, model_scale="125m"):
     )
     output_lines.append("-" * 100)
     output_lines.append(
-        f"{'Latency (ms)':<15} | {skip_time_ms:<18.2f} | {update_time_ms:<18.2f} | {ponder_time_ms:<18.2f} | {sparse_20_time_ms:<18.2f} | {sparse_50_time_ms:<18.2f}"
+        f"{'Latency (ms)':<15} | {skip_time_ms:<18.2f} | {update_time_ms:<18.2f} | {ponder_time_ms:<18.2f} | {sparse_20_time_ms:<18.2f} | {periodic_50_time_ms:<18.2f}"
     )
 
     if skip_time_ms > 0:
         r_upd = update_time_ms / skip_time_ms
         r_dense = ponder_time_ms / skip_time_ms
         r_sparse20 = sparse_20_time_ms / skip_time_ms
-        r_sparse50 = sparse_50_time_ms / skip_time_ms
+        r_periodic50 = periodic_50_time_ms / skip_time_ms
         output_lines.append(
-            f"{'Acc. Factor':<15} | {'1.00x':<18} | {f'{r_upd:.2f}x':<18} | {f'{r_dense:.2f}x':<18} | {f'{r_sparse20:.2f}x':<18} | {f'{r_sparse50:.2f}x':<18}"
+            f"{'Acc. Factor':<15} | {'1.00x':<18} | {f'{r_upd:.2f}x':<18} | {f'{r_dense:.2f}x':<18} | {f'{r_sparse20:.2f}x':<18} | {f'{r_periodic50:.2f}x':<18}"
         )
 
     output_lines.append(
-        f"{'Avg GPU Util':<15} | {skip_util:<18} | {update_util:<18} | {ponder_util:<18} | {sparse_20_util:<18} | {sparse_50_util:<18}"
+        f"{'Avg GPU Util':<15} | {skip_util:<18} | {update_util:<18} | {ponder_util:<18} | {sparse_20_util:<18} | {periodic_50_util:<18}"
     )
     output_lines.append(
-        f"{'Max VMEM':<15} | {skip_mem:<18} | {update_mem:<18} | {ponder_mem:<18} | {sparse_20_mem:<18} | {sparse_50_mem:<18}"
+        f"{'Max VMEM':<15} | {skip_mem:<18} | {update_mem:<18} | {ponder_mem:<18} | {sparse_20_mem:<18} | {periodic_50_mem:<18}"
     )
     output_lines.append("=" * 100 + "\n")
     output_lines.append(
