@@ -12,7 +12,6 @@ Usage:
 
 import time
 import jax
-import jax.numpy as jnp
 from flax import nnx
 from ponderttt.models import load_ttt_model
 import threading
