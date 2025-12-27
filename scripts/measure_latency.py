@@ -332,6 +332,7 @@ def benchmark(batch_size, model_scale="125m"):
 
     for _ in range(n_blocks):
         out = forward_periodic_50(model, input_ids)
+        block_leaves(out)
         # Emulate gating overhead: sync BLOCK_SIZE times for consistency
         if out and "ttt_stats" in out and out["ttt_stats"]:
             _ = float(jnp.mean(out["ttt_stats"]["ttt_loss_step_0"]))
