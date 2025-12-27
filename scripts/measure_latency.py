@@ -183,8 +183,8 @@ def benchmark(batch_size, model_scale="125m"):
         return out
 
     @nnx.jit
-    def forward_sparse_20(model, input_ids):
-        """20% update rate: S-S-S-S-U-S-S-S-S-U"""
+    def forward_periodic_20(model, input_ids):
+        """Periodic 20% update rate (fixed schedule): S-S-S-S-U-S-S-S-S-U"""
         _ = model(input_ids, use_ttt=False)
         _ = model(input_ids, use_ttt=False)
         _ = model(input_ids, use_ttt=False)
@@ -229,8 +229,8 @@ def benchmark(batch_size, model_scale="125m"):
     out = forward_update_block(model, input_ids)
     block_leaves(out)
 
-    print("Warmup Ponder Sparse 20%...")
-    out = forward_sparse_20(model, input_ids)
+    print("Warmup Periodic 20%...")
+    out = forward_periodic_20(model, input_ids)
     block_leaves(out)
 
     print("Warmup Periodic 50%...")
@@ -275,9 +275,9 @@ def benchmark(batch_size, model_scale="125m"):
     update_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
     update_util, update_mem = gpu_monitor.get_results()
 
-    # 3. Measure PonderTTT [Dense] (Worst Case: 100% Update + Gating Overhead)
+    # 3. Measure Dense+Gating (Worst Case: 100% Update + Gating Overhead)
     block_leaves(input_ids)
-    print(f"Measuring PonderTTT [Dense] ({n_iters} iters, blocked)...")
+    print(f"Measuring Dense+Gating ({n_iters} iters, blocked)...")
     gpu_monitor.start()
     start = time.perf_counter()
     for _ in range(n_blocks):
@@ -295,18 +295,18 @@ def benchmark(batch_size, model_scale="125m"):
     end = time.perf_counter()
     gpu_monitor.stop()
 
-    ponder_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
-    ponder_util, ponder_mem = gpu_monitor.get_results()
+    dense_gating_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
+    dense_gating_util, dense_gating_mem = gpu_monitor.get_results()
 
-    # 4. Measure PonderTTT [Sparse 20%]
-    # Fused pattern
-    print(f"Measuring PonderTTT [Sparse 20%] ({n_iters} iters, blocked)...")
+    # 3. Measure Periodic 20% (fixed schedule baseline)
+    print(f"Measuring Periodic 20% ({n_iters} iters, blocked)...")
 
     gpu_monitor.start()
     start = time.perf_counter()
 
     for _ in range(n_blocks):
-        out = forward_sparse_20(model, input_ids)
+        out = forward_periodic_20(model, input_ids)
+        block_leaves(out)
         # Emulate gating overhead: sync BLOCK_SIZE times for consistency
         if out and "ttt_stats" in out and out["ttt_stats"]:
             _ = float(jnp.mean(out["ttt_stats"]["ttt_loss_step_0"]))
@@ -320,8 +320,8 @@ def benchmark(batch_size, model_scale="125m"):
     gpu_monitor.stop()
 
     # Total time covers n_blocks * 10 steps
-    sparse_20_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
-    sparse_20_util, sparse_20_mem = gpu_monitor.get_results()
+    periodic_20_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
+    periodic_20_util, periodic_20_mem = gpu_monitor.get_results()
 
     # 5. Measure Periodic 50% (fixed schedule baseline)
     # Fused pattern
@@ -363,8 +363,8 @@ def benchmark(batch_size, model_scale="125m"):
         "latency_ms": {
             "skip": round(skip_time_ms, 3),
             "update_1": round(update_time_ms, 3),
-            "ponder_dense": round(ponder_time_ms, 3),
-            "ponder_sparse_20": round(sparse_20_time_ms, 3),
+            "dense_gating": round(dense_gating_time_ms, 3),
+            "periodic_20": round(periodic_20_time_ms, 3),
             "periodic_50": round(periodic_50_time_ms, 3),
         },
         "relative_latency": {
@@ -372,10 +372,10 @@ def benchmark(batch_size, model_scale="125m"):
             "update_1": round(update_time_ms / skip_time_ms, 3)
             if skip_time_ms > 0
             else None,
-            "ponder_dense": round(ponder_time_ms / skip_time_ms, 3)
+            "dense_gating": round(dense_gating_time_ms / skip_time_ms, 3)
             if skip_time_ms > 0
             else None,
-            "ponder_sparse_20": round(sparse_20_time_ms / skip_time_ms, 3)
+            "periodic_20": round(periodic_20_time_ms / skip_time_ms, 3)
             if skip_time_ms > 0
             else None,
             "periodic_50": round(periodic_50_time_ms / skip_time_ms, 3)
@@ -385,15 +385,15 @@ def benchmark(batch_size, model_scale="125m"):
         "gpu_util": {
             "skip": skip_util,
             "update_1": update_util,
-            "ponder_dense": ponder_util,
-            "ponder_sparse_20": sparse_20_util,
+            "dense_gating": dense_gating_util,
+            "periodic_20": periodic_20_util,
             "periodic_50": periodic_50_util,
         },
         "max_vmem": {
             "skip": skip_mem,
             "update_1": update_mem,
-            "ponder_dense": ponder_mem,
-            "ponder_sparse_20": sparse_20_mem,
+            "dense_gating": dense_gating_mem,
+            "periodic_20": periodic_20_mem,
             "periodic_50": periodic_50_mem,
         },
     }
@@ -406,37 +406,37 @@ def benchmark(batch_size, model_scale="125m"):
     )
     output_lines.append("=" * 100)
     output_lines.append(
-        f"{'Metric':<15} | {'SKIP':<18} | {'UPDATE_1':<18} | {'Ponder[Dense]':<18} | {'Ponder[Sparse 20%]':<18} | {'Periodic 50%':<18}"
+        f"{'Metric':<15} | {'SKIP':<18} | {'UPDATE_1':<18} | {'Dense+Gating':<18} | {'Periodic 20%':<18} | {'Periodic 50%':<18}"
     )
     output_lines.append("-" * 100)
     output_lines.append(
-        f"{'Latency (ms)':<15} | {skip_time_ms:<18.2f} | {update_time_ms:<18.2f} | {ponder_time_ms:<18.2f} | {sparse_20_time_ms:<18.2f} | {periodic_50_time_ms:<18.2f}"
+        f"{'Latency (ms)':<15} | {skip_time_ms:<18.2f} | {update_time_ms:<18.2f} | {dense_gating_time_ms:<18.2f} | {periodic_20_time_ms:<18.2f} | {periodic_50_time_ms:<18.2f}"
     )
 
     if skip_time_ms > 0:
         r_upd = update_time_ms / skip_time_ms
-        r_dense = ponder_time_ms / skip_time_ms
-        r_sparse20 = sparse_20_time_ms / skip_time_ms
+        r_dense_gating = dense_gating_time_ms / skip_time_ms
+        r_periodic20 = periodic_20_time_ms / skip_time_ms
         r_periodic50 = periodic_50_time_ms / skip_time_ms
         output_lines.append(
-            f"{'Acc. Factor':<15} | {'1.00x':<18} | {f'{r_upd:.2f}x':<18} | {f'{r_dense:.2f}x':<18} | {f'{r_sparse20:.2f}x':<18} | {f'{r_periodic50:.2f}x':<18}"
+            f"{'Acc. Factor':<15} | {'1.00x':<18} | {f'{r_upd:.2f}x':<18} | {f'{r_dense_gating:.2f}x':<18} | {f'{r_periodic20:.2f}x':<18} | {f'{r_periodic50:.2f}x':<18}"
         )
 
     output_lines.append(
-        f"{'Avg GPU Util':<15} | {skip_util:<18} | {update_util:<18} | {ponder_util:<18} | {sparse_20_util:<18} | {periodic_50_util:<18}"
+        f"{'Avg GPU Util':<15} | {skip_util:<18} | {update_util:<18} | {dense_gating_util:<18} | {periodic_20_util:<18} | {periodic_50_util:<18}"
     )
     output_lines.append(
-        f"{'Max VMEM':<15} | {skip_mem:<18} | {update_mem:<18} | {ponder_mem:<18} | {sparse_20_mem:<18} | {periodic_50_mem:<18}"
+        f"{'Max VMEM':<15} | {skip_mem:<18} | {update_mem:<18} | {dense_gating_mem:<18} | {periodic_20_mem:<18} | {periodic_50_mem:<18}"
     )
     output_lines.append("=" * 100 + "\n")
     output_lines.append(
-        "Note: Ponder[Sparse 20%] simulates 20% update rate using fused kernel."
+        "Note: Periodic 20% = fixed schedule baseline (every 5th chunk update)."
     )
     output_lines.append(
         "      Periodic 50% = fixed schedule baseline (every other chunk update)."
     )
     output_lines.append(
-        "      Ponder[Dense] simulates 100% update rate + gating overhead (Worst Case)."
+        "      Dense+Gating = 100% update + gating overhead (worst case for PonderTTT)."
     )
 
     # Print to console
