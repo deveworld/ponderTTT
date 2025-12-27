@@ -58,7 +58,7 @@ class SignalResult:
     is_real_code: bool  # Valid token ratio > 10%
 
 
-def compute_entropy(logits: jax.Array) -> float:
+def compute_entropy(logits: jax.Array) -> jax.Array:
     """Compute prediction entropy from logits.
 
     High entropy = high uncertainty = potential learning opportunity.
@@ -66,20 +66,20 @@ def compute_entropy(logits: jax.Array) -> float:
     probs = jax.nn.softmax(logits, axis=-1)
     log_probs = jnp.log(probs + 1e-10)
     entropy = -jnp.sum(probs * log_probs, axis=-1)
-    return float(entropy.mean())
+    return entropy.mean()
 
 
-def compute_token_confidence(logits: jax.Array) -> float:
+def compute_token_confidence(logits: jax.Array) -> jax.Array:
     """Compute mean max probability across tokens.
 
     Low confidence = high uncertainty = potential learning opportunity.
     """
     probs = jax.nn.softmax(logits, axis=-1)
     max_probs = probs.max(axis=-1)
-    return float(max_probs.mean())
+    return max_probs.mean()
 
 
-def compute_loss(logits: jax.Array, labels: jax.Array, mask: jax.Array) -> float:
+def compute_loss(logits: jax.Array, labels: jax.Array, mask: jax.Array) -> jax.Array:
     """Compute cross-entropy loss."""
     # Shift for next-token prediction
     shift_logits = logits[..., :-1, :]
@@ -95,7 +95,7 @@ def compute_loss(logits: jax.Array, labels: jax.Array, mask: jax.Array) -> float
     total_loss = masked_loss.sum()
     num_tokens = shift_mask.sum()
 
-    return float(total_loss / (num_tokens + 1e-10))
+    return total_loss / (num_tokens + 1e-10)
 
 
 @nnx.jit
