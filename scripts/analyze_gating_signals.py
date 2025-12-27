@@ -2,12 +2,15 @@
 """
 Analyze Multiple Gating Signal Candidates for PonderTTT.
 
-This script evaluates multiple candidate proxy signals for TTT gating:
-1. Reconstruction Loss (current baseline - last token only)
-2. Full-Sequence Reconstruction Loss (average across all positions)
+This script evaluates multiple candidate proxy signals for TTT gating,
+using the same methodology as compare_methods.py for consistency.
+
+Signals analyzed:
+1. Reconstruction Loss (ttt_loss_init - Full-Sequence)
+2. Reconstruction Loss (ttt_loss_step_0 - Last Token)
 3. Output Entropy (prediction uncertainty)
 4. Token Confidence (mean max probability)
-5. Gradient Magnitude (TTT gradient norm)
+5. TTT Improvement (step_0 - step_1)
 
 Usage:
     python scripts/analyze_gating_signals.py \
@@ -22,7 +25,6 @@ Output:
 import argparse
 import os
 import sys
-from dataclasses import dataclass
 from typing import Dict, List
 import json
 
@@ -30,199 +32,86 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy import stats as scipy_stats
+from tqdm import tqdm
 
 # Setup path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from ponderttt.models.base_model_nnx import load_ttt_model
+from ponderttt.models.base_model_nnx import load_ttt_model, TTTTransformerLM
 from ponderttt.data.dataset import create_data_iterator
 from ponderttt.data.tokenization import get_tokenizer
+from ponderttt.utils import cross_entropy_loss
 from flax import nnx
 
 
-@dataclass
-class SignalResult:
-    """Result for a single chunk."""
-
-    chunk_idx: int
-    # Oracle advantage = loss_skip - loss_update (positive = update helps)
-    oracle_advantage: float
-    loss_skip: float
-    loss_update: float
-    # Candidate signals
-    recon_loss_last_token: float  # Current baseline
-    recon_loss_full_seq: float  # NEW: Average over all positions
-    output_entropy: float  # NEW: Prediction entropy
-    token_confidence: float  # NEW: Mean max probability
-    ttt_improvement: float  # step_0 - step_1
-    is_real_code: bool  # Valid token ratio > 10%
-
-
-def compute_entropy(logits: jax.Array) -> jax.Array:
-    """Compute prediction entropy from logits per sample.
-
-    Shape: [Batch]
-    """
-    probs = jax.nn.softmax(logits, axis=-1)
-    log_probs = jnp.log(probs + 1e-10)
-    entropy = -jnp.sum(probs * log_probs, axis=-1)
-    # Mean over sequence length, keeping batch dim
-    return entropy.mean(axis=-1)
-
-
-def compute_token_confidence(logits: jax.Array) -> jax.Array:
-    """Compute mean max probability across tokens per sample.
-
-    Shape: [Batch]
-    """
-    probs = jax.nn.softmax(logits, axis=-1)
-    max_probs = probs.max(axis=-1)
-    # Mean over sequence length, keeping batch dim
-    return max_probs.mean(axis=-1)
-
-
-def compute_loss(logits: jax.Array, labels: jax.Array, mask: jax.Array) -> jax.Array:
-    """Compute cross-entropy loss per sample.
-
-    Shape: [Batch]
-    """
-    # Shift for next-token prediction
-    shift_logits = logits[..., :-1, :]
-    shift_labels = labels[..., 1:]
-    shift_mask = mask[..., 1:]
-
-    log_probs = jax.nn.log_softmax(shift_logits, axis=-1)
-    token_log_probs = jnp.take_along_axis(
-        log_probs, shift_labels[..., None], axis=-1
-    ).squeeze(-1)
-
-    masked_loss = -token_log_probs * shift_mask
-    # Sum over sequence length
-    sample_loss = masked_loss.sum(axis=-1)
-    sample_tokens = shift_mask.sum(axis=-1)
-
-    return sample_loss / (sample_tokens + 1e-10)
+# === JIT-compiled Helpers (same as compare_methods.py) ===
 
 
 @nnx.jit
-def compute_raw_signals(
-    model,
+def jit_ttt_forward_with_stats(
+    model: TTTTransformerLM,
     input_ids: jax.Array,
     attention_mask: jax.Array,
     position_ids: jax.Array,
 ):
-    """Jitted function to compute all signals on GPU."""
-    # 1. SKIP path (no TTT update)
-    output_skip = model(
+    """Run TTT forward and return loss + ttt_stats.
+
+    Exactly matches compare_methods.py methodology.
+    """
+    # SKIP path (no TTT)
+    out_skip = model(
         input_ids,
         attention_mask=attention_mask,
         position_ids=position_ids,
         use_ttt=False,
     )
-    logits_skip = output_skip["logits"]
-    loss_skip = compute_loss(logits_skip, input_ids, attention_mask)
+    loss_skip = cross_entropy_loss(
+        out_skip["logits"][:, :-1],
+        input_ids[:, 1:],
+        attention_mask[:, 1:],
+    )
 
-    # Compute metrics on logits_skip (inside JIT)
-    output_entropy = compute_entropy(logits_skip)
-    token_confidence = compute_token_confidence(logits_skip)
-
-    # 2. UPDATE path (with TTT update)
-    output_update = model(
+    # UPDATE path (with TTT)
+    out_update = model(
         input_ids,
         attention_mask=attention_mask,
         position_ids=position_ids,
         use_ttt=True,
     )
-    logits_update = output_update["logits"]
-    loss_update = compute_loss(logits_update, input_ids, attention_mask)
-    ttt_stats = output_update.get("ttt_stats", {})
+    loss_update = cross_entropy_loss(
+        out_update["logits"][:, :-1],
+        input_ids[:, 1:],
+        attention_mask[:, 1:],
+    )
 
-    return loss_skip, loss_update, output_entropy, token_confidence, ttt_stats
+    # TTT internal stats (take mean across heads/batch)
+    ttt_stats = out_update.get("ttt_stats", {})
+    # Full-Sequence Reconstruction Loss (better for large models, r=0.77@XL)
+    ttt_loss_init = ttt_stats.get("ttt_loss_init", jnp.array(0.0))
+    ttt_loss_step_0 = ttt_stats.get("ttt_loss_step_0", jnp.array(0.0))
+    ttt_loss_step_1 = ttt_stats.get("ttt_loss_step_1", jnp.array(0.0))
 
+    # Ensure scalars by taking mean (TTT stats are per-head arrays)
+    ttt_loss_init = jnp.mean(ttt_loss_init)
+    ttt_loss_step_0 = jnp.mean(ttt_loss_step_0)
+    ttt_loss_step_1 = jnp.mean(ttt_loss_step_1)
 
-def analyze_chunk(
-    model,
-    input_ids: jax.Array,
-    attention_mask: jax.Array,
-    position_ids: jax.Array,
-) -> List[Dict]:
-    """Analyze a batch of chunks.
+    # Compute entropy and confidence on skip logits
+    logits_skip = out_skip["logits"]
+    probs = jax.nn.softmax(logits_skip, axis=-1)
+    log_probs = jnp.log(probs + 1e-10)
+    entropy = -jnp.sum(probs * log_probs, axis=-1).mean()
+    token_confidence = probs.max(axis=-1).mean()
 
-    Returns list of dicts with signals for each sample in batch.
-    """
-    # Call Jitted compute function
-    (
-        loss_skip_jax,
-        loss_update_jax,
-        output_entropy_jax,
-        token_confidence_jax,
-        ttt_stats_jax,
-    ) = compute_raw_signals(model, input_ids, attention_mask, position_ids)
-
-    # Helper to convert to numpy for iteration
-    def to_np(x):
-        return np.array(x)
-
-    loss_skip_np = to_np(loss_skip_jax)
-    loss_update_np = to_np(loss_update_jax)
-    output_entropy_np = to_np(output_entropy_jax)
-    token_confidence_np = to_np(token_confidence_jax)
-
-    # TTT stats can be scalars or arrays depending on reduction
-    # Typically ttt_stats are per-head, need to handle carefully
-    # Assuming they are reduced to [Batch] or scalars in model if simpler,
-    # but TTTLayer usually returns [B, H] or similar.
-    # Let's check TTTLayer.
-    # For safety, let's take mean over extra dims to get [B]
-    def get_batch_stat(key):
-        val = ttt_stats_jax.get(key)
-        if val is None:
-            return np.zeros(loss_skip_np.shape)
-        # Assuming val has batch dim at 0
-        while val.ndim > 1:
-            val = val.mean(axis=-1)
-        return to_np(val)
-
-    ttt_loss_step_0_np = get_batch_stat("ttt_loss_step_0")
-    ttt_loss_step_1_np = get_batch_stat("ttt_loss_step_1")
-    ttt_loss_init_np = get_batch_stat("ttt_loss_init")
-
-    batch_results = []
-    batch_size = loss_skip_np.shape[0]
-
-    for i in range(batch_size):
-        loss_s = float(loss_skip_np[i])
-        loss_u = float(loss_update_np[i])
-        oracle_advantage = loss_s - loss_u
-
-        recon_loss_last = float(ttt_loss_step_0_np[i])
-        recon_loss_full = (
-            float(ttt_loss_init_np[i])
-            if "ttt_loss_init" in ttt_stats_jax
-            else recon_loss_last
-        )
-
-        ttt_improv = float(ttt_loss_step_0_np[i] - ttt_loss_step_1_np[i])
-
-        valid_ratio = float(attention_mask[i].mean())
-        is_real_code = valid_ratio > 0.1
-
-        batch_results.append(
-            {
-                "oracle_advantage": oracle_advantage,
-                "loss_skip": loss_s,
-                "loss_update": loss_u,
-                "recon_loss_last_token": recon_loss_last,
-                "recon_loss_full_seq": recon_loss_full,
-                "output_entropy": float(output_entropy_np[i]),
-                "token_confidence": float(token_confidence_np[i]),
-                "ttt_improvement": ttt_improv,
-                "is_real_code": is_real_code,
-                "valid_ratio": valid_ratio,
-            }
-        )
-
-    return batch_results
+    return (
+        loss_skip,
+        loss_update,
+        ttt_loss_init,
+        ttt_loss_step_0,
+        ttt_loss_step_1,
+        entropy,
+        token_confidence,
+    )
 
 
 def compute_correlations(results: List[Dict], signal_name: str) -> Dict:
@@ -284,6 +173,7 @@ def main():
     print(f"Model Scale: {args.model_scale}")
     print(f"Checkpoint: {args.update1_checkpoint or 'None (fresh)'}")
     print(f"Batches: {args.num_batches}")
+    print(f"Batch Size: {args.batch_size}")
     print(f"Language: {args.language}")
     print("=" * 60)
 
@@ -307,17 +197,18 @@ def main():
         model_name,
         checkpoint_path=args.update1_checkpoint,
         load_pretrained=True,
+        vocab_size=tokenizer.get_vocab_size(),
     )
     print(f"Model loaded: {args.model_scale} ({model_name})")
 
     # Create data iterator
     print("\nCreating data iterator...")
-    required_examples = args.num_batches * args.batch_size
+    required_examples = args.num_batches * args.batch_size * 2  # 2 chunks per example
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
         batch_size=args.batch_size,
-        seq_length=args.chunk_size * 2,  # 2 chunks per sequence
-        chunk_size=args.chunk_size,  # Must match our chunk_size
+        seq_length=1024,  # Same as compare_methods.py
+        chunk_size=512,  # Same as compare_methods.py
         language=args.language,
         split=args.split,
         max_examples=required_examples,
@@ -328,46 +219,68 @@ def main():
     total_chunks = 0
 
     print(f"\nAnalyzing {args.num_batches} batches...")
-    for batch_idx in range(args.num_batches):
-        try:
-            batch = next(data_iter)
-        except StopIteration:
-            print(f"\nWarning: Dataset exhausted after {batch_idx} batches.")
+    for batch in tqdm(data_iter, total=args.num_batches, desc="Analyzing"):
+        if total_chunks >= args.num_batches * 2 * args.batch_size:
             break
 
-        input_ids = jnp.array(batch["input_ids"])
-        attention_mask = jnp.array(batch["attention_mask"])
+        chunks = batch["chunks"]
+        masks = batch["chunk_attention_mask"]
+        num_chunks = chunks.shape[1]
 
-        # Process both chunks (2 per sequence)
-        # Using LOCAL position IDs (0 to chunk_len-1) for fair evaluation,
-        # consistent with compare_methods.py methodology.
-        for chunk_idx in range(2):
-            start = chunk_idx * args.chunk_size
-            end = start + args.chunk_size
+        for c_idx in range(num_chunks):
+            chunk_ids = chunks[:, c_idx]
+            chunk_mask = masks[:, c_idx]
 
-            chunk_ids = input_ids[:, start:end]
-            chunk_mask = attention_mask[:, start:end]
             # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
-            # This is consistent with compare_methods.py and ensures fair evaluation
+            # This is exactly what compare_methods.py does
             chunk_len = chunk_ids.shape[-1]
-            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)[None, :]
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
             position_ids = jnp.broadcast_to(position_ids, chunk_ids.shape)
 
-            chunk_results = analyze_chunk(model, chunk_ids, chunk_mask, position_ids)
+            # Call JIT function (same as compare_methods.py)
+            (
+                loss_skip,
+                loss_update,
+                ttt_loss_init,
+                ttt_loss_step_0,
+                ttt_loss_step_1,
+                entropy,
+                token_confidence,
+            ) = jit_ttt_forward_with_stats(model, chunk_ids, chunk_mask, position_ids)
 
-            # Add metadata and append
-            for res in chunk_results:
-                res["chunk_idx"] = total_chunks
-                # Also add batch_idx for debugging
-                res["batch_idx"] = batch_idx
-                results.append(res)
+            # Convert to Python floats
+            loss_skip = float(loss_skip)
+            loss_update = float(loss_update)
+            ttt_loss_init = float(ttt_loss_init)
+            ttt_loss_step_0 = float(ttt_loss_step_0)
+            ttt_loss_step_1 = float(ttt_loss_step_1)
+            entropy = float(entropy)
+            token_confidence = float(token_confidence)
+
+            # Oracle advantage (positive = update helps)
+            oracle_advantage = loss_skip - loss_update
+
+            # Valid ratio for is_real_code
+            valid_ratio = float(jnp.sum(chunk_mask)) / chunk_len
+            is_real_code = valid_ratio > 0.1
+
+            results.append(
+                {
+                    "oracle_advantage": oracle_advantage,
+                    "loss_skip": loss_skip,
+                    "loss_update": loss_update,
+                    "recon_loss_full_seq": ttt_loss_init,  # Full-Sequence Reconstruction
+                    "recon_loss_last_token": ttt_loss_step_0,  # Last Token Reconstruction
+                    "ttt_improvement": ttt_loss_step_0 - ttt_loss_step_1,
+                    "output_entropy": entropy,
+                    "token_confidence": token_confidence,
+                    "is_real_code": is_real_code,
+                    "valid_ratio": valid_ratio,
+                    "chunk_idx": total_chunks,
+                }
+            )
 
             total_chunks += 1
-
-        if (batch_idx + 1) % 20 == 0:
-            print(
-                f"  Processed {batch_idx + 1}/{args.num_batches} batches ({total_chunks} chunks)"
-            )
 
     print(f"\nTotal chunks analyzed: {total_chunks}")
 
@@ -381,8 +294,8 @@ def main():
     print("=" * 60)
 
     signals = [
-        ("recon_loss_last_token", "Recon Loss (Last Token)", "Current baseline"),
-        ("recon_loss_full_seq", "Recon Loss (Full Seq)", "Average over all positions"),
+        ("recon_loss_full_seq", "Recon Loss (Full Seq)", "ttt_loss_init"),
+        ("recon_loss_last_token", "Recon Loss (Last Token)", "ttt_loss_step_0"),
         ("output_entropy", "Output Entropy", "Prediction uncertainty"),
         ("token_confidence", "Token Confidence", "Mean max probability - INVERTED"),
         ("ttt_improvement", "TTT Improvement", "step_0 - step_1"),
