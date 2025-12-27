@@ -338,17 +338,19 @@ def main():
         input_ids = jnp.array(batch["input_ids"])
         attention_mask = jnp.array(batch["attention_mask"])
 
-        # Process only the first chunk (start of document) to ensure valid context.
-        # Processing subsequent chunks without passing KV cache leads to artificially high
-        # perplexity (model sees "middle of file" as "start") and distorts gating signals.
-        for chunk_idx in range(1):
+        # Process both chunks (2 per sequence)
+        # Using LOCAL position IDs (0 to chunk_len-1) for fair evaluation,
+        # consistent with compare_methods.py methodology.
+        for chunk_idx in range(2):
             start = chunk_idx * args.chunk_size
             end = start + args.chunk_size
 
             chunk_ids = input_ids[:, start:end]
             chunk_mask = attention_mask[:, start:end]
-            # Use absolute position IDs (don't reset to 0 for second chunk)
-            position_ids = jnp.arange(start, end)[None, :]
+            # Use LOCAL position IDs (0 to chunk_len-1) for each chunk
+            # This is consistent with compare_methods.py and ensures fair evaluation
+            chunk_len = chunk_ids.shape[-1]
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)[None, :]
             position_ids = jnp.broadcast_to(position_ids, chunk_ids.shape)
 
             chunk_results = analyze_chunk(model, chunk_ids, chunk_mask, position_ids)
