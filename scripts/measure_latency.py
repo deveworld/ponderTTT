@@ -113,20 +113,38 @@ class GPUMonitor:
         return f"{avg_util:.1f}%", f"{max_mem:.1f} MB"
 
 
-def benchmark(batch_size):
+def benchmark(batch_size, model_scale="125m"):
     print("Setting up latency benchmark...")
 
     # Configuration
     seq_len = 512
 
+    # Map scale to model name
+    scale_to_model = {
+        "125m": "gpt2",
+        "350m": "gpt2-medium",
+        "1b": "gpt2-large",
+        "xl": "gpt2-xl",
+    }
+
+    if model_scale not in scale_to_model:
+        print(
+            f"Invalid model scale: {model_scale}. Valid options: {list(scale_to_model.keys())}"
+        )
+        return
+
+    model_name = scale_to_model[model_scale]
+
     # Determine device
     print(f"JAX Devices: {jax.devices()}")
 
-    print("Initializing 125M model...")
+    print(f"Initializing {model_scale.upper()} model ({model_name})...")
     try:
-        model, _ = load_ttt_model("gpt2", fast_weight_type="ttt", load_pretrained=False)
+        model, _ = load_ttt_model(
+            model_name, fast_weight_type="ttt", load_pretrained=False
+        )
     except Exception as e:
-        print(f"Failed to load standard model: {e}")
+        print(f"Failed to load model: {e}")
         return
 
     print("Compiling steps...")
@@ -316,15 +334,63 @@ def benchmark(batch_size):
     # Shutdown Monitor
     gpu_monitor.shutdown()
 
+    # Build results dictionary for logging
+    results = {
+        "model_scale": model_scale,
+        "batch_size": batch_size,
+        "seq_len": seq_len,
+        "n_iters": n_iters,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "latency_ms": {
+            "skip": round(skip_time_ms, 3),
+            "update_1": round(update_time_ms, 3),
+            "ponder_dense": round(ponder_time_ms, 3),
+            "ponder_sparse_20": round(sparse_20_time_ms, 3),
+            "ponder_sparse_50": round(sparse_50_time_ms, 3),
+        },
+        "relative_latency": {
+            "skip": 1.0,
+            "update_1": round(update_time_ms / skip_time_ms, 3)
+            if skip_time_ms > 0
+            else None,
+            "ponder_dense": round(ponder_time_ms / skip_time_ms, 3)
+            if skip_time_ms > 0
+            else None,
+            "ponder_sparse_20": round(sparse_20_time_ms / skip_time_ms, 3)
+            if skip_time_ms > 0
+            else None,
+            "ponder_sparse_50": round(sparse_50_time_ms / skip_time_ms, 3)
+            if skip_time_ms > 0
+            else None,
+        },
+        "gpu_util": {
+            "skip": skip_util,
+            "update_1": update_util,
+            "ponder_dense": ponder_util,
+            "ponder_sparse_20": sparse_20_util,
+            "ponder_sparse_50": sparse_50_util,
+        },
+        "max_vmem": {
+            "skip": skip_mem,
+            "update_1": update_mem,
+            "ponder_dense": ponder_mem,
+            "ponder_sparse_20": sparse_20_mem,
+            "ponder_sparse_50": sparse_50_mem,
+        },
+    }
+
     # Results
-    print("\n" + "=" * 100)
-    print(f"Latency Benchmark Results (Batch={batch_size}, N={n_iters})")
-    print("=" * 100)
-    print(
+    output_lines = []
+    output_lines.append("\n" + "=" * 100)
+    output_lines.append(
+        f"Latency Benchmark Results (Model={model_scale.upper()}, Batch={batch_size}, N={n_iters})"
+    )
+    output_lines.append("=" * 100)
+    output_lines.append(
         f"{'Metric':<15} | {'SKIP':<18} | {'UPDATE_1':<18} | {'Ponder[Dense]':<18} | {'Ponder[Sparse 20%]':<18} | {'Ponder[Sparse 50%]':<18}"
     )
-    print("-" * 100)
-    print(
+    output_lines.append("-" * 100)
+    output_lines.append(
         f"{'Latency (ms)':<15} | {skip_time_ms:<18.2f} | {update_time_ms:<18.2f} | {ponder_time_ms:<18.2f} | {sparse_20_time_ms:<18.2f} | {sparse_50_time_ms:<18.2f}"
     )
 
@@ -333,22 +399,49 @@ def benchmark(batch_size):
         r_dense = ponder_time_ms / skip_time_ms
         r_sparse20 = sparse_20_time_ms / skip_time_ms
         r_sparse50 = sparse_50_time_ms / skip_time_ms
-        print(
+        output_lines.append(
             f"{'Acc. Factor':<15} | {'1.00x':<18} | {f'{r_upd:.2f}x':<18} | {f'{r_dense:.2f}x':<18} | {f'{r_sparse20:.2f}x':<18} | {f'{r_sparse50:.2f}x':<18}"
         )
 
-    print(
+    output_lines.append(
         f"{'Avg GPU Util':<15} | {skip_util:<18} | {update_util:<18} | {ponder_util:<18} | {sparse_20_util:<18} | {sparse_50_util:<18}"
     )
-    print(
+    output_lines.append(
         f"{'Max VMEM':<15} | {skip_mem:<18} | {update_mem:<18} | {ponder_mem:<18} | {sparse_20_mem:<18} | {sparse_50_mem:<18}"
     )
-    print("=" * 100 + "\n")
-    print("Note: Ponder[Sparse 20%] simulates 20% update rate using fused kernel.")
-    print("      Ponder[Sparse 50%] simulates 50% update rate using fused kernel.")
-    print(
+    output_lines.append("=" * 100 + "\n")
+    output_lines.append(
+        "Note: Ponder[Sparse 20%] simulates 20% update rate using fused kernel."
+    )
+    output_lines.append(
+        "      Ponder[Sparse 50%] simulates 50% update rate using fused kernel."
+    )
+    output_lines.append(
         "      Ponder[Dense] simulates 100% update rate + gating overhead (Worst Case)."
     )
+
+    # Print to console
+    for line in output_lines:
+        print(line)
+
+    # Save logs to file
+    import json
+    import os
+
+    log_dir = "outputs"
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Save JSON log
+    json_path = os.path.join(log_dir, f"latency_{model_scale}.json")
+    with open(json_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\n[LOG] JSON results saved to: {json_path}")
+
+    # Save text log
+    txt_path = os.path.join(log_dir, f"latency_{model_scale}.txt")
+    with open(txt_path, "w") as f:
+        f.write("\n".join(output_lines))
+    print(f"[LOG] Text results saved to: {txt_path}")
 
 
 if __name__ == "__main__":
@@ -358,5 +451,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batch_size", type=int, default=1, help="Batch size for benchmark"
     )
+    parser.add_argument(
+        "--model_scale",
+        type=str,
+        default="125m",
+        choices=["125m", "350m", "1b", "xl"],
+        help="Model scale to benchmark (default: 125m)",
+    )
     args = parser.parse_args()
-    benchmark(args.batch_size)
+    benchmark(args.batch_size, args.model_scale)
