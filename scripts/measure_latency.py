@@ -118,6 +118,7 @@ def benchmark(batch_size, model_scale="125m"):
 
     # Configuration
     seq_len = 512
+    n_iters = 500  # Total iterations for each method
 
     # Map scale to model name
     scale_to_model = {
@@ -164,55 +165,20 @@ def benchmark(batch_size, model_scale="125m"):
         print(f"Failed to load model: {e}")
         return
 
-    print("Compiling steps...")
+    print("Compiling single-step functions...")
 
-    BLOCK_SIZE = 10  # 10 steps per block for 20% (2/10) and 50% (5/10) ratios
-
-    @nnx.jit
-    def forward_skip_block(model, input_ids):
-        out = None
-        for _ in range(BLOCK_SIZE):
-            out = model(input_ids, use_ttt=False)
-        return out
+    # === Single-step JIT functions (NOT fused blocks) ===
+    # This ensures each call is measured individually with different inputs
 
     @nnx.jit
-    def forward_update_block(model, input_ids):
-        out = None
-        for _ in range(BLOCK_SIZE):
-            out = model(input_ids, use_ttt=True)
-        return out
+    def forward_skip(model, input_ids):
+        """Single SKIP forward (no TTT update)."""
+        return model(input_ids, use_ttt=False)
 
     @nnx.jit
-    def forward_periodic_20(model, input_ids):
-        """Periodic 20% update rate (fixed schedule): S-S-S-S-U-S-S-S-S-U"""
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=True)
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=False)
-        out = model(input_ids, use_ttt=True)
-        return out
-
-    @nnx.jit
-    def forward_periodic_50(model, input_ids):
-        """Periodic 50% update rate (fixed schedule): S-U-S-U-S-U-S-U-S-U"""
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=True)
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=True)
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=True)
-        _ = model(input_ids, use_ttt=False)
-        _ = model(input_ids, use_ttt=True)
-        _ = model(input_ids, use_ttt=False)
-        out = model(input_ids, use_ttt=True)
-        return out
-
-    input_ids = jnp.zeros((batch_size, seq_len), dtype=jnp.int32)
+    def forward_update(model, input_ids):
+        """Single UPDATE forward (with TTT update)."""
+        return model(input_ids, use_ttt=True)
 
     def block_leaves(tree):
         jax.tree.map(
@@ -220,134 +186,93 @@ def benchmark(batch_size, model_scale="125m"):
             tree,
         )
 
-    # Warmup
-    print("Warmup SKIP Block...")
-    out = forward_skip_block(model, input_ids)
-    block_leaves(out)
+    # Generate multiple different input sequences to prevent XLA over-optimization
+    # Each input is different random tokens (simulating real inference)
+    print("Generating random input sequences...")
+    rng = jax.random.PRNGKey(42)
+    all_input_ids = []
+    for i in range(n_iters):
+        rng, subkey = jax.random.split(rng)
+        # Random token IDs (0 to 50256 for GPT-2)
+        input_ids = jax.random.randint(subkey, (batch_size, seq_len), 0, 50257)
+        all_input_ids.append(input_ids)
 
-    print("Warmup UPDATE Block...")
-    out = forward_update_block(model, input_ids)
-    block_leaves(out)
+    # Pre-fetch to device
+    all_input_ids = [jax.device_put(x) for x in all_input_ids]
 
-    print("Warmup Periodic 20%...")
-    out = forward_periodic_20(model, input_ids)
-    block_leaves(out)
+    # Warmup with different inputs
+    print("Warmup SKIP...")
+    for i in range(5):
+        out = forward_skip(model, all_input_ids[i])
+        block_leaves(out)
 
-    print("Warmup Periodic 50%...")
-    out = forward_periodic_50(model, input_ids)
-    block_leaves(out)
+    print("Warmup UPDATE...")
+    for i in range(5):
+        out = forward_update(model, all_input_ids[i])
+        block_leaves(out)
 
     print("Warmup complete")
 
     # Init Monitor
     gpu_monitor = GPUMonitor(interval=0.05)
 
-    # Run Benchmark
-    # n_iters is total steps. We run n_iters // BLOCK_SIZE blocks.
-    n_iters = 500
-    n_blocks = n_iters // BLOCK_SIZE
-
-    # 1. Measure SKIP (Fused)
-    block_leaves(input_ids)
-    print(f"Measuring SKIP ({n_iters} iters, blocked)...")
+    # === 1. Measure SKIP ===
+    print(f"Measuring SKIP ({n_iters} iters, different inputs)...")
     gpu_monitor.start()
     start = time.perf_counter()
-    for _ in range(n_blocks):
-        out = forward_skip_block(model, input_ids)
+    for i in range(n_iters):
+        out = forward_skip(model, all_input_ids[i])
         block_leaves(out)
     end = time.perf_counter()
     gpu_monitor.stop()
 
-    skip_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
+    skip_time_ms = (end - start) / n_iters * 1000
     skip_util, skip_mem = gpu_monitor.get_results()
 
-    # 2. Measure UPDATE_1 (Fused)
-    block_leaves(input_ids)
-    print(f"Measuring UPDATE_1 ({n_iters} iters, blocked)...")
+    # === 2. Measure UPDATE_1 ===
+    print(f"Measuring UPDATE_1 ({n_iters} iters, different inputs)...")
     gpu_monitor.start()
     start = time.perf_counter()
-    for _ in range(n_blocks):
-        out = forward_update_block(model, input_ids)
+    for i in range(n_iters):
+        out = forward_update(model, all_input_ids[i])
         block_leaves(out)
     end = time.perf_counter()
     gpu_monitor.stop()
 
-    update_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
+    update_time_ms = (end - start) / n_iters * 1000
     update_util, update_mem = gpu_monitor.get_results()
 
-    # 3. Measure Dense+Gating (Worst Case: 100% Update + Gating Overhead)
-    block_leaves(input_ids)
-    print(f"Measuring Dense+Gating ({n_iters} iters, blocked)...")
+    # === 3. Measure Periodic 50% (alternating S-U-S-U...) ===
+    print(f"Measuring Periodic 50% ({n_iters} iters, different inputs)...")
     gpu_monitor.start()
     start = time.perf_counter()
-    for _ in range(n_blocks):
-        out = forward_update_block(model, input_ids)
-        block_leaves(out)
-
-        # Emulate gating overhead: sync BLOCK_SIZE times (1 real + 9 dummy)
-        if out and "ttt_stats" in out and out["ttt_stats"]:
-            _ = float(jnp.mean(out["ttt_stats"]["ttt_loss_step_0"]))
-            for _ in range(BLOCK_SIZE - 1):
-                _ = float(0.0)
+    for i in range(n_iters):
+        if i % 2 == 0:
+            out = forward_skip(model, all_input_ids[i])
         else:
-            for _ in range(BLOCK_SIZE):
-                _ = float(0.0)
+            out = forward_update(model, all_input_ids[i])
+        block_leaves(out)
     end = time.perf_counter()
     gpu_monitor.stop()
 
-    dense_gating_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
-    dense_gating_util, dense_gating_mem = gpu_monitor.get_results()
-
-    # 3. Measure Periodic 20% (fixed schedule baseline)
-    print(f"Measuring Periodic 20% ({n_iters} iters, blocked)...")
-
-    gpu_monitor.start()
-    start = time.perf_counter()
-
-    for _ in range(n_blocks):
-        out = forward_periodic_20(model, input_ids)
-        block_leaves(out)
-        # Emulate gating overhead: sync BLOCK_SIZE times for consistency
-        if out and "ttt_stats" in out and out["ttt_stats"]:
-            _ = float(jnp.mean(out["ttt_stats"]["ttt_loss_step_0"]))
-            for _ in range(BLOCK_SIZE - 1):
-                _ = float(0.0)
-        else:
-            for _ in range(BLOCK_SIZE):
-                _ = float(0.0)
-
-    end = time.perf_counter()
-    gpu_monitor.stop()
-
-    # Total time covers n_blocks * 10 steps
-    periodic_20_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
-    periodic_20_util, periodic_20_mem = gpu_monitor.get_results()
-
-    # 5. Measure Periodic 50% (fixed schedule baseline)
-    # Fused pattern
-    print(f"Measuring Periodic 50% ({n_iters} iters, blocked)...")
-
-    gpu_monitor.start()
-    start = time.perf_counter()
-
-    for _ in range(n_blocks):
-        out = forward_periodic_50(model, input_ids)
-        block_leaves(out)
-        # Emulate gating overhead: sync BLOCK_SIZE times for consistency
-        if out and "ttt_stats" in out and out["ttt_stats"]:
-            _ = float(jnp.mean(out["ttt_stats"]["ttt_loss_step_0"]))
-            for _ in range(BLOCK_SIZE - 1):
-                _ = float(0.0)
-        else:
-            for _ in range(BLOCK_SIZE):
-                _ = float(0.0)
-
-    end = time.perf_counter()
-    gpu_monitor.stop()
-
-    # Total time covers n_blocks * 10 steps
-    periodic_50_time_ms = (end - start) / (n_blocks * BLOCK_SIZE) * 1000
+    periodic_50_time_ms = (end - start) / n_iters * 1000
     periodic_50_util, periodic_50_mem = gpu_monitor.get_results()
+
+    # === 4. Measure Periodic 20% (S-S-S-S-U pattern) ===
+    print(f"Measuring Periodic 20% ({n_iters} iters, different inputs)...")
+    gpu_monitor.start()
+    start = time.perf_counter()
+    for i in range(n_iters):
+        if i % 5 == 4:  # Every 5th iteration is UPDATE
+            out = forward_update(model, all_input_ids[i])
+        else:
+            out = forward_skip(model, all_input_ids[i])
+        block_leaves(out)
+    end = time.perf_counter()
+    gpu_monitor.stop()
+
+    periodic_20_time_ms = (end - start) / n_iters * 1000
+    periodic_20_util, periodic_20_mem = gpu_monitor.get_results()
 
     # Shutdown Monitor
     gpu_monitor.shutdown()
@@ -364,16 +289,12 @@ def benchmark(batch_size, model_scale="125m"):
         "latency_ms": {
             "skip": round(skip_time_ms, 3),
             "update_1": round(update_time_ms, 3),
-            "dense_gating": round(dense_gating_time_ms, 3),
             "periodic_20": round(periodic_20_time_ms, 3),
             "periodic_50": round(periodic_50_time_ms, 3),
         },
         "relative_latency": {
             "skip": 1.0,
             "update_1": round(update_time_ms / skip_time_ms, 3)
-            if skip_time_ms > 0
-            else None,
-            "dense_gating": round(dense_gating_time_ms / skip_time_ms, 3)
             if skip_time_ms > 0
             else None,
             "periodic_20": round(periodic_20_time_ms / skip_time_ms, 3)
@@ -386,14 +307,12 @@ def benchmark(batch_size, model_scale="125m"):
         "gpu_util": {
             "skip": skip_util,
             "update_1": update_util,
-            "dense_gating": dense_gating_util,
             "periodic_20": periodic_20_util,
             "periodic_50": periodic_50_util,
         },
         "max_vmem": {
             "skip": skip_mem,
             "update_1": update_mem,
-            "dense_gating": dense_gating_mem,
             "periodic_20": periodic_20_mem,
             "periodic_50": periodic_50_mem,
         },
@@ -407,37 +326,33 @@ def benchmark(batch_size, model_scale="125m"):
     )
     output_lines.append("=" * 100)
     output_lines.append(
-        f"{'Metric':<15} | {'SKIP':<18} | {'UPDATE_1':<18} | {'Dense+Gating':<18} | {'Periodic 20%':<18} | {'Periodic 50%':<18}"
+        f"{'Metric':<15} | {'SKIP':<18} | {'UPDATE_1':<18} | {'Periodic 20%':<18} | {'Periodic 50%':<18}"
     )
     output_lines.append("-" * 100)
     output_lines.append(
-        f"{'Latency (ms)':<15} | {skip_time_ms:<18.2f} | {update_time_ms:<18.2f} | {dense_gating_time_ms:<18.2f} | {periodic_20_time_ms:<18.2f} | {periodic_50_time_ms:<18.2f}"
+        f"{'Latency (ms)':<15} | {skip_time_ms:<18.2f} | {update_time_ms:<18.2f} | {periodic_20_time_ms:<18.2f} | {periodic_50_time_ms:<18.2f}"
     )
 
     if skip_time_ms > 0:
         r_upd = update_time_ms / skip_time_ms
-        r_dense_gating = dense_gating_time_ms / skip_time_ms
         r_periodic20 = periodic_20_time_ms / skip_time_ms
         r_periodic50 = periodic_50_time_ms / skip_time_ms
         output_lines.append(
-            f"{'Acc. Factor':<15} | {'1.00x':<18} | {f'{r_upd:.2f}x':<18} | {f'{r_dense_gating:.2f}x':<18} | {f'{r_periodic20:.2f}x':<18} | {f'{r_periodic50:.2f}x':<18}"
+            f"{'Rel. Latency':<15} | {'1.00x':<18} | {f'{r_upd:.2f}x':<18} | {f'{r_periodic20:.2f}x':<18} | {f'{r_periodic50:.2f}x':<18}"
         )
 
     output_lines.append(
-        f"{'Avg GPU Util':<15} | {skip_util:<18} | {update_util:<18} | {dense_gating_util:<18} | {periodic_20_util:<18} | {periodic_50_util:<18}"
+        f"{'Avg GPU Util':<15} | {skip_util:<18} | {update_util:<18} | {periodic_20_util:<18} | {periodic_50_util:<18}"
     )
     output_lines.append(
-        f"{'Max VMEM':<15} | {skip_mem:<18} | {update_mem:<18} | {dense_gating_mem:<18} | {periodic_20_mem:<18} | {periodic_50_mem:<18}"
+        f"{'Max VMEM':<15} | {skip_mem:<18} | {update_mem:<18} | {periodic_20_mem:<18} | {periodic_50_mem:<18}"
     )
     output_lines.append("=" * 100 + "\n")
     output_lines.append(
-        "Note: Periodic 20% = fixed schedule baseline (every 5th chunk update)."
+        "Note: Each iteration uses DIFFERENT random input to prevent XLA over-optimization."
     )
     output_lines.append(
-        "      Periodic 50% = fixed schedule baseline (every other chunk update)."
-    )
-    output_lines.append(
-        "      Dense+Gating = 100% update + gating overhead (worst case for PonderTTT)."
+        "      Periodic 20% = every 5th chunk update. Periodic 50% = alternating S-U."
     )
 
     # Print to console
