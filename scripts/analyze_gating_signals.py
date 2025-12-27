@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from ponderttt.models.base_model_nnx import load_ttt_model
 from ponderttt.data.dataset import create_data_iterator
 from ponderttt.data.tokenization import get_tokenizer
+from flax import nnx
 
 
 @dataclass
