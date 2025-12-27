@@ -330,8 +330,10 @@ def main():
         input_ids = jnp.array(batch["input_ids"])
         attention_mask = jnp.array(batch["attention_mask"])
 
-        # Process chunks (2 per sequence)
-        for chunk_idx in range(2):
+        # Process only the first chunk (start of document) to ensure valid context.
+        # Processing subsequent chunks without passing KV cache leads to artificially high
+        # perplexity (model sees "middle of file" as "start") and distorts gating signals.
+        for chunk_idx in range(1):
             start = chunk_idx * args.chunk_size
             end = start + args.chunk_size
 
