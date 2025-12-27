@@ -1455,6 +1455,7 @@ def evaluate_model(
         float
     ] = None,  # For Random Skip baseline (0.0-1.0); set explicitly
     ttt_base_lr: Optional[float] = None,
+    shuffle: bool = False,  # Shuffle tokens within chunks (ablation)
 ):
     # Convert budget (cost multiplier) to target update rate using cost model:
     # cost = 1 + 2 * update_rate => update_rate = (budget - 1) / 2
@@ -1583,6 +1584,12 @@ def evaluate_model(
             # Determine if this is a real code chunk (>10% valid tokens)
             valid_ratio = float(jnp.sum(chunk_batch["attention_mask"])) / chunk_len
             is_real_code = valid_ratio > 0.1
+
+            # Apply shuffle if requested (destroy token order for ablation)
+            if shuffle:
+                chunk_batch["input_ids"] = permute_within_chunks(
+                    chunk_batch["input_ids"], seed=seed + c_idx
+                )
 
             # Decision
             cost = 1.0
@@ -1743,6 +1750,7 @@ def main():
         skip_examples=args.skip_examples,
         num_workers=args.num_workers,
         ttt_base_lr=args.ttt_base_lr,
+        shuffle=args.shuffle,
     )
     all_results.append(df_skip)
 
@@ -1762,6 +1770,7 @@ def main():
             skip_examples=args.skip_examples,
             num_workers=args.num_workers,
             ttt_base_lr=args.ttt_base_lr,
+            shuffle=args.shuffle,
         )
         all_results.append(df_update1)
 
@@ -1783,6 +1792,7 @@ def main():
             num_workers=args.num_workers,
             random_update_rate=target_update_rate,
             ttt_base_lr=args.ttt_base_lr,
+            shuffle=args.shuffle,
         )
         all_results.append(df_random)
 
