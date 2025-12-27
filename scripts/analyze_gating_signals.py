@@ -219,8 +219,9 @@ def main():
     total_chunks = 0
 
     print(f"\nAnalyzing {args.num_batches} batches...")
+    target_chunks = args.num_batches * 2  # 2 chunks per batch
     for batch in tqdm(data_iter, total=args.num_batches, desc="Analyzing"):
-        if total_chunks >= args.num_batches * 2 * args.batch_size:
+        if total_chunks >= target_chunks:
             break
 
         chunks = batch["chunks"]
