@@ -59,7 +59,67 @@ def permute_within_chunks(input_ids: jax.Array, seed: int) -> jax.Array:
     return jax.vmap(permute_seq)(input_ids, keys)
 
 
-# --- JIT-compiled Helpers ---
+# --- JIT-compiled Helpers (Module Level for Efficiency) ---
+# These are defined at module level to avoid recompilation in each function call.
+
+
+@nnx.jit
+def jit_skip_loss_global(
+    model: TTTTransformerLM,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+    position_ids: jax.Array,
+):
+    """Compute SKIP path loss (no TTT update)."""
+    out = model(
+        input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_ttt=False,
+    )
+    return cross_entropy_loss(
+        out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:]
+    )
+
+
+@nnx.jit
+def jit_update_loss_global(
+    model: TTTTransformerLM,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+    position_ids: jax.Array,
+):
+    """Compute UPDATE path loss (with TTT update)."""
+    out = model(
+        input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_ttt=True,
+    )
+    return cross_entropy_loss(
+        out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:]
+    )
+
+
+@nnx.jit
+def jit_update_loss_with_gating(
+    model: TTTTransformerLM,
+    input_ids: jax.Array,
+    attention_mask: jax.Array,
+    position_ids: jax.Array,
+    gating_scale: jax.Array,
+):
+    """Compute UPDATE path loss with explicit gating scale."""
+    out = model(
+        input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_ttt=True,
+        gating_scale=gating_scale,
+    )
+    return cross_entropy_loss(
+        out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:]
+    )
 
 
 @nnx.jit
@@ -70,6 +130,12 @@ def jit_ttt_forward_with_stats(
     position_ids: jax.Array,
 ):
     """Run TTT forward and return loss + ttt_stats.
+
+    Returns:
+        loss_skip: Cross-entropy loss without TTT
+        loss_update: Cross-entropy loss with TTT
+        ttt_loss_step_0: Reconstruction loss before gradient step (gating signal)
+        ttt_loss_step_1: Reconstruction loss after gradient step
 
     Note: The model's TTT layer uses config.causal_k, which should be set
     before calling this function (cannot be changed inside JIT).
@@ -102,18 +168,15 @@ def jit_ttt_forward_with_stats(
 
     # TTT internal stats (take mean across heads/batch)
     ttt_stats = out_update.get("ttt_stats", {})
-    # Full-Sequence Reconstruction Loss (better for large models, r=0.77@XL)
-    ttt_loss_init = ttt_stats.get("ttt_loss_init", jnp.array(0.0))
     ttt_loss_step_0 = ttt_stats.get("ttt_loss_step_0", jnp.array(0.0))
     ttt_loss_step_1 = ttt_stats.get("ttt_loss_step_1", jnp.array(0.0))
 
     # Ensure scalars by taking mean (TTT stats are per-head arrays)
-    ttt_loss_init = jnp.mean(ttt_loss_init)
     ttt_loss_step_0 = jnp.mean(ttt_loss_step_0)
     ttt_loss_step_1 = jnp.mean(ttt_loss_step_1)
 
-    # Return ttt_loss_init as primary gating signal (better than ttt_loss_step_0)
-    return loss_skip, loss_update, ttt_loss_init, ttt_loss_step_1
+    # Return ttt_loss_step_0 as primary gating signal
+    return loss_skip, loss_update, ttt_loss_step_0, ttt_loss_step_1
 
 
 def get_fast_weight_checksum(model: TTTTransformerLM) -> float:
@@ -217,31 +280,7 @@ def evaluate_oracle(
 
     assert isinstance(ttt_model, TTTTransformerLM)
 
-    # JIT-compiled functions for Oracle
-    @nnx.jit
-    def jit_skip_loss(model, input_ids, attention_mask, position_ids):
-        out = model(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            use_ttt=False,
-        )
-        return cross_entropy_loss(
-            out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:]
-        )
-
-    @nnx.jit
-    def jit_update_loss(model, input_ids, attention_mask, position_ids, gating_scale):
-        out = model(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            use_ttt=True,
-            gating_scale=gating_scale,
-        )
-        return cross_entropy_loss(
-            out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:]
-        )
+    # Use module-level JIT functions (avoid recompilation)
 
     for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
         if i >= num_batches:
@@ -274,14 +313,10 @@ def evaluate_oracle(
                 chunk_batch["input_ids"] = permute_within_chunks(
                     chunk_batch["input_ids"], seed=seed + c_idx
                 )
-                # Note: Labels (input_ids) are permuted, but causal mask remains?
-                # If we shuffle input, we verify if TTT still learns.
-                # Standard causal mask applies to shuffled sequence -> effectively random connections.
-                pass
 
-            # Compute SKIP loss (JIT)
+            # Compute SKIP loss (module-level JIT)
             loss_skip = float(
-                jit_skip_loss(
+                jit_skip_loss_global(
                     ttt_model,
                     chunk_batch["input_ids"],
                     chunk_batch["attention_mask"],
@@ -289,10 +324,10 @@ def evaluate_oracle(
                 )
             )
 
-            # Compute UPDATE loss (JIT)
+            # Compute UPDATE loss (module-level JIT)
             gating_scale = jnp.array([[1.0]], dtype=jnp.float32)
             loss_update = float(
-                jit_update_loss(
+                jit_update_loss_with_gating(
                     ttt_model,
                     chunk_batch["input_ids"],
                     chunk_batch["attention_mask"],
@@ -871,12 +906,22 @@ def evaluate_ttt_loss_gating(
     shuffle: bool = False,
     diagonal_offset: int = 0,
     ttt_base_lr: Optional[float] = None,
+    calibration_batches: int = 2,  # Number of batches for threshold calibration
 ):
     r"""
     TTT Reconstruction Loss Gating (Self-Supervised) - PROPOSED METHOD.
 
-    CAUSAL GATING: Uses chunk t-1's `ttt_loss_init` to decide chunk t's update.
-    This ensures no future information leakage, enabling autoregressive inference.
+    FULLY CAUSAL GATING:
+    1. Calibration Phase (first N batches): Collect reconstruction losses to compute
+       median threshold. Results from calibration are recorded but excluded from
+       final statistics if desired.
+    2. Evaluation Phase: Use FIXED threshold from calibration. Decision for chunk t
+       uses chunk t-1's reconstruction loss (lag-1).
+
+    This ensures:
+    - NO future information leakage (threshold fixed before evaluation)
+    - Autoregressive inference compatible
+    - Matches paper claim: "threshold is fixed during evaluation"
 
     Logic:
     1. Run TTT forward on chunk t to get `ttt_loss_init`.
@@ -899,6 +944,7 @@ def evaluate_ttt_loss_gating(
     print(
         f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}..."
     )
+    print(f"  [Causal Mode] Calibration batches: {calibration_batches}")
 
     model_name = {
         "125m": "gpt2",
@@ -952,6 +998,15 @@ def evaluate_ttt_loss_gating(
     all_advantages: list[float] = []
 
     assert isinstance(ttt_model, TTTTransformerLM)
+
+    # State leakage check
+    initial_checksum = get_fast_weight_checksum(ttt_model)
+
+    # === CAUSAL THRESHOLD CALIBRATION ===
+    # Phase 1: Collect reconstruction losses from first N batches to compute threshold
+    calibration_losses: list[float] = []
+    threshold: float | None = None
+    calibration_done = False
 
     for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
         if i >= num_batches:
@@ -1017,23 +1072,35 @@ def evaluate_ttt_loss_gating(
             all_ttt_recon.append(ttt_recon_loss)
             all_advantages.append(advantage)
 
-        # Step 2: CAUSAL Gating - Use previous chunk's loss to decide current chunk
-        # This ensures no future information leakage for autoregressive inference
+            # Collect for calibration (only during calibration phase)
+            if not calibration_done:
+                calibration_losses.append(ttt_recon_loss)
 
-        # Compute threshold from median of all reconstruction losses (for 50% update rate)
-        all_recon_losses = [c["ttt_recon_loss"] for c in chunk_data]
-        threshold = np.median(all_recon_losses)
+        # Check if calibration is complete (after processing calibration_batches)
+        if not calibration_done and i >= calibration_batches - 1:
+            # Compute threshold from calibration data
+            threshold = float(np.median(calibration_losses))
+            calibration_done = True
+            print(f"  [Calibration Complete] Threshold fixed at: {threshold:.6f}")
+            print(
+                f"    (computed from {len(calibration_losses)} chunks across {calibration_batches} batches)"
+            )
+
+        # Step 2: CAUSAL Gating - Use previous chunk's loss to decide current chunk
+        # Threshold is FIXED after calibration (no per-batch recalculation)
 
         # Step 3: Record results with CAUSAL decision (lag-1)
         for c in chunk_data:
             c_idx = c["c_idx"]
 
-            # CAUSAL: Use PREVIOUS chunk's loss for decision
-            if c_idx == 0:
+            # During calibration phase or if threshold not yet set, use UPDATE
+            if threshold is None:
+                should_update = True
+            elif c_idx == 0:
                 # First chunk: no previous info, default to UPDATE (conservative)
                 should_update = True
             else:
-                # Use previous chunk's reconstruction loss
+                # CAUSAL: Use PREVIOUS chunk's reconstruction loss with FIXED threshold
                 prev_recon_loss = chunk_data[c_idx - 1]["ttt_recon_loss"]
                 should_update = prev_recon_loss > threshold
 
@@ -1049,6 +1116,18 @@ def evaluate_ttt_loss_gating(
             results["method"].append(method_name)
             results["text"].append(c["text"])
             results["is_real_code"].append(c["is_real_code"])
+
+    # State leakage check
+    final_checksum = get_fast_weight_checksum(ttt_model)
+    if abs(final_checksum - initial_checksum) > 1e-6:
+        print("\n  ⚠️  [STATE LEAKAGE] Fast weights changed during evaluation!")
+        print(f"    Initial: {initial_checksum:.6f}, Final: {final_checksum:.6f}")
+    else:
+        print("\n  ✓ [State Check] No state leakage (fast weights unchanged)")
+
+    # Print final threshold info
+    if threshold is not None:
+        print(f"  [Final] Fixed threshold used: {threshold:.6f}")
 
     # Print correlation analysis
     if all_ttt_recon and all_advantages:
@@ -1526,30 +1605,7 @@ def evaluate_model(
     # RNG key for stochastic evaluation
     rng_key = jax.random.PRNGKey(seed)
 
-    # JIT-compiled functions
-    @nnx.jit
-    def jit_skip_loss(model, input_ids, attention_mask, position_ids):
-        out = model(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            use_ttt=False,
-        )
-        return cross_entropy_loss(
-            out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:]
-        )
-
-    @nnx.jit
-    def jit_update_loss(model, input_ids, attention_mask, position_ids):
-        out = model(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            use_ttt=True,
-        )
-        return cross_entropy_loss(
-            out["logits"][:, :-1], input_ids[:, 1:], attention_mask[:, 1:]
-        )
+    # Use module-level JIT functions (avoid recompilation)
 
     assert isinstance(ttt_model, TTTTransformerLM)
 
@@ -1605,7 +1661,7 @@ def evaluate_model(
 
                 if do_update:
                     loss = float(
-                        jit_update_loss(
+                        jit_update_loss_global(
                             ttt_model,
                             chunk_batch["input_ids"],
                             chunk_batch["attention_mask"],
@@ -1616,7 +1672,7 @@ def evaluate_model(
                     decision_str = "UPDATE"
                 else:
                     loss = float(
-                        jit_skip_loss(
+                        jit_skip_loss_global(
                             ttt_model,
                             chunk_batch["input_ids"],
                             chunk_batch["attention_mask"],
@@ -1628,7 +1684,7 @@ def evaluate_model(
             elif fixed_action == "SKIP":
                 # Fixed Baseline: SKIP
                 loss = float(
-                    jit_skip_loss(
+                    jit_skip_loss_global(
                         ttt_model,
                         chunk_batch["input_ids"],
                         chunk_batch["attention_mask"],
@@ -1640,7 +1696,7 @@ def evaluate_model(
             elif fixed_action == "UPDATE_1":
                 # Fixed Baseline: UPDATE_1
                 loss = float(
-                    jit_update_loss(
+                    jit_update_loss_global(
                         ttt_model,
                         chunk_batch["input_ids"],
                         chunk_batch["attention_mask"],
