@@ -225,6 +225,7 @@ phase2_eval_id() {
                     --model_scale 125m \
                     --update1_checkpoint "$ckpt_125m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_125M \
+                    --batch_size $BATCH_SIZE_125M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/125m_python \
@@ -249,6 +250,7 @@ phase2_eval_id() {
                     --model_scale 350m \
                     --update1_checkpoint "$ckpt_350m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_350M \
+                    --batch_size $BATCH_SIZE_350M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/350m_python \
@@ -336,6 +338,7 @@ phase3_eval_ood() {
                         --model_scale 125m \
                         --update1_checkpoint "$ckpt_125m_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_125M \
+                        --batch_size $BATCH_SIZE_125M \
                         --language "$lang" \
                         --output_dir "outputs/eval/125m_${lang_lower}" \
                         --eval_ttt_loss \
@@ -361,6 +364,7 @@ phase3_eval_ood() {
                         --model_scale 350m \
                         --update1_checkpoint "$ckpt_350m_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_350M \
+                        --batch_size $BATCH_SIZE_350M \
                         --language "$lang" \
                         --output_dir "outputs/eval/350m_${lang_lower}" \
                         --eval_ttt_loss \
@@ -468,6 +472,7 @@ phase5_shuffle() {
                     --model_scale 125m \
                     --update1_checkpoint "$ckpt_125m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_125M \
+                    --batch_size $BATCH_SIZE_125M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/125m_shuffle \
@@ -489,6 +494,7 @@ phase5_shuffle() {
                     --model_scale 350m \
                     --update1_checkpoint "$ckpt_350m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_350M \
+                    --batch_size $BATCH_SIZE_350M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/350m_shuffle \
@@ -523,6 +529,7 @@ phase6_diagonal() {
                     --model_scale 125m \
                     --update1_checkpoint "$ckpt_125m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_125M \
+                    --batch_size $BATCH_SIZE_125M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/125m_diagonal_k_minus_1 \
@@ -545,6 +552,7 @@ phase6_diagonal() {
                     --model_scale 350m \
                     --update1_checkpoint "$ckpt_350m_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_350M \
+                    --batch_size $BATCH_SIZE_350M \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/350m_diagonal_k_minus_1 \
