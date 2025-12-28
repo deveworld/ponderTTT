@@ -875,28 +875,26 @@ def evaluate_ttt_loss_gating(
     r"""
     TTT Reconstruction Loss Gating (Self-Supervised) - PROPOSED METHOD.
 
-    This is the main contribution from the paper. Uses `ttt_loss_init` (full-sequence
-    reconstruction loss) as the gating signal - better correlation with Oracle advantage
-    on large models (r=0.77 on XL vs r=0.69 for last-token-only).
+    CAUSAL GATING: Uses chunk t-1's `ttt_loss_init` to decide chunk t's update.
+    This ensures no future information leakage, enabling autoregressive inference.
 
     Logic:
-    1. Run partial TTT forward (or full, extracting stats) to get `ttt_loss_init`.
-       $$ \text{score} = \mathcal{L}_{rec}(\theta_{fast}; x_t) $$
-    2. If score > threshold (Top-k): UPDATE.
-    3. Else: SKIP.
+    1. Run TTT forward on chunk t to get `ttt_loss_init`.
+    2. Use chunk t-1's loss to decide chunk t's action:
+       - If prev_loss > threshold: UPDATE chunk t
+       - Else: SKIP chunk t
+    3. First chunk defaults to UPDATE (no previous info available).
 
     Key Properties:
-    - Inference-Compatible: $\mathcal{L}_{rec}$ does not require ground-truth labels.
-    - Efficient: Can compute reconstruction loss without full UPDATE (just forward pass).
+    - CAUSAL: Decision for chunk t uses only past information (chunk t-1).
+    - Inference-Compatible: Works for autoregressive generation.
+    - Efficient: Can compute reconstruction loss without full UPDATE.
 
     Cost Analysis:
-    - Evaluation Mode (this implementation): Runs both SKIP and UPDATE for comparison
-      (total 4.0x per chunk). Records selected path's cost.
-    - Deployment Mode (theoretical): Compute ttt_loss_init during forward (~1.0x),
+    - Deployment Mode: Compute ttt_loss_init during forward (~1.0x),
       then conditionally run UPDATE (additional 2.0x). Average: 1.0 + 2.0 × update_rate.
 
-    Note: See paper Section 3.2 "Reconstruction Gating" for details.
-          Compare with evaluate_ttt_improvement_gating (analysis only, inefficient).
+    Note: See paper Section 3.2 \"Reconstruction Gating\" for details.
     """
     print(
         f"\nEvaluating {method_name} (update_rate={update_rate:.1%}) on {language}..."
@@ -1019,29 +1017,33 @@ def evaluate_ttt_loss_gating(
             all_ttt_recon.append(ttt_recon_loss)
             all_advantages.append(advantage)
 
-        # Step 2: Select top-k% chunks by Reconstruction Loss
-        num_to_update = max(1, int(len(chunk_data) * update_rate))
+        # Step 2: CAUSAL Gating - Use previous chunk's loss to decide current chunk
+        # This ensures no future information leakage for autoregressive inference
 
-        # Determine sort order: Higher reconstruction error -> Needs update (reverse=True)
-        reverse_sort = True
+        # Compute threshold from median of all reconstruction losses (for 50% update rate)
+        all_recon_losses = [c["ttt_recon_loss"] for c in chunk_data]
+        threshold = np.median(all_recon_losses)
 
-        sorted_chunks = sorted(
-            chunk_data, key=lambda x: x["ttt_recon_loss"], reverse=reverse_sort
-        )
-
-        update_indices = set(c["c_idx"] for c in sorted_chunks[:num_to_update])
-
-        # Step 3: Record results
+        # Step 3: Record results with CAUSAL decision (lag-1)
         for c in chunk_data:
-            if c["c_idx"] in update_indices:
+            c_idx = c["c_idx"]
+
+            # CAUSAL: Use PREVIOUS chunk's loss for decision
+            if c_idx == 0:
+                # First chunk: no previous info, default to UPDATE (conservative)
+                should_update = True
+            else:
+                # Use previous chunk's reconstruction loss
+                prev_recon_loss = chunk_data[c_idx - 1]["ttt_recon_loss"]
+                should_update = prev_recon_loss > threshold
+
+            if should_update:
                 results["loss"].append(c["loss_update"])
                 results["cost"].append(3.0)
                 results["decision"].append("UPDATE")
             else:
                 results["loss"].append(c["loss_skip"])
-                results["cost"].append(
-                    1.0
-                )  # Theoretical cost if we had cheap estimator
+                results["cost"].append(1.0)
                 results["decision"].append("SKIP")
 
             results["method"].append(method_name)
