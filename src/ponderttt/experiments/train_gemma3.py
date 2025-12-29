@@ -518,6 +518,7 @@ def make_eval_step() -> Callable:
 
 
 def main() -> None:
+    # Try with nnx.use_eager_sharding()
     args = parse_args()
     seeds = (
         [args.seed]
@@ -525,8 +526,6 @@ def main() -> None:
         else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
     )
 
-    # Initialize JAX distributed for multi-host TPU setups
-    # This must be called before any other JAX operations
     if args.enable_sharding:
         jax.distributed.initialize()
 
@@ -542,7 +541,6 @@ def main() -> None:
     logger.info(f"Seeds: {seeds}")
     logger.info(f"Enable sharding: {args.enable_sharding}")
 
-    # JAX device info
     devices = jax.devices()
     logger.info(f"JAX devices: {len(devices)} ({devices[0].platform})")
 
