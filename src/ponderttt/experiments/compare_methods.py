@@ -911,26 +911,28 @@ def evaluate_ttt_loss_gating(
     r"""
     TTT Reconstruction Loss Gating (Self-Supervised) - PROPOSED METHOD.
 
-    INFERENCE-COMPATIBLE THRESHOLD GATING:
+    INFERENCE-COMPATIBLE THRESHOLD GATING with EMA ADJUSTMENT:
     1. Calibration Phase (first N batches): Collect reconstruction losses and compute
-       threshold using percentile based on target update rate.
-    2. Evaluation Phase: Use FIXED threshold. Each chunk's decision is made
-       independently by comparing its reconstruction loss to threshold.
+       initial threshold using percentile based on target update rate.
+    2. Evaluation Phase: Use threshold with EMA adjustment. Each chunk's decision is
+       made independently by comparing its reconstruction loss to threshold.
+    3. After each batch: Adjust threshold dynamically to maintain target update rate.
 
     This ensures:
     - Inference-compatible: Each chunk decided independently (no lookahead)
-    - Threshold fixed before main evaluation (calibrated on subset)
-    - Matches target update rate (via percentile calibration)
+    - Adaptive: Threshold adjusts to maintain target update rate
+    - Robust: Works even with small calibration sets
 
     Logic:
     1. During calibration: collect reconstruction losses, all chunks UPDATE
     2. After calibration: threshold = (1 - update_rate) percentile
-    3. For each chunk: UPDATE if recon_loss > threshold, else SKIP
+    3. Each batch: if actual_rate > target: increase threshold, else decrease
+    4. For each chunk: UPDATE if recon_loss > threshold, else SKIP
 
     Key Properties:
     - Inference-Compatible: Works for streaming/autoregressive generation.
+    - Adaptive: Threshold converges to achieve target update rate.
     - Efficient: Reconstruction loss computed during forward pass.
-    - Deterministic: Same input → same decision (reproducible).
 
     Cost Analysis:
     - Deployment Mode: Compute recon_loss during forward (~1.0x),
@@ -999,11 +1001,15 @@ def evaluate_ttt_loss_gating(
     # State leakage check
     initial_checksum = get_fast_weight_checksum(ttt_model)
 
-    # === CAUSAL THRESHOLD CALIBRATION ===
-    # Phase 1: Collect reconstruction losses from first N batches to compute threshold
+    # === THRESHOLD CALIBRATION + EMA ADJUSTMENT ===
     calibration_losses: list[float] = []
     threshold: float | None = None
     calibration_done = False
+
+    # EMA tracking for dynamic threshold adjustment
+    ema_alpha = 0.1  # Learning rate for threshold adjustment
+    update_count = 0
+    total_count = 0
 
     for i, batch in enumerate(tqdm(data_iter, total=num_batches, desc=method_name)):
         if i >= num_batches:
@@ -1076,34 +1082,28 @@ def evaluate_ttt_loss_gating(
         # Check if calibration is complete (after processing calibration_batches)
         if not calibration_done and i >= calibration_batches - 1:
             # Compute threshold using PERCENTILE based on target update rate
-            # If update_rate=0.5, we want top 50% to be UPDATE
-            # So threshold = (1 - update_rate) percentile = 50th percentile
             percentile = (1.0 - update_rate) * 100
             threshold = float(np.percentile(calibration_losses, percentile))
             calibration_done = True
-            print(f"  [Calibration Complete] Threshold fixed at: {threshold:.6f}")
+            print(f"  [Calibration Complete] Initial threshold: {threshold:.6f}")
             print(
-                f"    (percentile={percentile:.0f}%, update_rate={update_rate:.0%}, from {len(calibration_losses)} chunks)"
+                f"    (percentile={percentile:.0f}%, from {len(calibration_losses)} chunks)"
             )
 
-        # Step 2: Threshold Gating - Use CURRENT chunk's reconstruction loss
-        # Decision: high recon loss = high learning potential = UPDATE
-        # This is inference-compatible: each chunk decided independently
-
-        # Step 3: Record results based on threshold decision
+        # Step 2: Threshold Gating with EMA adjustment
+        batch_updates = 0
         for c in chunk_data:
-            # During calibration phase, use UPDATE (conservative, maximizes learning)
+            # During calibration phase, use UPDATE
             if threshold is None:
                 should_update = True
             else:
-                # Compare current chunk's reconstruction loss to fixed threshold
-                # High loss → UPDATE (model struggles with this input)
                 should_update = c["ttt_recon_loss"] > threshold
 
             if should_update:
                 results["loss"].append(c["loss_update"])
                 results["cost"].append(3.0)
                 results["decision"].append("UPDATE")
+                batch_updates += 1
             else:
                 results["loss"].append(c["loss_skip"])
                 results["cost"].append(1.0)
@@ -1112,6 +1112,18 @@ def evaluate_ttt_loss_gating(
             results["method"].append(method_name)
             results["text"].append(c["text"])
             results["is_real_code"].append(c["is_real_code"])
+
+        # EMA threshold adjustment (after calibration)
+        if calibration_done and threshold is not None:
+            update_count += batch_updates
+            total_count += len(chunk_data)
+            actual_rate = update_count / total_count
+
+            # Adjust threshold to converge to target update rate
+            if actual_rate > update_rate + 0.02:  # Too many updates
+                threshold *= 1 + ema_alpha  # Increase threshold
+            elif actual_rate < update_rate - 0.02:  # Too few updates
+                threshold *= 1 - ema_alpha  # Decrease threshold
 
     # State leakage check
     final_checksum = get_fast_weight_checksum(ttt_model)
@@ -1122,9 +1134,12 @@ def evaluate_ttt_loss_gating(
         print("\n  ✓ [State Check] No state leakage (fast weights unchanged)")
 
     # Print actual update rate
-    update_count = sum(1 for d in results["decision"] if d == "UPDATE")
-    total_count = len(results["decision"])
-    actual_update_rate = update_count / total_count if total_count > 0 else 0
+    final_update_count = sum(1 for d in results["decision"] if d == "UPDATE")
+    final_total_count = len(results["decision"])
+    actual_update_rate = (
+        final_update_count / final_total_count if final_total_count > 0 else 0
+    )
+    print(f"  [Final Threshold] {threshold:.6f}")
     print(
         f"  [Actual Update Rate] {actual_update_rate:.1%} (target: {update_rate:.0%})"
     )
