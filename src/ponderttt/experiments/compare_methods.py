@@ -911,32 +911,29 @@ def evaluate_ttt_loss_gating(
     r"""
     TTT Reconstruction Loss Gating (Self-Supervised) - PROPOSED METHOD.
 
-    FULLY CAUSAL GATING:
-    1. Calibration Phase (first N batches): Collect reconstruction losses to compute
-       median threshold. Results from calibration are recorded but excluded from
-       final statistics if desired.
-    2. Evaluation Phase: Use FIXED threshold from calibration. Decision for chunk t
-       uses chunk t-1's reconstruction loss (lag-1).
+    INFERENCE-COMPATIBLE THRESHOLD GATING:
+    1. Calibration Phase (first N batches): Collect reconstruction losses and compute
+       threshold using percentile based on target update rate.
+    2. Evaluation Phase: Use FIXED threshold. Each chunk's decision is made
+       independently by comparing its reconstruction loss to threshold.
 
     This ensures:
-    - NO future information leakage (threshold fixed before evaluation)
-    - Autoregressive inference compatible
-    - Matches paper claim: "threshold is fixed during evaluation"
+    - Inference-compatible: Each chunk decided independently (no lookahead)
+    - Threshold fixed before main evaluation (calibrated on subset)
+    - Matches target update rate (via percentile calibration)
 
     Logic:
-    1. Run TTT forward on chunk t to get `ttt_loss_init`.
-    2. Use chunk t-1's loss to decide chunk t's action:
-       - If prev_loss > threshold: UPDATE chunk t
-       - Else: SKIP chunk t
-    3. First chunk defaults to UPDATE (no previous info available).
+    1. During calibration: collect reconstruction losses, all chunks UPDATE
+    2. After calibration: threshold = (1 - update_rate) percentile
+    3. For each chunk: UPDATE if recon_loss > threshold, else SKIP
 
     Key Properties:
-    - CAUSAL: Decision for chunk t uses only past information (chunk t-1).
-    - Inference-Compatible: Works for autoregressive generation.
-    - Efficient: Can compute reconstruction loss without full UPDATE.
+    - Inference-Compatible: Works for streaming/autoregressive generation.
+    - Efficient: Reconstruction loss computed during forward pass.
+    - Deterministic: Same input → same decision (reproducible).
 
     Cost Analysis:
-    - Deployment Mode: Compute ttt_loss_init during forward (~1.0x),
+    - Deployment Mode: Compute recon_loss during forward (~1.0x),
       then conditionally run UPDATE (additional 2.0x). Average: 1.0 + 2.0 × update_rate.
 
     Note: See paper Section 3.2 \"Reconstruction Gating\" for details.
@@ -1064,7 +1061,7 @@ def evaluate_ttt_loss_gating(
                     "loss_update": loss_update,
                     "ttt_recon_loss": ttt_recon_loss,
                     "advantage": advantage,
-                    "text": "[Text]",  # Skip decode for speed if not needed
+                    "text": "[Text]",
                     "is_real_code": is_real_code,
                 }
             )
@@ -1078,31 +1075,30 @@ def evaluate_ttt_loss_gating(
 
         # Check if calibration is complete (after processing calibration_batches)
         if not calibration_done and i >= calibration_batches - 1:
-            # Compute threshold from calibration data
-            threshold = float(np.median(calibration_losses))
+            # Compute threshold using PERCENTILE based on target update rate
+            # If update_rate=0.5, we want top 50% to be UPDATE
+            # So threshold = (1 - update_rate) percentile = 50th percentile
+            percentile = (1.0 - update_rate) * 100
+            threshold = float(np.percentile(calibration_losses, percentile))
             calibration_done = True
             print(f"  [Calibration Complete] Threshold fixed at: {threshold:.6f}")
             print(
-                f"    (computed from {len(calibration_losses)} chunks across {calibration_batches} batches)"
+                f"    (percentile={percentile:.0f}%, update_rate={update_rate:.0%}, from {len(calibration_losses)} chunks)"
             )
 
-        # Step 2: CAUSAL Gating - Use previous chunk's loss to decide current chunk
-        # Threshold is FIXED after calibration (no per-batch recalculation)
+        # Step 2: Threshold Gating - Use CURRENT chunk's reconstruction loss
+        # Decision: high recon loss = high learning potential = UPDATE
+        # This is inference-compatible: each chunk decided independently
 
-        # Step 3: Record results with CAUSAL decision (lag-1)
+        # Step 3: Record results based on threshold decision
         for c in chunk_data:
-            c_idx = c["c_idx"]
-
-            # During calibration phase or if threshold not yet set, use UPDATE
+            # During calibration phase, use UPDATE (conservative, maximizes learning)
             if threshold is None:
                 should_update = True
-            elif c_idx == 0:
-                # First chunk: no previous info, default to UPDATE (conservative)
-                should_update = True
             else:
-                # CAUSAL: Use PREVIOUS chunk's reconstruction loss with FIXED threshold
-                prev_recon_loss = chunk_data[c_idx - 1]["ttt_recon_loss"]
-                should_update = prev_recon_loss > threshold
+                # Compare current chunk's reconstruction loss to fixed threshold
+                # High loss → UPDATE (model struggles with this input)
+                should_update = c["ttt_recon_loss"] > threshold
 
             if should_update:
                 results["loss"].append(c["loss_update"])
@@ -1125,9 +1121,13 @@ def evaluate_ttt_loss_gating(
     else:
         print("\n  ✓ [State Check] No state leakage (fast weights unchanged)")
 
-    # Print final threshold info
-    if threshold is not None:
-        print(f"  [Final] Fixed threshold used: {threshold:.6f}")
+    # Print actual update rate
+    update_count = sum(1 for d in results["decision"] if d == "UPDATE")
+    total_count = len(results["decision"])
+    actual_update_rate = update_count / total_count if total_count > 0 else 0
+    print(
+        f"  [Actual Update Rate] {actual_update_rate:.1%} (target: {update_rate:.0%})"
+    )
 
     # Print correlation analysis
     if all_ttt_recon and all_advantages:
