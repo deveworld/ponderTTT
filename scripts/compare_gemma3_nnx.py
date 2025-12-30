@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
         "--model_scale",
         type=str,
         default="4b",
-        choices=["4b", "12b"],
+        choices=["1b", "4b", "12b", "27b"],
         help="Gemma 3 model scale",
     )
     parser.add_argument("--text", type=str, default="Hello world", help="Input text")

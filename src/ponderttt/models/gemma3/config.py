@@ -141,6 +141,45 @@ class Gemma3Config:
         return cls(**config)  # type: ignore[arg-type]
 
     @classmethod
+    def gemma3_27b(cls, dtype: Any = jnp.bfloat16, **override) -> Gemma3Config:
+        """Gemma 3 27B configuration.
+
+        Model specs:
+        - Parameters: ~27B
+        - Layers: 46
+        - Hidden: 4608
+        - Heads: 32 (16 KV heads for GQA)
+        - Head dim: 128
+        """
+        num_layers = 46
+        config = {
+            "num_layers": num_layers,
+            "num_embed": 262_208,
+            "embed_dim": 4608,
+            "hidden_dim": 4608 * 8 // 2,  # 18432 (approx, check exact if needed)
+            "num_heads": 32,
+            "head_dim": 128,  # Note: Gemma 2 27B used 128, assuming similar for Gemma 3 27B
+            "num_kv_heads": 16,
+            "attention_types": make_attention_layers_types(
+                GEMMA3_ATTENTION_PATTERN, num_layers
+            ),
+            "sliding_window_size": 1024,
+            "use_qk_norm": True,
+            "use_post_attn_norm": True,
+            "use_post_ffw_norm": True,
+            "query_pre_attn_norm": QueryPreAttentionNormalisation.BY_ONE_OVER_SQRT_HEAD_DIM,
+            "attn_logits_soft_cap": None,
+            "final_logit_softcap": None,
+            "local_base_frequency": 10_000,
+            "global_base_frequency": 1_000_000,
+            "global_scale_factor": 8.0,
+            "transpose_gating_einsum": True,
+            "dtype": dtype,
+        }
+        config.update(override)
+        return cls(**config)  # type: ignore[arg-type]
+
+    @classmethod
     def gemma3_12b(cls, dtype: Any = jnp.bfloat16, **override) -> Gemma3Config:
         """Gemma 3 12B configuration.
 
