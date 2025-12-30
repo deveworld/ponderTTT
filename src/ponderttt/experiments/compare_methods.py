@@ -499,7 +499,7 @@ def main():
             max_examples=args.num_eval_batches * args.batch_size * 2,
             num_workers=args.num_workers,
             language=args.language,
-            skip_first_n=args.skip_examples,
+            skip_examples=args.skip_examples,
         )
 
     all_results = []
