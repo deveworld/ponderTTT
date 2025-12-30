@@ -205,9 +205,9 @@ def evaluate_oracle_gemma(
             advantage = loss_skip_val - loss_update_val
 
             # Extract TTT Reconstruction Loss (ttt_loss_init)
-            # ttt_stats is a dict, values might be sharded arrays
+            # ttt_stats is a dict, values might be 1D arrays (per-batch)
             if ttt_stats is not None and "ttt_loss_init" in ttt_stats:
-                ttt_recon_loss = float(ttt_stats["ttt_loss_init"])
+                ttt_recon_loss = float(jnp.mean(ttt_stats["ttt_loss_init"]))
             else:
                 ttt_recon_loss = 0.0
 
