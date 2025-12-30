@@ -93,7 +93,8 @@ def main() -> None:
     print(f"HF logits shape: {logits_pt.shape}")
     print(f"HF logits shape: {logits_pt.shape}")
     # print(f"HF model vocab size: {hf_model.config.vocab_size}")
-    print(f"HF embed_tokens shape: {hf_model.model.embed_tokens.weight.shape}")
+    # print(f"HF embed_tokens shape: {hf_model.model.embed_tokens.weight.shape}")
+    print(f"HF model structure: {hf_model}")
     print(f"HF logits range: [{logits_pt.min():.2f}, {logits_pt.max():.2f}]")
 
     # NNX model
