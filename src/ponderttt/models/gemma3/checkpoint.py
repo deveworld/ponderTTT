@@ -553,7 +553,9 @@ def load_gemma3_from_huggingface(
                     continue
 
                 # Transpose linear weights (HuggingFace: [out, in] -> NNX: [in, out])
-                if "weight" in hf_name and weight.ndim == 2:
+                # But NOT embeddings - they are [vocab, embed] in both formats
+                is_embedding = "embed_tokens" in hf_name
+                if "weight" in hf_name and weight.ndim == 2 and not is_embedding:
                     weight = weight.T
 
                 success = set_nested(model, nnx_path, weight, hf_name)
