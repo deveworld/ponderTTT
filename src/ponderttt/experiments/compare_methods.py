@@ -467,6 +467,7 @@ def main():
             seed=args.seed,
             load_pretrained=True,
             vocab_size=tokenizer.get_vocab_size(),
+            checkpoint_path=args.checkpoint_path,
         )
     model.eval()
 

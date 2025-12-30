@@ -224,15 +224,13 @@ phase2_eval_id() {
             run_experiment "Eval GPT-2 Small Python" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale small \
-                    --update1_checkpoint "$ckpt_small_update1" \
+                    --checkpoint_path "$ckpt_small_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_SMALL \
                     --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/small_python \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
-                    $TTT_BASE_LR_ARG
+                    
         fi
     fi
 
@@ -249,15 +247,13 @@ phase2_eval_id() {
             run_experiment "Eval GPT-2 Medium Python (Standard)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale medium \
-                    --update1_checkpoint "$ckpt_medium_update1" \
+                    --checkpoint_path "$ckpt_medium_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_MEDIUM \
                     --batch_size $BATCH_SIZE_MEDIUM \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/medium_python \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
-                    $TTT_BASE_LR_ARG
+                    
         fi
     fi
 
@@ -274,15 +270,13 @@ phase2_eval_id() {
             run_experiment "Eval GPT-2 Large Python (Standard)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale large \
-                    --update1_checkpoint "$ckpt_large_update1" \
+                    --checkpoint_path "$ckpt_large_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
                     --batch_size $BATCH_SIZE_LARGE \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/large_python \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
-                    $TTT_BASE_LR_ARG
+                    
             
         fi
     fi
@@ -300,15 +294,13 @@ phase2_eval_id() {
             run_experiment "Eval XL Python (Standard)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale xl \
-                    --update1_checkpoint "$ckpt_xl_update1" \
+                    --checkpoint_path "$ckpt_xl_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
                     --batch_size $BATCH_SIZE_LARGE \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/xl_python \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
-                    $TTT_BASE_LR_ARG
+                    
             
         fi
     fi
@@ -336,13 +328,11 @@ phase3_eval_ood() {
                 run_experiment "Eval GPT-2 Small $lang" \
                     python -m ponderttt.experiments.compare_methods \
                         --model_scale small \
-                        --update1_checkpoint "$ckpt_small_update1" \
+                        --checkpoint_path "$ckpt_small_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_SMALL \
                         --batch_size $BATCH_SIZE_SMALL \
                         --language "$lang" \
                         --output_dir "outputs/eval/small_${lang_lower}" \
-                        --eval_ttt_loss \
-                        --eval_ttt_improvement
             done
         fi
     fi
@@ -362,13 +352,11 @@ phase3_eval_ood() {
                 run_experiment "Eval GPT-2 Medium $lang (Standard)" \
                     python -m ponderttt.experiments.compare_methods \
                         --model_scale medium \
-                        --update1_checkpoint "$ckpt_medium_update1" \
+                        --checkpoint_path "$ckpt_medium_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_MEDIUM \
                         --batch_size $BATCH_SIZE_MEDIUM \
                         --language "$lang" \
                         --output_dir "outputs/eval/medium_${lang_lower}" \
-                        --eval_ttt_loss \
-                        --eval_ttt_improvement
             done
 
         fi
@@ -386,13 +374,11 @@ phase3_eval_ood() {
                 run_experiment "Eval GPT-2 Large $lang" \
                     python -m ponderttt.experiments.compare_methods \
                         --model_scale large \
-                        --update1_checkpoint "$ckpt_large_update1" \
+                        --checkpoint_path "$ckpt_large_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
                         --batch_size $BATCH_SIZE_LARGE \
                         --language "$lang" \
                         --output_dir "outputs/eval/large_${lang_lower}" \
-                        --eval_ttt_loss \
-                        --eval_ttt_improvement
             done
         fi
     fi
@@ -409,13 +395,11 @@ phase3_eval_ood() {
                 run_experiment "Eval XL $lang" \
                     python -m ponderttt.experiments.compare_methods \
                         --model_scale xl \
-                        --update1_checkpoint "$ckpt_xl_update1" \
+                        --checkpoint_path "$ckpt_xl_update1" \
                         --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
                         --batch_size $BATCH_SIZE_LARGE \
                         --language "$lang" \
                         --output_dir "outputs/eval/xl_${lang_lower}" \
-                        --eval_ttt_loss \
-                        --eval_ttt_improvement
             done
         fi
     fi
@@ -470,14 +454,12 @@ phase5_shuffle() {
             run_experiment "Shuffle Ablation GPT-2 Small" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale small \
-                    --update1_checkpoint "$ckpt_small_update1" \
+                    --checkpoint_path "$ckpt_small_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_SMALL \
                     --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/small_shuffle \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
                     --shuffle
         fi
     fi
@@ -492,14 +474,12 @@ phase5_shuffle() {
             run_experiment "Shuffle Ablation GPT-2 Medium" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale medium \
-                    --update1_checkpoint "$ckpt_medium_update1" \
+                    --checkpoint_path "$ckpt_medium_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_MEDIUM \
                     --batch_size $BATCH_SIZE_MEDIUM \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/medium_shuffle \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
                     --shuffle
         fi
     fi
@@ -527,14 +507,12 @@ phase6_diagonal() {
             run_experiment "Diagonal Ablation GPT-2 Small (k=-1)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale small \
-                    --update1_checkpoint "$ckpt_small_update1" \
+                    --checkpoint_path "$ckpt_small_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_SMALL \
                     --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/small_diagonal_k_minus_1 \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
                     --diagonal_offset -1
         fi
     fi
@@ -550,14 +528,12 @@ phase6_diagonal() {
             run_experiment "Diagonal Ablation GPT-2 Medium (k=-1, Standard)" \
                 python -m ponderttt.experiments.compare_methods \
                     --model_scale medium \
-                    --update1_checkpoint "$ckpt_medium_update1" \
+                    --checkpoint_path "$ckpt_medium_update1" \
                     --num_eval_batches $NUM_EVAL_BATCHES_MEDIUM \
                     --batch_size $BATCH_SIZE_MEDIUM \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
                     --output_dir outputs/eval/medium_diagonal_k_minus_1 \
-                    --eval_ttt_loss \
-                    --eval_ttt_improvement \
                     --diagonal_offset -1
 
         fi
