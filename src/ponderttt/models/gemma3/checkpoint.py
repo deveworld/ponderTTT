@@ -309,12 +309,17 @@ def load_gemma3_from_huggingface(
                 ),
             }
 
-        # Norms
+        # Norms - Gemma 3 HuggingFace naming:
+        #   input_layernorm = before attention
+        #   post_attention_layernorm = after attention, before FFN residual (this IS the pre-FFN norm!)
+        #   pre_feedforward_layernorm = actually used as the norm before FFN in some configs
+        #   post_feedforward_layernorm = after FFN
         layer_mapping[f"{layer_prefix}.input_layernorm.weight"] = (
             *nnx_layer,
             "pre_attention_norm",
             "scale",
         )
+        # post_attention_layernorm in HF is pre_ffw_norm in NNX (norm before FFN)
         layer_mapping[f"{layer_prefix}.post_attention_layernorm.weight"] = (
             *nnx_layer,
             "pre_ffw_norm",
@@ -356,15 +361,18 @@ def load_gemma3_from_huggingface(
                 "scale",
             )
 
-        # Post norms (Gemma 2/3 specific)
+        # Additional Gemma 3 norms (pre/post feedforward norms)
+        # These are used in Gemma 3 for additional normalization
         if getattr(gemma_config, "use_post_attn_norm", False):
-            layer_mapping[f"{layer_prefix}.post_attention_norm.weight"] = (
+            # pre_feedforward_layernorm in HF = post_attention_norm in NNX
+            layer_mapping[f"{layer_prefix}.pre_feedforward_layernorm.weight"] = (
                 *nnx_layer,
                 "post_attention_norm",
                 "scale",
             )
         if getattr(gemma_config, "use_post_ffw_norm", False):
-            layer_mapping[f"{layer_prefix}.post_ffw_norm.weight"] = (
+            # post_feedforward_layernorm in HF = post_ffw_norm in NNX
+            layer_mapping[f"{layer_prefix}.post_feedforward_layernorm.weight"] = (
                 *nnx_layer,
                 "post_ffw_norm",
                 "scale",
