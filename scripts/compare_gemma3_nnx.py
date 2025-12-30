@@ -186,23 +186,46 @@ def main() -> None:
     print("LOSS COMPUTATION")
     print("=" * 60)
 
+    # Compute cross-entropy loss for reference
+    print("\n" + "=" * 60)
+    print("LOSS COMPUTATION")
+    print("=" * 60)
+
     # Simple CE loss calculation
+    # We predict the next token, so targets are input_ids[1:]
     targets = input_ids_pt[:, 1:].numpy()
-    logits_for_loss = logits_nnx[:, :-1, :]
 
-    # Softmax
-    log_probs = logits_for_loss - np.log(
-        np.sum(np.exp(logits_for_loss), axis=-1, keepdims=True)
-    )
-    # Gather
-    ce_loss = -log_probs[0, np.arange(len(targets[0])), targets[0]]
-    avg_loss = float(np.mean(ce_loss))
+    def compute_loss(logits, targets):
+        # logits: [batch, seq_len, vocab] -> we need [:, :-1, :] to match targets
+        logits_for_loss = logits[:, :-1, :]
 
-    print(f"Cross-entropy loss (NNX, no TTT): {avg_loss:.4f}")
-    if avg_loss < 5.0:
-        print("✅ Loss looks reasonable")
+        # Softmax for probabilities
+        # Safety: subtract max for stability
+        logits_max = np.max(logits_for_loss, axis=-1, keepdims=True)
+        logits_stable = logits_for_loss - logits_max
+        exp_logits = np.exp(logits_stable)
+        log_probs = logits_stable - np.log(np.sum(exp_logits, axis=-1, keepdims=True))
+
+        # Gather log probs for target tokens
+        batch_indices = np.arange(targets.shape[0])[:, None]
+        seq_indices = np.arange(targets.shape[1])[None, :]
+        target_log_probs = log_probs[batch_indices, seq_indices, targets]
+
+        return -np.mean(target_log_probs)
+
+    loss_ref = compute_loss(logits_pt, targets)
+    loss_nnx = compute_loss(logits_nnx, targets)
+
+    print(f"Cross-entropy loss (Transformers): {loss_ref:.4f}")
+    print(f"Cross-entropy loss (NNX, no TTT): {loss_nnx:.4f}")
+
+    loss_diff = abs(loss_ref - loss_nnx)
+    print(f"Loss Difference: {loss_diff:.4f}")
+
+    if loss_diff < 0.01:
+        print("✅ PASS: Losses match")
     else:
-        print("❌ Loss is too high - model may have issues")
+        print("❌ FAIL: Losses differ")
 
 
 if __name__ == "__main__":
