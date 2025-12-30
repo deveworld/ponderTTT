@@ -528,6 +528,23 @@ def load_gemma3_from_huggingface(
     print(f"DEBUG: weight_mapping has {len(weight_mapping)} entries")
     matched_keys = [k for k in weight_mapping.keys() if k in state_dict]
     print(f"DEBUG: {len(matched_keys)} keys matched in state_dict")
+
+    # Show keys in state_dict that are NOT in weight_mapping (potential missing mappings)
+    unmapped_keys = [
+        k
+        for k in state_dict.keys()
+        if k not in weight_mapping
+        and "q_proj" not in k
+        and "k_proj" not in k
+        and "v_proj" not in k
+    ]
+    if unmapped_keys:
+        print(f"DEBUG: {len(unmapped_keys)} unmapped HF keys (excluding QKV):")
+        for k in unmapped_keys[:20]:
+            print(f"  - {k}")
+        if len(unmapped_keys) > 20:
+            print(f"  ... and {len(unmapped_keys) - 20} more")
+
     if len(matched_keys) == 0:
         print(f"DEBUG: First 5 weight_mapping keys: {list(weight_mapping.keys())[:5]}")
         print(f"DEBUG: First 5 state_dict keys: {list(state_dict.keys())[:5]}")
