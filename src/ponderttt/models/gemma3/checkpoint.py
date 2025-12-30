@@ -521,9 +521,6 @@ def load_gemma3_from_huggingface(
                 qkv_weight = jnp.transpose(qkv_weight, (0, 2, 1, 3))
                 set_nested(model, (*nnx_layer, "qkv_einsum", "w"), qkv_weight)
 
-    # Handle remaining weights (non-QKV)
-    matched_keys = [k for k in weight_mapping.keys() if k in state_dict]
-
     # Show keys in state_dict that are NOT in weight_mapping (potential missing mappings)
     unmapped_keys = [
         k
