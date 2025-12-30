@@ -49,7 +49,6 @@ try:
     from ..models.gemma3 import (
         ShardingConfig,
         create_device_mesh,
-        get_data_sharding,
     )
 
     GEMMA3_AVAILABLE = True
@@ -175,7 +174,6 @@ def evaluate_method(
     step_fn,
     seed: int = 42,
     shuffle: bool = False,
-    data_sharding=None,
 ) -> pd.DataFrame:
     """Evaluate a gating method."""
     results = {
@@ -213,11 +211,11 @@ def evaluate_method(
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
             position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
 
-            # Apply sharding if available
-            if data_sharding is not None:
-                chunk_input = jax.device_put(chunk_input, data_sharding)
-                chunk_mask = jax.device_put(chunk_mask, data_sharding)
-                position_ids = jax.device_put(position_ids, data_sharding)
+            # Multi-host: each host has different data (dataset sharding)
+            # Just convert to JAX arrays on local devices
+            chunk_input = jnp.asarray(chunk_input)
+            chunk_mask = jnp.asarray(chunk_mask)
+            position_ids = jnp.asarray(position_ids)
 
             # Compute both paths
             loss_skip, _ = jit_step(
@@ -269,7 +267,6 @@ def evaluate_oracle(
     step_fn,
     seed: int = 42,
     shuffle: bool = False,
-    data_sharding=None,
 ) -> pd.DataFrame:
     """Oracle: select top-k% chunks by advantage."""
     chunk_data = []
@@ -297,10 +294,10 @@ def evaluate_oracle(
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
             position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
 
-            if data_sharding is not None:
-                chunk_input = jax.device_put(chunk_input, data_sharding)
-                chunk_mask = jax.device_put(chunk_mask, data_sharding)
-                position_ids = jax.device_put(position_ids, data_sharding)
+            # Multi-host: each host has different data
+            chunk_input = jnp.asarray(chunk_input)
+            chunk_mask = jnp.asarray(chunk_mask)
+            position_ids = jnp.asarray(position_ids)
 
             loss_skip, _ = jit_step(
                 model, chunk_input, chunk_mask, position_ids, use_ttt=False
@@ -433,9 +430,7 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Setup sharding
-    mesh = None
-    data_sharding = None
+    # Setup sharding (mesh used for distributed initialization)
     if args.enable_sharding and GEMMA3_AVAILABLE:
         sharding_config = ShardingConfig(
             dcn_data_parallelism=args.dcn_data_parallelism,
@@ -446,7 +441,6 @@ def main():
             ici_tensor_parallelism=args.ici_tensor_parallelism,
         )
         mesh = create_device_mesh(sharding_config)
-        data_sharding = get_data_sharding(mesh, sharding_config)
         logger.info(f"Mesh: {mesh.shape}")
 
     # Load model
@@ -517,7 +511,6 @@ def main():
             step_fn,
             args.seed,
             args.shuffle,
-            data_sharding,
         )
         all_results.append(df)
         logger.info(f"  Avg loss: {df['loss'].mean():.4f}")
@@ -534,7 +527,6 @@ def main():
             step_fn,
             args.seed,
             args.shuffle,
-            data_sharding,
         )
         all_results.append(df)
         logger.info(f"  Avg loss: {df['loss'].mean():.4f}")
@@ -551,7 +543,6 @@ def main():
             step_fn,
             args.seed,
             args.shuffle,
-            data_sharding,
         )
         all_results.append(df)
         logger.info(
@@ -568,7 +559,6 @@ def main():
             step_fn,
             args.seed,
             args.shuffle,
-            data_sharding,
         )
         all_results.append(df)
         logger.info(
@@ -587,7 +577,6 @@ def main():
             step_fn,
             args.seed,
             args.shuffle,
-            data_sharding,
         )
         all_results.append(df)
         logger.info(
