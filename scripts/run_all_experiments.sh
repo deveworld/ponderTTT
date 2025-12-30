@@ -137,21 +137,21 @@ phase1_baselines() {
         run_experiment "GPT-2 Small UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale small --action UPDATE_1 --max_chunks $MAX_CHUNKS_SMALL \
-                --output_dir outputs/baselines/small_update1 \
+                --output_dir outputs/baselines/small_update1
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_SMALL \
                 --wandb_project ponderttt-small --save_every $SAVE_EVERY_BASELINE_SMALL
 
         run_experiment "GPT-2 Small UPDATE_2" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale small --action UPDATE_2 --max_chunks $MAX_CHUNKS_SMALL \
-                --output_dir outputs/baselines/small_update2 \
+                --output_dir outputs/baselines/small_update2
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_SMALL \
                 --wandb_project ponderttt-small --save_every $SAVE_EVERY_BASELINE_SMALL
 
         run_experiment "GPT-2 Small UPDATE_4" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale small --action UPDATE_4 --max_chunks $MAX_CHUNKS_SMALL \
-                --output_dir outputs/baselines/small_update4 \
+                --output_dir outputs/baselines/small_update4
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_SMALL \
                 --wandb_project ponderttt-small --save_every $SAVE_EVERY_BASELINE_SMALL
     fi
@@ -161,21 +161,21 @@ phase1_baselines() {
         run_experiment "GPT-2 Medium UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale medium --action UPDATE_1 --max_chunks $MAX_CHUNKS_MEDIUM \
-                --output_dir outputs/baselines/medium_update1 \
+                --output_dir outputs/baselines/medium_update1
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_MEDIUM \
                 --wandb_project ponderttt-medium --save_every $SAVE_EVERY_BASELINE_MEDIUM
 
         run_experiment "GPT-2 Medium UPDATE_2" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale medium --action UPDATE_2 --max_chunks $MAX_CHUNKS_MEDIUM \
-                --output_dir outputs/baselines/medium_update2 \
+                --output_dir outputs/baselines/medium_update2
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_MEDIUM \
                 --wandb_project ponderttt-medium --save_every $SAVE_EVERY_BASELINE_MEDIUM
 
         run_experiment "GPT-2 Medium UPDATE_4" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale medium --action UPDATE_4 --max_chunks $MAX_CHUNKS_MEDIUM \
-                --output_dir outputs/baselines/medium_update4 \
+                --output_dir outputs/baselines/medium_update4
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_MEDIUM \
                 --wandb_project ponderttt-medium --save_every $SAVE_EVERY_BASELINE_MEDIUM
     fi
@@ -185,7 +185,7 @@ phase1_baselines() {
         run_experiment "GPT-2 Large UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale large --action UPDATE_1 --max_chunks $MAX_CHUNKS_LARGE \
-                --output_dir outputs/baselines/large_update1 \
+                --output_dir outputs/baselines/large_update1
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_LARGE \
                 --wandb_project ponderttt-large --save_every $((MAX_CHUNKS_LARGE / 2))
     fi
@@ -195,7 +195,7 @@ phase1_baselines() {
         run_experiment "XL UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale xl --action UPDATE_1 --max_chunks $MAX_CHUNKS_LARGE \
-                --output_dir outputs/baselines/xl_update1 \
+                --output_dir outputs/baselines/xl_update1
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_LARGE \
                 --wandb_project ponderttt-xl --save_every $((MAX_CHUNKS_LARGE / 2))
     fi
@@ -229,7 +229,7 @@ phase2_eval_id() {
                     --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/small_python \
+                    --output_dir outputs/eval/small_python
                     
         fi
     fi
@@ -252,7 +252,7 @@ phase2_eval_id() {
                     --batch_size $BATCH_SIZE_MEDIUM \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/medium_python \
+                    --output_dir outputs/eval/medium_python
                     
         fi
     fi
@@ -275,7 +275,7 @@ phase2_eval_id() {
                     --batch_size $BATCH_SIZE_LARGE \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/large_python \
+                    --output_dir outputs/eval/large_python
                     
             
         fi
@@ -299,7 +299,7 @@ phase2_eval_id() {
                     --batch_size $BATCH_SIZE_LARGE \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/xl_python \
+                    --output_dir outputs/eval/xl_python
                     
             
         fi
@@ -332,7 +332,7 @@ phase3_eval_ood() {
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_SMALL \
                         --batch_size $BATCH_SIZE_SMALL \
                         --language "$lang" \
-                        --output_dir "outputs/eval/small_${lang_lower}" \
+                        --output_dir "outputs/eval/small_${lang_lower}"
             done
         fi
     fi
@@ -356,7 +356,7 @@ phase3_eval_ood() {
                         --num_eval_batches $NUM_EVAL_BATCHES_OOD_MEDIUM \
                         --batch_size $BATCH_SIZE_MEDIUM \
                         --language "$lang" \
-                        --output_dir "outputs/eval/medium_${lang_lower}" \
+                        --output_dir "outputs/eval/medium_${lang_lower}"
             done
 
         fi
@@ -378,7 +378,7 @@ phase3_eval_ood() {
                         --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
                         --batch_size $BATCH_SIZE_LARGE \
                         --language "$lang" \
-                        --output_dir "outputs/eval/large_${lang_lower}" \
+                        --output_dir "outputs/eval/large_${lang_lower}"
             done
         fi
     fi
@@ -399,7 +399,7 @@ phase3_eval_ood() {
                         --num_eval_batches $NUM_EVAL_BATCHES_LARGE \
                         --batch_size $BATCH_SIZE_LARGE \
                         --language "$lang" \
-                        --output_dir "outputs/eval/xl_${lang_lower}" \
+                        --output_dir "outputs/eval/xl_${lang_lower}"
             done
         fi
     fi
@@ -459,7 +459,7 @@ phase5_shuffle() {
                     --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/small_shuffle \
+                    --output_dir outputs/eval/small_shuffle
                     --shuffle
         fi
     fi
@@ -479,7 +479,7 @@ phase5_shuffle() {
                     --batch_size $BATCH_SIZE_MEDIUM \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/medium_shuffle \
+                    --output_dir outputs/eval/medium_shuffle
                     --shuffle
         fi
     fi
@@ -512,7 +512,7 @@ phase6_diagonal() {
                     --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/small_diagonal_k_minus_1 \
+                    --output_dir outputs/eval/small_diagonal_k_minus_1
                     --diagonal_offset -1
         fi
     fi
@@ -533,7 +533,7 @@ phase6_diagonal() {
                     --batch_size $BATCH_SIZE_MEDIUM \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/medium_diagonal_k_minus_1 \
+                    --output_dir outputs/eval/medium_diagonal_k_minus_1
                     --diagonal_offset -1
 
         fi
