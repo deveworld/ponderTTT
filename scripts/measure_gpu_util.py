@@ -113,24 +113,29 @@ class GPUMonitor:
         return avg_util, max_mem
 
 
-def benchmark(batch_size, model_scale="125m"):
+def benchmark(batch_size, model_scale="gpt2"):
     print("Setting up GPU utilization benchmark...")
 
     seq_len = 512
     n_iters = 300  # Reduced for faster measurement
 
-    scale_to_model = {
-        "125m": "gpt2",
-        "350m": "gpt2-medium",
-        "1b": "gpt2-large",
-        "xl": "gpt2-xl",
-    }
-
-    if model_scale not in scale_to_model:
-        print(f"Invalid model scale: {model_scale}.")
-        return
-
-    model_name = scale_to_model[model_scale]
+    # --- Start of user's requested change ---
+    if model_scale in ["1b", "4b", "12b", "27b"]:
+        model_name = f"gemma3-{model_scale}"
+    else:
+        mapping = {
+            "gpt2": "gpt2",
+            "medium": "gpt2-medium",
+            "large": "gpt2-large",
+            "xl": "gpt2-xl",
+            "125m": "gpt2",  # Added to handle original "125m" scale
+            "350m": "gpt2-medium",  # Added to handle original "350m" scale
+        }
+        if model_scale not in mapping:
+            print(f"Invalid model scale: {model_scale}.")
+            return
+        model_name = mapping[model_scale]
+    # --- End of user's requested change ---
 
     devices = jax.devices()
     print(f"JAX Devices: {devices}")
@@ -281,7 +286,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument(
-        "--model_scale", type=str, default="125m", choices=["125m", "350m", "1b", "xl"]
+        "--model_scale",
+        type=str,
+        choices=["gpt2", "medium", "large", "xl", "1b", "4b", "12b", "27b"],
+        default="gpt2",
+        help="Model scale",
     )
     args = parser.parse_args()
     benchmark(args.batch_size, args.model_scale)

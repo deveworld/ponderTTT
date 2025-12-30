@@ -14,8 +14,8 @@ Signals analyzed:
 
 Usage:
     python scripts/analyze_gating_signals.py \
-        --model_scale 125m \
-        --update1_checkpoint outputs/baselines/125m_update1/checkpoints/checkpoint_100000 \
+        --model_scale gpt2 \
+        --update1_checkpoint outputs/baselines/gpt2_update1/checkpoints/checkpoint_100000 \
         --num_batches 100
 
 Output:
@@ -146,7 +146,10 @@ def compute_correlations(results: List[Dict], signal_name: str) -> Dict:
 def main():
     parser = argparse.ArgumentParser(description="Analyze gating signal candidates")
     parser.add_argument(
-        "--model_scale", type=str, default="125m", choices=["125m", "350m", "1b", "xl"]
+        "--model_scale",
+        type=str,
+        default="gpt2",
+        choices=["gpt2", "medium", "large", "xl"],
     )
     parser.add_argument(
         "--update1_checkpoint",
@@ -179,9 +182,9 @@ def main():
 
     # Map scale to HuggingFace model name
     scale_to_model_name = {
-        "125m": "gpt2",
-        "350m": "gpt2-medium",
-        "1b": "gpt2-large",
+        "gpt2": "gpt2",
+        "medium": "gpt2-medium",
+        "large": "gpt2-large",
         "xl": "gpt2-xl",
     }
     model_name = scale_to_model_name.get(args.model_scale, "gpt2")

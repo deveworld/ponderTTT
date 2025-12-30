@@ -76,6 +76,7 @@ Pure JAX/Flax NNX implementation with multi-scale model support.
 | Gemma 3 1B | 1B | In Progress |
 | Gemma 3 4B | 4B | In Progress |
 | Gemma 3 12B | 12B | In Progress (TPU) |
+| Gemma 3 27B | 27B | In Progress (TPU) |
 
 ### Components
 
@@ -125,7 +126,7 @@ output = model(input_ids, use_ttt=True)
 recon_loss = output["ttt_stats"]["ttt_loss_step_0"]
 
 # Gating decision (threshold calibrated from validation set)
-if recon_loss > threshold:  # For 125M
+if recon_loss > threshold:  # For GPT-2 Baseline
     # Perform TTT update
     pass
 else:
@@ -145,16 +146,16 @@ chmod +x scripts/run_all_experiments.sh
 
 # Run specific model scales
 ./scripts/run_all_experiments.sh --125m          # 125M only
-./scripts/run_all_experiments.sh --350m          # 350M only
-./scripts/run_all_experiments.sh --1b            # GPT-2 Large (774M)
-./scripts/run_all_experiments.sh --xl            # GPT-2 XL (1.5B)
+./scripts/run_all_experiments.sh --gpt2          # 125M only
+./scripts/run_all_experiments.sh --medium        # 350M only
+./scripts/run_all_experiments.sh --large         # GPT-2 Large (774M)
 
-# Run specific phases
-./scripts/run_all_experiments.sh --125m phase1   # Training only
-./scripts/run_all_experiments.sh --350m phase2   # Evaluation only
+# Or run specific phases
+./scripts/run_all_experiments.sh --gpt2 phase1   # Training only
+./scripts/run_all_experiments.sh --medium phase2   # Evaluation only
 
-# Advanced options
-./scripts/run_all_experiments.sh --1b phase2 --ttt_base_lr=0.1  # Custom learning rate
+# Run with custom hyperparameters
+./scripts/run_all_experiments.sh --large phase2 --ttt_base_lr=0.1  # Custom learning rate
 ```
 
 ### Gemma 3 (TPU)

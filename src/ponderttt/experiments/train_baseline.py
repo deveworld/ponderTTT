@@ -2,7 +2,7 @@
 Train TTT models with fixed action schedules.
 
 Supports:
-- GPT-2 models (125m, 350m, 1b, xl)
+- GPT-2 models (gpt2, medium, large, xl)
 - Gemma 3 models (1b, 4b, 12b, 27b)
 - Single-host and multi-host TPU with explicit sharding
 
@@ -12,14 +12,14 @@ Architecture:
 
 Usage:
     # GPT-2 (single device):
-    python -m ponderttt.experiments.train_baseline --model_scale 125m --action UPDATE_1
+    python -m ponderttt.experiments.train_baseline --model_scale gpt2 --action UPDATE_1
 
     # Gemma 3 (single device):
     python -m ponderttt.experiments.train_baseline --model_scale 4b --action UPDATE_1
 
     # Gemma 3 (multi-host TPU):
-    python -m ponderttt.experiments.train_baseline \\
-        --model_scale 4b --action UPDATE_1 \\
+    python -m ponderttt.experiments.train_baseline \
+        --model_scale 4b --action UPDATE_1 \
         --enable_sharding --ici_fsdp_parallelism 4
 """
 
@@ -83,9 +83,9 @@ def parse_args():
     parser.add_argument(
         "--model_scale",
         type=str,
-        choices=["125m", "350m", "1b", "xl", "4b", "12b", "27b", "gemma-1b"],
-        default="125m",
-        help="Model scale: GPT-2 (125m/350m/1b/xl) or Gemma 3 (1b/4b/12b/27b)",
+        choices=["gpt2", "medium", "large", "xl", "1b", "4b", "12b", "27b"],
+        default="gpt2",
+        help="Model scale: GPT-2 (gpt2/medium/large/xl) or Gemma 3 (1b/4b/12b/27b)",
     )
     parser.add_argument(
         "--checkpoint_path",
@@ -279,7 +279,7 @@ def parse_args():
 
 def is_gemma_model(model_scale: str) -> bool:
     """Check if model scale is Gemma 3."""
-    return model_scale in ["4b", "12b", "27b", "gemma-1b"]
+    return model_scale in ["1b", "4b", "12b", "27b"]
 
 
 def action_to_steps(action: str) -> int:
@@ -300,15 +300,15 @@ def get_model_name(model_scale: str) -> str:
     """Convert model scale to model name."""
     mapping = {
         # GPT-2
-        "125m": "gpt2",
-        "350m": "gpt2-medium",
-        "1b": "gpt2-large",
+        "gpt2": "gpt2",
+        "medium": "gpt2-medium",
+        "large": "gpt2-large",
         "xl": "gpt2-xl",
         # Gemma 3
+        "1b": "gemma3-1b",
         "4b": "gemma3-4b",
         "12b": "gemma3-12b",
         "27b": "gemma3-27b",
-        "gemma-1b": "gemma3-1b",
     }
     return mapping[model_scale]
 
@@ -316,7 +316,7 @@ def get_model_name(model_scale: str) -> str:
 def get_default_tokenizer(model_scale: str) -> str:
     """Get default tokenizer for model scale."""
     if is_gemma_model(model_scale):
-        return "google/gemma-2-2b"
+        return "google/gemma-3-1b-it"
     return get_model_name(model_scale)
 
 
@@ -604,7 +604,12 @@ def main() -> None:
             if args.fast_weight_type == "lora":
                 from ..models import LoRAConfig
 
-                hidden_dims = {"125m": 768, "350m": 1024, "1b": 1280, "xl": 1600}
+                hidden_dims = {
+                    "gpt2": 768,
+                    "medium": 1024,
+                    "large": 1280,
+                    "xl": 1600,
+                }
                 lora_config = LoRAConfig(
                     hidden_dim=hidden_dims[args.model_scale],
                     rank=args.lora_rank,

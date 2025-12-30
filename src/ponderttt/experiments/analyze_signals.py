@@ -83,7 +83,7 @@ def fit_forward(model, input_ids, attention_mask, position_ids):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_scale", type=str, default="125m")
+    parser.add_argument("--model_scale", type=str, default="gpt2")
     parser.add_argument("--num_batches", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument(
@@ -96,9 +96,12 @@ def main():
 
     print(f"Analyzing signals for {args.model_scale} model...")
 
-    model_name = {"125m": "gpt2", "350m": "gpt2-medium", "1b": "gpt2-large"}[
-        args.model_scale
-    ]
+    model_name = {
+        "gpt2": "gpt2",
+        "medium": "gpt2-medium",
+        "large": "gpt2-large",
+        "xl": "gpt2-xl",
+    }[args.model_scale]
     tokenizer = get_tokenizer(model_name)
 
     model, _ = load_ttt_model(

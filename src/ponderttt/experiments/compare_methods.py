@@ -2,7 +2,7 @@
 Compare gating methods for adaptive Test-Time Training.
 
 Supports:
-- GPT-2 models (125m, 350m, 1b, xl)
+- GPT-2 models (gpt2, medium, large, xl)
 - Gemma 3 models (1b, 4b, 12b, 27b) with TPU sharding
 
 Methods:
@@ -14,7 +14,7 @@ Methods:
 
 Usage:
     # GPT-2
-    python -m ponderttt.experiments.compare_methods --model_scale 125m --budget 2.0
+    python -m ponderttt.experiments.compare_methods --model_scale gpt2 --budget 2.0
 
     # Gemma 3
     python -m ponderttt.experiments.compare_methods --model_scale 4b --budget 2.0
@@ -64,27 +64,29 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-    return model_scale in ["4b", "12b", "27b", "gemma-1b"]
+def is_gemma_model(model_scale: str) -> bool:
+    """Check if model scale is Gemma 3."""
+    return model_scale in ["1b", "4b", "12b", "27b"]
 
 
 def get_model_name(model_scale: str) -> str:
     """Convert model scale to model name."""
     return {
-        "125m": "gpt2",
-        "350m": "gpt2-medium",
-        "1b": "gpt2-large",
+        "gpt2": "gpt2",
+        "medium": "gpt2-medium",
+        "large": "gpt2-large",
         "xl": "gpt2-xl",
+        "1b": "gemma3-1b",
         "4b": "gemma3-4b",
         "12b": "gemma3-12b",
         "27b": "gemma3-27b",
-        "gemma-1b": "gemma3-1b",
     }[model_scale]
 
 
 def get_default_tokenizer(model_scale: str) -> str:
     """Get default tokenizer name."""
     if is_gemma_model(model_scale):
-        return "google/gemma-2-2b"
+        return "google/gemma-3-1b-it"
     return get_model_name(model_scale)
 
 
@@ -371,8 +373,8 @@ def parse_args():
     parser.add_argument(
         "--model_scale",
         type=str,
-        default="125m",
-        choices=["125m", "350m", "1b", "xl", "4b", "12b", "27b", "gemma-1b"],
+        default="gpt2",
+        choices=["gpt2", "medium", "large", "xl", "1b", "4b", "12b", "27b"],
     )
     parser.add_argument("--checkpoint_path", type=str, default=None)
 
