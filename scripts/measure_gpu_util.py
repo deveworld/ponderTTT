@@ -113,7 +113,7 @@ class GPUMonitor:
         return avg_util, max_mem
 
 
-def benchmark(batch_size, model_scale="gpt2"):
+def benchmark(batch_size, model_scale="small"):
     print("Setting up GPU utilization benchmark...")
 
     seq_len = 512
@@ -124,12 +124,10 @@ def benchmark(batch_size, model_scale="gpt2"):
         model_name = f"gemma3-{model_scale}"
     else:
         mapping = {
-            "gpt2": "gpt2",
+            "small": "gpt2",
             "medium": "gpt2-medium",
             "large": "gpt2-large",
             "xl": "gpt2-xl",
-            "125m": "gpt2",  # Added to handle original "125m" scale
-            "350m": "gpt2-medium",  # Added to handle original "350m" scale
         }
         if model_scale not in mapping:
             print(f"Invalid model scale: {model_scale}.")
@@ -288,8 +286,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_scale",
         type=str,
-        choices=["gpt2", "medium", "large", "xl", "1b", "4b", "12b", "27b"],
-        default="gpt2",
+        choices=["small", "medium", "large", "xl", "1b", "4b", "12b", "27b"],
+        default="small",
         help="Model scale",
     )
     args = parser.parse_args()

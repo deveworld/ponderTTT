@@ -72,7 +72,7 @@ def is_gemma_model(model_scale: str) -> bool:
 def get_model_name(model_scale: str) -> str:
     """Convert model scale to model name."""
     return {
-        "gpt2": "gpt2",
+        "small": "gpt2",
         "medium": "gpt2-medium",
         "large": "gpt2-large",
         "xl": "gpt2-xl",

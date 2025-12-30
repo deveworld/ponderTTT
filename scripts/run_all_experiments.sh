@@ -3,15 +3,15 @@
 #
 # Usage:
 #   ./scripts/run_all_experiments.sh                    # Run all phases, all models
-#   ./scripts/run_all_experiments.sh --gpt2             # Run only GPT-2 Small (125M)
+#   ./scripts/run_all_experiments.sh --small            # Run only GPT-2 Small (125M)
 #   ./scripts/run_all_experiments.sh --medium           # Run only GPT-2 Medium (350M)
-#   ./scripts/run_all_experiments.sh --gpt2 phase1      # Run specific phase for gpt2
+#   ./scripts/run_all_experiments.sh --small phase1     # Run specific phase for small
 #   ./scripts/run_all_experiments.sh phase1 phase2      # Run multiple phases
 #
 # Model Selection:
-#   --gpt2    Run only GPT-2 Small experiments
+#   --small   Run only GPT-2 Small experiments
 #   --medium  Run only GPT-2 Medium experiments
-#   (default) Run both gpt2 and medium
+#   (default) Run both small and medium
 #
 # Paper Tables Covered:
 #   - Phase 1: Baseline Training (UPDATE_1, UPDATE_2, UPDATE_4)
@@ -24,7 +24,7 @@
 # NOTE: No 'set -e' - we want to continue even if individual experiments fail
 
 # Model selection flags (default: run both)
-RUN_GPT2=false
+RUN_SMALL=false
 RUN_MEDIUM=false
 RUN_LARGE=false
 RUN_XL=false
@@ -33,10 +33,10 @@ RUN_XL=false
 NUM_WORKERS=128
 
 # Configuration - GPT-2 Small (125M)
-BATCH_SIZE_GPT2=16
-MAX_CHUNKS_GPT2=160000
-NUM_EVAL_BATCHES_GPT2=1000
-NUM_EVAL_BATCHES_OOD_GPT2=500
+BATCH_SIZE_SMALL=16
+MAX_CHUNKS_SMALL=160000
+NUM_EVAL_BATCHES_SMALL=1000
+NUM_EVAL_BATCHES_OOD_SMALL=500
 
 # Configuration - GPT-2 Medium (350M)
 BATCH_SIZE_MEDIUM=16
@@ -51,7 +51,7 @@ NUM_EVAL_BATCHES_LARGE=1000
 
 # Save frequency (auto-calculated: save once at midpoint)
 # Save frequency (auto-calculated: save once at midpoint)
-SAVE_EVERY_BASELINE_GPT2=$((MAX_CHUNKS_GPT2 / 2))
+SAVE_EVERY_BASELINE_SMALL=$((MAX_CHUNKS_SMALL / 2))
 SAVE_EVERY_BASELINE_MEDIUM=$((MAX_CHUNKS_MEDIUM / 2))
 
 # Track failures
@@ -133,27 +133,27 @@ phase1_baselines() {
     log_phase "Phase 1: Training Baselines"
 
     # GPT-2 Small (125M) Baselines
-    if [ "$RUN_GPT2" = true ]; then
+    if [ "$RUN_SMALL" = true ]; then
         run_experiment "GPT-2 Small UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
-                --model_scale gpt2 --action UPDATE_1 --max_chunks $MAX_CHUNKS_GPT2 \
-                --output_dir outputs/baselines/gpt2_update1 \
-                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_GPT2 \
-                --wandb_project ponderttt-gpt2 --save_every $SAVE_EVERY_BASELINE_GPT2
+                --model_scale small --action UPDATE_1 --max_chunks $MAX_CHUNKS_SMALL \
+                --output_dir outputs/baselines/small_update1 \
+                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_SMALL \
+                --wandb_project ponderttt-small --save_every $SAVE_EVERY_BASELINE_SMALL
 
         run_experiment "GPT-2 Small UPDATE_2" \
             python -m ponderttt.experiments.train_baseline \
-                --model_scale gpt2 --action UPDATE_2 --max_chunks $MAX_CHUNKS_GPT2 \
-                --output_dir outputs/baselines/gpt2_update2 \
-                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_GPT2 \
-                --wandb_project ponderttt-gpt2 --save_every $SAVE_EVERY_BASELINE_GPT2
+                --model_scale small --action UPDATE_2 --max_chunks $MAX_CHUNKS_SMALL \
+                --output_dir outputs/baselines/small_update2 \
+                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_SMALL \
+                --wandb_project ponderttt-small --save_every $SAVE_EVERY_BASELINE_SMALL
 
         run_experiment "GPT-2 Small UPDATE_4" \
             python -m ponderttt.experiments.train_baseline \
-                --model_scale gpt2 --action UPDATE_4 --max_chunks $MAX_CHUNKS_GPT2 \
-                --output_dir outputs/baselines/gpt2_update4 \
-                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_GPT2 \
-                --wandb_project ponderttt-gpt2 --save_every $SAVE_EVERY_BASELINE_GPT2
+                --model_scale small --action UPDATE_4 --max_chunks $MAX_CHUNKS_SMALL \
+                --output_dir outputs/baselines/small_update4 \
+                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_SMALL \
+                --wandb_project ponderttt-small --save_every $SAVE_EVERY_BASELINE_SMALL
     fi
 
     # GPT-2 Medium (350M) Baselines
@@ -215,21 +215,21 @@ phase2_eval_id() {
     local SKIP_EXAMPLES=160000
 
     # GPT-2 Small (125M) Evaluation (Standard Gating)
-    if [ "$RUN_GPT2" = true ]; then
-        local ckpt_gpt2_update1=$(get_latest_checkpoint "outputs/baselines/gpt2_update1/checkpoints")
-        if [ -z "$ckpt_gpt2_update1" ]; then
+    if [ "$RUN_SMALL" = true ]; then
+        local ckpt_small_update1=$(get_latest_checkpoint "outputs/baselines/small_update1/checkpoints")
+        if [ -z "$ckpt_small_update1" ]; then
             log_error "No UPDATE_1 checkpoint found for GPT-2 Small. Run Phase 1 first!"
         else
-            log_info "Using UPDATE_1 checkpoint: $ckpt_gpt2_update1"
+            log_info "Using UPDATE_1 checkpoint: $ckpt_small_update1"
             run_experiment "Eval GPT-2 Small Python" \
                 python -m ponderttt.experiments.compare_methods \
-                    --model_scale gpt2 \
-                    --update1_checkpoint "$ckpt_gpt2_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_GPT2 \
-                    --batch_size $BATCH_SIZE_GPT2 \
+                    --model_scale small \
+                    --update1_checkpoint "$ckpt_small_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_SMALL \
+                    --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/gpt2_python \
+                    --output_dir outputs/eval/small_python \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
                     $TTT_BASE_LR_ARG
@@ -325,22 +325,22 @@ phase3_eval_ood() {
     local languages=("JavaScript" "Java" "Go")
 
     # GPT-2 Small (125M) OOD
-    if [ "$RUN_GPT2" = true ]; then
-        local ckpt_gpt2_update1=$(get_latest_checkpoint "outputs/baselines/gpt2_update1/checkpoints")
-        if [ -z "$ckpt_gpt2_update1" ]; then
+    if [ "$RUN_SMALL" = true ]; then
+        local ckpt_small_update1=$(get_latest_checkpoint "outputs/baselines/small_update1/checkpoints")
+        if [ -z "$ckpt_small_update1" ]; then
             log_error "No UPDATE_1 checkpoint found for GPT-2 Small. Run Phase 1 first!"
         else
-            log_info "Using GPT-2 Small UPDATE_1 checkpoint: $ckpt_gpt2_update1"
+            log_info "Using GPT-2 Small UPDATE_1 checkpoint: $ckpt_small_update1"
             for lang in "${languages[@]}"; do
                 local lang_lower=$(echo "$lang" | tr '[:upper:]' '[:lower:]')
                 run_experiment "Eval GPT-2 Small $lang" \
                     python -m ponderttt.experiments.compare_methods \
-                        --model_scale gpt2 \
-                        --update1_checkpoint "$ckpt_gpt2_update1" \
-                        --num_eval_batches $NUM_EVAL_BATCHES_OOD_GPT2 \
-                        --batch_size $BATCH_SIZE_GPT2 \
+                        --model_scale small \
+                        --update1_checkpoint "$ckpt_small_update1" \
+                        --num_eval_batches $NUM_EVAL_BATCHES_OOD_SMALL \
+                        --batch_size $BATCH_SIZE_SMALL \
                         --language "$lang" \
-                        --output_dir "outputs/eval/gpt2_${lang_lower}" \
+                        --output_dir "outputs/eval/small_${lang_lower}" \
                         --eval_ttt_loss \
                         --eval_ttt_improvement
             done
@@ -430,9 +430,9 @@ phase4_latency() {
     log_phase "Phase 4: Latency Benchmark"
 
     # GPU Utilization Benchmark (more meaningful metric than wall-clock latency)
-    if [ "$RUN_GPT2" = true ]; then
+    if [ "$RUN_SMALL" = true ]; then
         run_experiment "GPU Util GPT-2 Small" \
-            python scripts/measure_gpu_util.py --model_scale gpt2 --batch_size 1
+            python scripts/measure_gpu_util.py --model_scale small --batch_size 1
     fi
 
     if [ "$RUN_MEDIUM" = true ]; then
@@ -461,21 +461,21 @@ phase5_shuffle() {
 
     local SKIP_EXAMPLES=160000
 
-    if [ "$RUN_GPT2" = true ]; then
-        local ckpt_gpt2_update1=$(get_latest_checkpoint "outputs/baselines/gpt2_update1/checkpoints")
-         if [ -z "$ckpt_gpt2_update1" ]; then
+    if [ "$RUN_SMALL" = true ]; then
+        local ckpt_small_update1=$(get_latest_checkpoint "outputs/baselines/small_update1/checkpoints")
+         if [ -z "$ckpt_small_update1" ]; then
             log_error "No UPDATE_1 checkpoint found for GPT-2 Small. Cannot run Shuffle Ablation."
         else
-            log_info "Using UPDATE_1 checkpoint: $ckpt_gpt2_update1"
+            log_info "Using UPDATE_1 checkpoint: $ckpt_small_update1"
             run_experiment "Shuffle Ablation GPT-2 Small" \
                 python -m ponderttt.experiments.compare_methods \
-                    --model_scale gpt2 \
-                    --update1_checkpoint "$ckpt_gpt2_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_GPT2 \
-                    --batch_size $BATCH_SIZE_GPT2 \
+                    --model_scale small \
+                    --update1_checkpoint "$ckpt_small_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_SMALL \
+                    --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/gpt2_shuffle \
+                    --output_dir outputs/eval/small_shuffle \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
                     --shuffle
@@ -518,21 +518,21 @@ phase6_diagonal() {
 
     local SKIP_EXAMPLES=160000
 
-    if [ "$RUN_GPT2" = true ]; then
-        local ckpt_gpt2_update1=$(get_latest_checkpoint "outputs/baselines/gpt2_update1/checkpoints")
-         if [ -z "$ckpt_gpt2_update1" ]; then
+    if [ "$RUN_SMALL" = true ]; then
+        local ckpt_small_update1=$(get_latest_checkpoint "outputs/baselines/small_update1/checkpoints")
+         if [ -z "$ckpt_small_update1" ]; then
             log_error "No UPDATE_1 checkpoint found for GPT-2 Small. Cannot run Diagonal Ablation."
         else
-            log_info "Using UPDATE_1 checkpoint: $ckpt_gpt2_update1"
+            log_info "Using UPDATE_1 checkpoint: $ckpt_small_update1"
             run_experiment "Diagonal Ablation GPT-2 Small (k=-1)" \
                 python -m ponderttt.experiments.compare_methods \
-                    --model_scale gpt2 \
-                    --update1_checkpoint "$ckpt_gpt2_update1" \
-                    --num_eval_batches $NUM_EVAL_BATCHES_GPT2 \
-                    --batch_size $BATCH_SIZE_GPT2 \
+                    --model_scale small \
+                    --update1_checkpoint "$ckpt_small_update1" \
+                    --num_eval_batches $NUM_EVAL_BATCHES_SMALL \
+                    --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/gpt2_diagonal_k_minus_1 \
+                    --output_dir outputs/eval/small_diagonal_k_minus_1 \
                     --eval_ttt_loss \
                     --eval_ttt_improvement \
                     --diagonal_offset -1
@@ -619,8 +619,8 @@ TTT_BASE_LR_ARG=""
 
 for arg in "$@"; do
     case $arg in
-        --gpt2)
-            RUN_GPT2=true
+        --small)
+            RUN_SMALL=true
             ;;
         --medium)
             RUN_MEDIUM=true
@@ -635,7 +635,7 @@ for arg in "$@"; do
             TTT_BASE_LR_ARG="${arg}"
             ;;
         --all-models)
-            RUN_GPT2=true
+            RUN_SMALL=true
             RUN_MEDIUM=true
             RUN_LARGE=true
             RUN_XL=true
@@ -648,20 +648,20 @@ done
 
 # If neither flag specified, run both
 # If neither flag specified, run both small models (default)
-if [ "$RUN_GPT2" = false ] && [ "$RUN_MEDIUM" = false ] && [ "$RUN_LARGE" = false ] && [ "$RUN_XL" = false ]; then
-    RUN_GPT2=true
+if [ "$RUN_SMALL" = false ] && [ "$RUN_MEDIUM" = false ] && [ "$RUN_LARGE" = false ] && [ "$RUN_XL" = false ]; then
+    RUN_SMALL=true
     RUN_MEDIUM=true
 fi
 
 
 # Log which models will be run
-if [ "$RUN_GPT2" = true ] && [ "$RUN_MEDIUM" = true ]; then
+if [ "$RUN_SMALL" = true ] && [ "$RUN_MEDIUM" = true ]; then
     log_info "Running experiments for: GPT-2 Small and Medium"
-elif [ "$RUN_GPT2" = true ]; then
+elif [ "$RUN_SMALL" = true ]; then
     log_info "Running experiments for: GPT-2 Small only"
 else
     log_info "Running experiments for selected models:"
-    [ "$RUN_GPT2" = true ] && echo "  - GPT-2 Small"
+    [ "$RUN_SMALL" = true ] && echo "  - GPT-2 Small"
     [ "$RUN_MEDIUM" = true ] && echo "  - GPT-2 Medium"
     [ "$RUN_LARGE" = true ] && echo "  - GPT-2 Large"
     [ "$RUN_XL" = true ] && echo "  - GPT-2 XL"
@@ -707,7 +707,7 @@ else
                 echo "  all                     - Run all phases"
                 echo ""
                 echo "Model selection:"
-                echo "  --gpt2                  - Run only GPT-2 Small (125M) experiments"
+                echo "  --small                 - Run only GPT-2 Small (125M) experiments"
                 echo "  --medium                - Run only GPT-2 Medium (350M) experiments"
                 echo "  --large                 - Run only GPT-2 Large (774M) experiments"
                 echo "  --xl                    - Run only GPT-2 XL (1.5B) experiments"

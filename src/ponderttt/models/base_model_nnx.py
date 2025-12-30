@@ -296,8 +296,8 @@ def load_ttt_model(
     Load TTT-augmented transformer model.
 
     Args:
-        model_name: Model identifier. Supported:
-            - GPT-2 variants: "gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"
+        model_name_or_path: Name of model in HuggingFace, or one of our supported scales:
+            - GPT-2: "small", "medium", "large", "xl"
             - Gemma 3: "gemma3-1b", "gemma3-4b", "gemma3-12b", "gemma3-27b"
         ttt_config: TTT layer configuration (if fast_weight_type='ttt')
         lora_config: LoRA configuration (if fast_weight_type='lora')

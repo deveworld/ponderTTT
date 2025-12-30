@@ -146,12 +146,12 @@ chmod +x scripts/run_all_experiments.sh
 
 # Run specific model scales
 ./scripts/run_all_experiments.sh --125m          # 125M only
-./scripts/run_all_experiments.sh --gpt2          # 125M only
+./scripts/run_all_experiments.sh --small           # 125M only
 ./scripts/run_all_experiments.sh --medium        # 350M only
 ./scripts/run_all_experiments.sh --large         # GPT-2 Large (774M)
 
 # Or run specific phases
-./scripts/run_all_experiments.sh --gpt2 phase1   # Training only
+./scripts/run_all_experiments.sh --small phase1   # Training only
 ./scripts/run_all_experiments.sh --medium phase2   # Evaluation only
 
 # Run with custom hyperparameters

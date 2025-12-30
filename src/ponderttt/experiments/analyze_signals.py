@@ -83,7 +83,7 @@ def fit_forward(model, input_ids, attention_mask, position_ids):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_scale", type=str, default="gpt2")
+    parser.add_argument("--model_scale", type=str, default="small")
     parser.add_argument("--num_batches", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument(
@@ -97,7 +97,7 @@ def main():
     print(f"Analyzing signals for {args.model_scale} model...")
 
     model_name = {
-        "gpt2": "gpt2",
+        "small": "gpt2",
         "medium": "gpt2-medium",
         "large": "gpt2-large",
         "xl": "gpt2-xl",

@@ -83,9 +83,9 @@ def parse_args():
     parser.add_argument(
         "--model_scale",
         type=str,
-        choices=["gpt2", "medium", "large", "xl", "1b", "4b", "12b", "27b"],
-        default="gpt2",
-        help="Model scale: GPT-2 (gpt2/medium/large/xl) or Gemma 3 (1b/4b/12b/27b)",
+        required=True,
+        choices=["small", "medium", "large", "xl", "1b", "4b", "12b", "27b"],
+        help="Model scale",
     )
     parser.add_argument(
         "--checkpoint_path",
@@ -300,7 +300,7 @@ def get_model_name(model_scale: str) -> str:
     """Convert model scale to model name."""
     mapping = {
         # GPT-2
-        "gpt2": "gpt2",
+        "small": "gpt2",
         "medium": "gpt2-medium",
         "large": "gpt2-large",
         "xl": "gpt2-xl",
@@ -311,6 +311,14 @@ def get_model_name(model_scale: str) -> str:
         "27b": "gemma3-27b",
     }
     return mapping[model_scale]
+
+
+hidden_dims = {
+    "small": 768,
+    "medium": 1024,
+    "large": 1280,
+    "xl": 1600,
+}
 
 
 def get_default_tokenizer(model_scale: str) -> str:

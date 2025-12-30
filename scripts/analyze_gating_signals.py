@@ -14,8 +14,8 @@ Signals analyzed:
 
 Usage:
     python scripts/analyze_gating_signals.py \
-        --model_scale gpt2 \
-        --update1_checkpoint outputs/baselines/gpt2_update1/checkpoints/checkpoint_100000 \
+        --model_scale small \
+        --update1_checkpoint outputs/baselines/small_update1/checkpoints/checkpoint_100000 \
         --num_batches 100
 
 Output:
@@ -148,8 +148,8 @@ def main():
     parser.add_argument(
         "--model_scale",
         type=str,
-        default="gpt2",
-        choices=["gpt2", "medium", "large", "xl"],
+        default="small",
+        choices=["small", "medium", "large", "xl"],
     )
     parser.add_argument(
         "--update1_checkpoint",
@@ -182,7 +182,7 @@ def main():
 
     # Map scale to HuggingFace model name
     scale_to_model_name = {
-        "gpt2": "gpt2",
+        "small": "gpt2",
         "medium": "gpt2-medium",
         "large": "gpt2-large",
         "xl": "gpt2-xl",
