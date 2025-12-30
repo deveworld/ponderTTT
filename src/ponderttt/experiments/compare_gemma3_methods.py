@@ -180,11 +180,13 @@ def evaluate_oracle_gemma(
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)[None, :]
             position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
 
-            # Apply sharding
-            if data_sharding is not None:
-                chunk_input = jax.device_put(chunk_input, data_sharding)
-                chunk_mask = jax.device_put(chunk_mask, data_sharding)
-                position_ids = jax.device_put(position_ids, data_sharding)
+            # In multi-host setup, each host has DIFFERENT data (via dataset sharding).
+            # We process locally on each host and aggregate results at the end.
+            # Don't use global data_sharding here - it expects identical data on all hosts.
+            # Just put on local devices.
+            chunk_input = jnp.asarray(chunk_input)
+            chunk_mask = jnp.asarray(chunk_mask)
+            position_ids = jnp.asarray(position_ids)
 
             # 1. SKIP Loss
             loss_skip, _ = jit_step(
@@ -261,10 +263,12 @@ def evaluate_oracle_gemma(
     avg_loss_oracle /= num_total
     avg_loss_baseline /= num_total
 
-    print(f"\nResults ({num_total} chunks):")
-    print(f"  Baseline (SKIP) Loss: {avg_loss_baseline:.4f}")
-    print(f"  Oracle Loss:          {avg_loss_oracle:.4f}")
-    print(f"  Oracle Advantage:     {avg_loss_baseline - avg_loss_oracle:.4f}")
+    # Only print from process 0 in multi-host setup
+    if jax.process_index() == 0:
+        print(f"\nResults ({num_total} chunks):")
+        print(f"  Baseline (SKIP) Loss: {avg_loss_baseline:.4f}")
+        print(f"  Oracle Loss:          {avg_loss_oracle:.4f}")
+        print(f"  Oracle Advantage:     {avg_loss_baseline - avg_loss_oracle:.4f}")
 
     # Save correlation data
     df = pd.DataFrame(results)
@@ -274,22 +278,25 @@ def evaluate_oracle_gemma(
     if len(df) > 0:
         # Check TTT Recon Loss vs Advantage
         corr_recon = df["ttt_recon_loss"].corr(df["advantage"])
-        print(f"  Correlation (TTT Recon Loss vs Advantage): {corr_recon:.4f}")
+        if jax.process_index() == 0:
+            print(f"  Correlation (TTT Recon Loss vs Advantage): {corr_recon:.4f}")
 
-        if corr_recon > 0.5:
-            print("  [Insight] Strong positive correlation - gating may be effective.")
-        elif corr_recon > 0.2:
-            print(
-                "  [Insight] Weak positive correlation - marginal gating benefit expected."
-            )
-        else:
-            print(
-                "  [Insight] Very weak correlation - gating unlikely to help significantly."
-            )
+            if corr_recon > 0.5:
+                print(
+                    "  [Insight] Strong positive correlation - gating may be effective."
+                )
+            elif corr_recon > 0.2:
+                print(
+                    "  [Insight] Weak positive correlation - marginal gating benefit expected."
+                )
+            else:
+                print(
+                    "  [Insight] Very weak correlation - gating unlikely to help significantly."
+                )
 
-        # Also check Loss Skip vs Advantage (for comparison)
-        corr_skip = df["loss_skip_val"].corr(df["advantage"])
-        print(f"  Correlation (Loss Skip vs Advantage):      {corr_skip:.4f}")
+            # Also check Loss Skip vs Advantage (for comparison)
+            corr_skip = df["loss_skip_val"].corr(df["advantage"])
+            print(f"  Correlation (Loss Skip vs Advantage):      {corr_skip:.4f}")
 
     return df
 
@@ -347,10 +354,11 @@ def main():
     # Run Oracle Evaluation
     df = evaluate_oracle_gemma(model, tokenizer, args, mesh, data_sharding)
 
-    # Save
-    csv_path = output_dir / f"oracle_{args.model_scale}_{args.language}.csv"
-    df.to_csv(csv_path, index=False)
-    logger.info(f"Saved results to {csv_path}")
+    # Save (only from process 0)
+    if jax.process_index() == 0:
+        csv_path = output_dir / f"oracle_{args.model_scale}_{args.language}.csv"
+        df.to_csv(csv_path, index=False)
+        logger.info(f"Saved results to {csv_path}")
 
 
 if __name__ == "__main__":
