@@ -91,7 +91,8 @@ def main() -> None:
         outputs_hf = hf_model(input_ids_pt.to(hf_model.device))
         logits_pt = outputs_hf.logits.float().cpu().numpy()
     print(f"HF logits shape: {logits_pt.shape}")
-    print(f"HF model vocab size: {hf_model.config.vocab_size}")
+    print(f"HF logits shape: {logits_pt.shape}")
+    # print(f"HF model vocab size: {hf_model.config.vocab_size}")
     print(f"HF embed_tokens shape: {hf_model.model.embed_tokens.weight.shape}")
     print(f"HF logits range: [{logits_pt.min():.2f}, {logits_pt.max():.2f}]")
 

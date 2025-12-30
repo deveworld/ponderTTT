@@ -11,7 +11,11 @@ from typing import Any
 
 import jax.numpy as jnp
 
-from .modules import AttentionType, DEFAULT_ROPE_BASE_FREQUENCY, DEFAULT_ROPE_SCALE_FACTOR
+from .modules import (
+    AttentionType,
+    DEFAULT_ROPE_BASE_FREQUENCY,
+    DEFAULT_ROPE_SCALE_FACTOR,
+)
 
 
 class QueryPreAttentionNormalisation(enum.Enum):
@@ -91,10 +95,12 @@ class Gemma3Config:
         match self.query_pre_attn_norm:
             case QueryPreAttentionNormalisation.BY_EMBED_DIM_DIV_NUM_HEADS:
                 return self.embed_dim // self.num_heads
-            case QueryPreAttentionNormalisation.BY_ONE_OVER_SQRT_EMBED_DIM_DIV_NUM_HEADS:
+            case (
+                QueryPreAttentionNormalisation.BY_ONE_OVER_SQRT_EMBED_DIM_DIV_NUM_HEADS
+            ):
                 return (self.embed_dim // self.num_heads) ** -0.5
             case QueryPreAttentionNormalisation.BY_ONE_OVER_SQRT_HEAD_DIM | _:
-                return self.head_dim ** -0.5
+                return self.head_dim**-0.5
 
     @classmethod
     def gemma3_4b(cls, dtype: Any = jnp.bfloat16, **override) -> Gemma3Config:
@@ -109,7 +115,7 @@ class Gemma3Config:
         num_layers = 34
         config = {
             "num_layers": num_layers,
-            "num_embed": 262_144,
+            "num_embed": 262_208,
             "embed_dim": 2560,
             "hidden_dim": 2560 * 8 // 2,  # 10240
             "num_heads": 8,
@@ -147,7 +153,7 @@ class Gemma3Config:
         num_layers = 48
         config = {
             "num_layers": num_layers,
-            "num_embed": 262_144,
+            "num_embed": 262_208,
             "embed_dim": 30 * 128,  # 3840
             "hidden_dim": 8 * 30 * 128 // 2,  # 15360
             "num_heads": 16,
@@ -178,7 +184,7 @@ class Gemma3Config:
         num_layers = 26
         config = {
             "num_layers": num_layers,
-            "num_embed": 262_144,
+            "num_embed": 262_208,
             "embed_dim": 1152,
             "hidden_dim": 6 * 1152,  # 6912
             "num_heads": 4,
