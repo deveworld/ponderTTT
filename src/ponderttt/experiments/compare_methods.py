@@ -567,7 +567,7 @@ def main():
 
     if "ours" in methods:
         logger.info("\n--- PonderTTT (Ours) ---")
-        gating = ReconstructionGating(target_update_rate=target_update_rate)
+        gating = ReconstructionGating(target_rate=target_update_rate)
         df = evaluate_method(
             "Ours",
             model,
