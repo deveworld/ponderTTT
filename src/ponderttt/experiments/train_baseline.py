@@ -1,18 +1,35 @@
 """
-Train baseline TTT models with fixed action schedules (NNX version).
+Train TTT models with fixed action schedules.
 
-Implements the architecture from PLAN.md:
+Supports:
+- GPT-2 models (125m, 350m, 1b, xl)
+- Gemma 3 models (4b, 12b)
+- Single-host and multi-host TPU with explicit sharding
+
+Architecture:
 - Slow weights (theta_slow): Frozen pretrained model
 - Fast weights (theta_fast): Adaptive TTT layer weights
 
 Usage:
+    # GPT-2 (single device):
     python -m ponderttt.experiments.train_baseline --model_scale 125m --action UPDATE_1
+
+    # Gemma 3 (single device):
+    python -m ponderttt.experiments.train_baseline --model_scale 4b --action UPDATE_1
+
+    # Gemma 3 (multi-host TPU):
+    python -m ponderttt.experiments.train_baseline \\
+        --model_scale 4b --action UPDATE_1 \\
+        --enable_sharding --ici_fsdp_parallelism 4
 """
 
 import argparse
 import json
+import logging
 import math
+from functools import partial
 from pathlib import Path
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
@@ -20,33 +37,76 @@ import optax
 from flax import nnx
 from tqdm import tqdm
 
-from typing import cast
-
 from ..data import create_data_iterator, get_tokenizer
-from ..models import load_ttt_model, TTTTransformerLM
-from ..models.gpt2_nnx import GPT2Config
+from ..models import load_ttt_model, TTTModel
 from ..utils.checkpointing import save_checkpoint, wait_for_checkpoints, load_checkpoint
-from .training_utils import run_chunk_step
-import wandb
+
+# Optional imports for Gemma 3 sharding
+try:
+    from ..models.gemma3 import (  # noqa: F401
+        Gemma3Config,
+        ShardingConfig,
+        create_device_mesh,
+        get_data_sharding,
+    )
+
+    GEMMA3_AVAILABLE = True
+except ImportError:
+    GEMMA3_AVAILABLE = False
+
+# Optional WandB
+try:
+    import wandb
+
+    WANDB_AVAILABLE = True
+except ImportError:
+    wandb = None  # type: ignore
+    WANDB_AVAILABLE = False
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Argument Parsing
+# =============================================================================
 
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Train baseline TTT model (NNX)")
+    parser = argparse.ArgumentParser(
+        description="Train TTT model (GPT-2 or Gemma 3)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
 
+    # Model configuration
     parser.add_argument(
         "--model_scale",
         type=str,
-        choices=["125m", "350m", "1b", "xl"],
+        choices=["125m", "350m", "1b", "xl", "4b", "12b"],
         default="125m",
-        help="Model scale",
+        help="Model scale: GPT-2 (125m/350m/1b/xl) or Gemma 3 (4b/12b)",
     )
+    parser.add_argument(
+        "--checkpoint_path",
+        type=str,
+        default=None,
+        help="Path to checkpoint (Orbax dir or 'hf:org/model' for HuggingFace)",
+    )
+
+    # Training configuration
     parser.add_argument(
         "--action",
         type=str,
-        choices=["SKIP", "UPDATE_1", "UPDATE_2", "UPDATE_4"],
+        choices=["SKIP", "UPDATE_1", "UPDATE_2", "UPDATE_4", "ADAPTIVE"],
         required=True,
-        help="Fixed action to use throughout training",
+        help="Action: SKIP, UPDATE_N, or ADAPTIVE (Loss Skip gating)",
+    )
+    parser.add_argument(
+        "--gating_threshold",
+        type=float,
+        default=2.0,
+        help="Loss threshold for ADAPTIVE gating",
     )
     parser.add_argument(
         "--max_chunks",
@@ -55,57 +115,118 @@ def parse_args():
         help="Maximum number of chunks to process",
     )
     parser.add_argument(
-        "--learning_rate", type=float, default=3e-4, help="Learning rate"
+        "--learning_rate",
+        type=float,
+        default=3e-4,
+        help="Learning rate",
     )
     parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="outputs/baselines_nnx",
-        help="Output directory",
-    )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument(
-        "--load_pretrained",
-        action="store_true",
-        default=True,
-        help="Load pretrained GPT-2 weights (default: True, use --no-load-pretrained to disable)",
+        "--batch_size",
+        type=int,
+        default=8,
+        help="Batch size",
     )
     parser.add_argument(
-        "--no-load-pretrained",
-        action="store_false",
-        dest="load_pretrained",
-        help="Don't load pretrained weights (use random initialization)",
+        "--seq_length",
+        type=int,
+        default=1024,
+        help="Sequence length",
     )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=512,
+        help="Chunk size for TTT",
+    )
+
+    # Fast weight configuration
     parser.add_argument(
         "--fast_weight_type",
         type=str,
         choices=["ttt", "lora"],
         default="ttt",
-        help="Type of fast weights: 'ttt' (TTT Layer) or 'lora' (LoRA)",
+        help="Fast weight type (LoRA only for GPT-2)",
     )
     parser.add_argument(
         "--lora_rank",
         type=int,
         default=64,
-        help="LoRA rank (only used if fast_weight_type='lora')",
+        help="LoRA rank (if fast_weight_type='lora')",
     )
     parser.add_argument(
         "--ssl_weight",
         type=float,
         default=0.1,
-        help="Weight for SSL auxiliary loss when using TTT/LoRA fast weights",
+        help="SSL auxiliary loss weight",
+    )
+
+    # Sharding configuration (for multi-host TPU)
+    parser.add_argument(
+        "--enable_sharding",
+        action="store_true",
+        help="Enable explicit multi-device sharding",
+    )
+    parser.add_argument(
+        "--dcn_data_parallelism",
+        type=int,
+        default=-1,
+        help="DCN (inter-host) data parallelism (-1 for auto)",
+    )
+    parser.add_argument(
+        "--dcn_fsdp_parallelism",
+        type=int,
+        default=1,
+        help="DCN FSDP parallelism",
+    )
+    parser.add_argument(
+        "--dcn_tensor_parallelism",
+        type=int,
+        default=1,
+        help="DCN tensor parallelism",
+    )
+    parser.add_argument(
+        "--ici_data_parallelism",
+        type=int,
+        default=1,
+        help="ICI (intra-host) data parallelism",
+    )
+    parser.add_argument(
+        "--ici_fsdp_parallelism",
+        type=int,
+        default=-1,
+        help="ICI FSDP parallelism (-1 for auto)",
+    )
+    parser.add_argument(
+        "--ici_tensor_parallelism",
+        type=int,
+        default=1,
+        help="ICI tensor parallelism",
+    )
+
+    # Output and logging
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="outputs/baselines",
+        help="Output directory",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed",
     )
     parser.add_argument(
         "--seeds",
         type=str,
         default=None,
-        help="Optional comma-separated list of seeds for multi-seed runs (e.g., '0,1,2')",
+        help="Comma-separated seeds for multi-seed runs",
     )
     parser.add_argument(
         "--wandb_project",
         type=str,
         default=None,
-        help="WandB project name (if None, WandB is disabled)",
+        help="WandB project name",
     )
     parser.add_argument(
         "--save_every",
@@ -117,72 +238,262 @@ def parse_args():
         "--resume_from",
         type=str,
         default=None,
-        help="Path to checkpoint directory to resume from",
+        help="Resume from checkpoint directory",
     )
+
+    # Data configuration
     parser.add_argument(
         "--num_workers",
         type=int,
         default=32,
-        help="Number of parallel workers for data downloading",
+        help="Data loading workers",
     )
     parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=8,
-        help="Batch size for training",
+        "--tokenizer_name",
+        type=str,
+        default=None,
+        help="Tokenizer name (auto-detected if not specified)",
+    )
+
+    # Pretrained weights
+    parser.add_argument(
+        "--load_pretrained",
+        action="store_true",
+        default=True,
+        help="Load pretrained weights",
+    )
+    parser.add_argument(
+        "--no-load-pretrained",
+        action="store_false",
+        dest="load_pretrained",
+        help="Don't load pretrained weights",
     )
 
     return parser.parse_args()
 
 
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+def is_gemma_model(model_scale: str) -> bool:
+    """Check if model scale is Gemma 3."""
+    return model_scale in ["4b", "12b"]
+
+
 def action_to_steps(action: str) -> int:
     """Convert action name to number of TTT steps."""
-    mapping = {"SKIP": 0, "UPDATE_1": 1, "UPDATE_2": 2, "UPDATE_4": 4}
-    return mapping[action]
+    if action == "ADAPTIVE":
+        return 1
+    return {"SKIP": 0, "UPDATE_1": 1, "UPDATE_2": 2, "UPDATE_4": 4}[action]
 
 
 def action_to_cost(action: str) -> float:
-    """Convert action name to computational cost multiplier.
-
-    Cost model: 1 (base forward) + 2 * num_steps (backward + update per step)
-    - SKIP: 1 + 2*0 = 1.0
-    - UPDATE_1: 1 + 2*1 = 3.0
-    - UPDATE_2: 1 + 2*2 = 5.0
-    - UPDATE_4: 1 + 2*4 = 9.0
-    """
-    mapping = {"SKIP": 1.0, "UPDATE_1": 3.0, "UPDATE_2": 5.0, "UPDATE_4": 9.0}
-    return mapping[action]
+    """Convert action name to computational cost multiplier."""
+    if action == "ADAPTIVE":
+        return 2.0
+    return {"SKIP": 1.0, "UPDATE_1": 3.0, "UPDATE_2": 5.0, "UPDATE_4": 9.0}[action]
 
 
 def get_model_name(model_scale: str) -> str:
-    """Convert model scale to HuggingFace model name."""
+    """Convert model scale to model name."""
     mapping = {
+        # GPT-2
         "125m": "gpt2",
         "350m": "gpt2-medium",
         "1b": "gpt2-large",
         "xl": "gpt2-xl",
+        # Gemma 3
+        "4b": "gemma3-4b",
+        "12b": "gemma3-12b",
     }
     return mapping[model_scale]
+
+
+def get_default_tokenizer(model_scale: str) -> str:
+    """Get default tokenizer for model scale."""
+    if is_gemma_model(model_scale):
+        return "google/gemma-2-2b"
+    return get_model_name(model_scale)
 
 
 def count_params(model: nnx.Module) -> int:
     """Count total parameters in NNX model."""
     state = nnx.state(model)
-    return sum(x.size for x in jax.tree.leaves(state))
+    return sum(x.size for x in jax.tree.leaves(state) if hasattr(x, "size"))
 
 
-def get_base_model_checksum(model) -> float:
-    """Calculate checksum of base model weights to ensure they are frozen."""
-    # Use nnx.state with filter to get only parameters (skips RNG keys, etc.)
-    base_params = nnx.state(model.base_model, nnx.Param)
+def get_base_model_checksum(model: TTTModel) -> float:
+    """Calculate checksum of base model weights."""
+    base = getattr(model, "base_model", None)
+    if base is None:
+        return 0.0
+    base_params = nnx.state(base, nnx.Param)
     leaves = jax.tree.leaves(base_params)
     if not leaves:
         return 0.0
-    # Sum individual parameter sums to safely reduce
     return float(sum(float(jnp.sum(x)) for x in leaves))
 
 
-def main():
+# =============================================================================
+# Training Step Factories
+# =============================================================================
+
+
+def make_train_step(ssl_weight: float) -> Callable:
+    """Create training step function."""
+
+    def train_step(
+        model: TTTModel,
+        optimizer: nnx.Optimizer,
+        input_ids: jax.Array,
+        attention_mask: jax.Array,
+        position_ids: jax.Array,
+        use_ttt: bool,
+    ) -> tuple[dict[str, jax.Array], dict[str, Any]]:
+        def loss_fn(
+            mdl: TTTModel,
+        ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
+            outputs = mdl(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_ttt=use_ttt,
+            )
+            logits = outputs["logits"]
+            ttt_stats = outputs.get("ttt_stats", {})
+
+            # Cross-entropy loss
+            logits_for_loss = logits[:, :-1]
+            labels = input_ids[:, 1:]
+            mask = attention_mask[:, 1:]
+
+            log_probs = jax.nn.log_softmax(logits_for_loss, axis=-1)
+            one_hot = jax.nn.one_hot(labels, logits_for_loss.shape[-1])
+            ce_loss = -jnp.sum(log_probs * one_hot, axis=-1)
+            ce_loss = jnp.sum(ce_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+
+            # SSL auxiliary loss
+            aux_loss = jnp.array(0.0)
+            if use_ttt and ssl_weight > 0 and ttt_stats:
+                ssl_terms = [
+                    ttt_stats.get("ttt_loss_init"),
+                    ttt_stats.get("ttt_loss_step_0"),
+                    ttt_stats.get("ttt_loss_step_1"),
+                ]
+                ssl_values = [jnp.mean(x) for x in ssl_terms if x is not None]
+                if ssl_values:
+                    ssl_loss = sum(ssl_values) / len(ssl_values)
+                    aux_loss = jnp.asarray(ssl_weight * ssl_loss)
+
+            total_loss = ce_loss + aux_loss
+            return total_loss, (ce_loss, aux_loss, ttt_stats)
+
+        (loss, (ce_loss, aux_loss, ttt_stats)), grads = nnx.value_and_grad(
+            loss_fn, has_aux=True
+        )(model)
+        optimizer.update(model, grads)
+
+        metrics = {
+            "loss_total": loss,
+            "loss_ce": ce_loss,
+            "loss_aux": aux_loss,
+            "perplexity": jnp.exp(ce_loss),
+        }
+        return metrics, ttt_stats
+
+    return train_step
+
+
+def make_eval_step() -> Callable:
+    """Create evaluation step function (SKIP action)."""
+
+    def eval_step(
+        model: TTTModel,
+        input_ids: jax.Array,
+        attention_mask: jax.Array,
+        position_ids: jax.Array,
+        use_ttt: bool,
+    ) -> dict[str, jax.Array]:
+        outputs = model(
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            use_ttt=use_ttt,
+        )
+        logits = outputs["logits"]
+
+        logits_for_loss = logits[:, :-1]
+        labels = input_ids[:, 1:]
+        mask = attention_mask[:, 1:]
+
+        log_probs = jax.nn.log_softmax(logits_for_loss, axis=-1)
+        one_hot = jax.nn.one_hot(labels, logits_for_loss.shape[-1])
+        ce_loss = -jnp.sum(log_probs * one_hot, axis=-1)
+        ce_loss = jnp.sum(ce_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+
+        return {"loss_ce": ce_loss, "perplexity": jnp.exp(ce_loss)}
+
+    return eval_step
+
+
+def make_adaptive_train_step(ssl_weight: float, threshold: float) -> Callable:
+    """Create adaptive training step with loss-based gating."""
+    base_train_step = make_train_step(ssl_weight)
+    base_eval_step = make_eval_step()
+
+    def adaptive_step(
+        model: TTTModel,
+        optimizer: nnx.Optimizer,
+        input_ids: jax.Array,
+        attention_mask: jax.Array,
+        position_ids: jax.Array,
+        use_ttt: bool,
+    ) -> tuple[dict[str, jax.Array], dict[str, Any]]:
+        # Compute gating signal (TTT reconstruction loss)
+        outputs = model(
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            use_ttt=True,
+        )
+        ttt_stats = outputs.get("ttt_stats", {})
+
+        gating_signal = 0.0
+        if ttt_stats and "ttt_loss_step_0" in ttt_stats:
+            gating_signal = float(jnp.mean(ttt_stats["ttt_loss_step_0"]))
+        elif ttt_stats and "ttt_loss_init" in ttt_stats:
+            gating_signal = float(jnp.mean(ttt_stats["ttt_loss_init"]))
+
+        should_update = gating_signal > threshold
+
+        if should_update:
+            metrics, ttt_stats = base_train_step(
+                model, optimizer, input_ids, attention_mask, position_ids, True
+            )
+            metrics["updated"] = jnp.array(1.0)
+        else:
+            metrics = base_eval_step(
+                model, input_ids, attention_mask, position_ids, False
+            )
+            metrics["loss_total"] = metrics["loss_ce"]
+            metrics["loss_aux"] = jnp.array(0.0)
+            metrics["updated"] = jnp.array(0.0)
+            ttt_stats = {}
+
+        metrics["gating_signal"] = jnp.array(gating_signal)
+        return metrics, ttt_stats
+
+    return adaptive_step
+
+
+# =============================================================================
+# Main Training Function
+# =============================================================================
+
+
+def main() -> None:
     args = parse_args()
     seeds = (
         [args.seed]
@@ -190,155 +501,164 @@ def main():
         else [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
     )
 
-    print("=" * 60)
-    print("PonderTTT Baseline Training (NNX)")
-    print("=" * 60)
-    print(f"Model scale: {args.model_scale}")
-    print(f"Action: {args.action}")
-    print(f"Max chunks: {args.max_chunks}")
-    print(f"Output dir: {args.output_dir}")
-    print(f"Seeds: {seeds}")
+    # Initialize distributed for multi-host
+    if args.enable_sharding:
+        if not GEMMA3_AVAILABLE:
+            raise RuntimeError(
+                "Sharding requires Gemma 3 module. Install gemma dependencies."
+            )
+        jax.distributed.initialize()
+
+    # Logging
+    logger.info("=" * 60)
+    logger.info("PonderTTT Training")
+    logger.info("=" * 60)
+    logger.info(f"Model scale: {args.model_scale}")
+    logger.info(f"Action: {args.action}")
+    logger.info(f"Max chunks: {args.max_chunks}")
+    logger.info(f"Batch size: {args.batch_size}")
+    logger.info(f"Sequence length: {args.seq_length}")
+    logger.info(f"Chunk size: {args.chunk_size}")
+    logger.info(f"Seeds: {seeds}")
+
+    devices = jax.devices()
+    logger.info(f"JAX devices: {len(devices)} ({devices[0].platform})")
 
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get model configuration
+    # Setup mesh for multi-device
+    mesh = None
+    data_sharding = None
+    if args.enable_sharding and GEMMA3_AVAILABLE:
+        sharding_config = ShardingConfig(
+            dcn_data_parallelism=args.dcn_data_parallelism,
+            dcn_fsdp_parallelism=args.dcn_fsdp_parallelism,
+            dcn_tensor_parallelism=args.dcn_tensor_parallelism,
+            ici_data_parallelism=args.ici_data_parallelism,
+            ici_fsdp_parallelism=args.ici_fsdp_parallelism,
+            ici_tensor_parallelism=args.ici_tensor_parallelism,
+        )
+        mesh = create_device_mesh(sharding_config)
+        data_sharding = get_data_sharding(mesh, sharding_config)
+        logger.info(f"Mesh: {mesh.shape}")
+        logger.info(f"Data sharding: {data_sharding}")
+
+    # Model configuration
     model_name = get_model_name(args.model_scale)
+    is_gemma = is_gemma_model(args.model_scale)
     num_ttt_steps = action_to_steps(args.action)
     cost_multiplier = action_to_cost(args.action)
-    use_ttt = num_ttt_steps > 0
 
-    print("\nConfiguration:")
-    print(f"  Model: {model_name}")
-    print(f"  TTT steps: {num_ttt_steps}")
-    print(f"  Cost multiplier: {cost_multiplier}x")
-    print(f"  Use TTT: {use_ttt}")
+    logger.info(f"\nModel: {model_name} ({'Gemma 3' if is_gemma else 'GPT-2'})")
+    logger.info(f"TTT steps: {num_ttt_steps}, Cost: {cost_multiplier}x")
 
-    # Initialize WandB (Global)
-    if args.wandb_project:
+    # Initialize WandB
+    if args.wandb_project and WANDB_AVAILABLE and wandb is not None:
         wandb.init(
             project=args.wandb_project,
             config=vars(args),
-            name=f"baseline_{args.model_scale}_{args.action}",
+            name=f"train_{args.model_scale}_{args.action}",
         )
 
     # Load tokenizer
-    print("\nLoading tokenizer...")
-    tokenizer = get_tokenizer(model_name)
+    tokenizer_name = args.tokenizer_name or get_default_tokenizer(args.model_scale)
+    logger.info(f"\nTokenizer: {tokenizer_name}")
+    tokenizer = get_tokenizer(tokenizer_name)
 
-    # Create data iterator
-    print("Creating data iterator...")
+    # Calculate data requirements
+    seq_length = args.seq_length
+    chunk_size = args.chunk_size
     batch_size = args.batch_size
-    seq_length = 1024
-    chunk_size = 512
+    chunks_per_seq = seq_length // chunk_size
+    examples_needed = math.ceil(args.max_chunks / max(chunks_per_seq, 1)) * batch_size
 
-    chunks_per_sequence = seq_length // chunk_size
-    # Each batch processes batch_size * chunks_per_sequence chunks
-    chunks_per_batch = batch_size * chunks_per_sequence
-    batches_needed = math.ceil(args.max_chunks / chunks_per_batch)
-    examples_needed = batches_needed * batch_size  # sequences needed
+    # Create training step functions
+    if args.action == "ADAPTIVE":
+        train_step_fn = make_adaptive_train_step(args.ssl_weight, args.gating_threshold)
+        logger.info(f"Using ADAPTIVE gating (threshold={args.gating_threshold})")
+    else:
+        train_step_fn = make_train_step(args.ssl_weight)
+    eval_step_fn = make_eval_step()
 
-    def build_data_iter():
-        return create_data_iterator(
-            tokenizer=tokenizer,
-            split="train",
-            batch_size=batch_size,
-            seq_length=seq_length,
-            chunk_size=chunk_size,
-            max_examples=examples_needed,
-            num_workers=args.num_workers,
-        )
+    # Model initialization function
+    def init_model(seed: int) -> tuple[TTTModel, Any]:
+        logger.info(f"\nInitializing model (seed={seed})...")
 
-    def init_model(seed):
-        print(
-            f"\nInitializing model with {args.fast_weight_type.upper()} fast weights (seed={seed})..."
-        )
-        tok_vocab_size = tokenizer.get_vocab_size()
-        print(f"  Tokenizer vocab_size: {tok_vocab_size}")
-
-        if args.fast_weight_type == "lora":
-            from ponderttt.models import LoRAConfig
-
-            lora_config = LoRAConfig(
-                hidden_dim=768
-                if args.model_scale == "125m"
-                else 1024
-                if args.model_scale == "350m"
-                else 1280
-                if args.model_scale == "1b"
-                else 1600,
-                rank=args.lora_rank,
-                alpha=float(args.lora_rank),
-                dropout_rate=0.1,
-            )
-            print(f"  LoRA rank: {args.lora_rank}")
-            mdl_raw, cfg_raw = load_ttt_model(
-                model_name=model_name,
-                fast_weight_type="lora",
-                lora_config=lora_config,
-                seed=seed,
-                load_pretrained=args.load_pretrained,
-                vocab_size=tok_vocab_size,
-            )
-            mdl = cast(TTTTransformerLM, mdl_raw)
-            cfg = cast(GPT2Config, cfg_raw)
-        else:
-            mdl_raw, cfg_raw = load_ttt_model(
+        if is_gemma:
+            # Gemma 3
+            model, config = load_ttt_model(
                 model_name=model_name,
                 fast_weight_type="ttt",
+                dtype=jnp.bfloat16,
                 seed=seed,
                 load_pretrained=args.load_pretrained,
-                vocab_size=tok_vocab_size,
+                checkpoint_path=args.checkpoint_path,
             )
-            # Cast to GPT-2 types (this script is GPT-2 only)
-            mdl = cast(TTTTransformerLM, mdl_raw)
-            cfg = cast(GPT2Config, cfg_raw)
-        print(f"  Model config vocab_size: {cfg.vocab_size}")
-        print(f"  Model embedding shape: {mdl.base_model.wte.embedding[...].shape}")
-        return mdl, cfg
+        else:
+            # GPT-2
+            tok_vocab_size = tokenizer.get_vocab_size()
+            if args.fast_weight_type == "lora":
+                from ..models import LoRAConfig
 
-    # Set to training mode
+                hidden_dims = {"125m": 768, "350m": 1024, "1b": 1280, "xl": 1600}
+                lora_config = LoRAConfig(
+                    hidden_dim=hidden_dims[args.model_scale],
+                    rank=args.lora_rank,
+                    alpha=float(args.lora_rank),
+                    dropout_rate=0.1,
+                )
+                model, config = load_ttt_model(
+                    model_name=model_name,
+                    fast_weight_type="lora",
+                    lora_config=lora_config,
+                    seed=seed,
+                    load_pretrained=args.load_pretrained,
+                    vocab_size=tok_vocab_size,
+                )
+            else:
+                model, config = load_ttt_model(
+                    model_name=model_name,
+                    fast_weight_type="ttt",
+                    seed=seed,
+                    load_pretrained=args.load_pretrained,
+                    vocab_size=tok_vocab_size,
+                )
+        return model, config
+
+    # Initialize for stats
     model, config = init_model(seeds[0])
-    # ... (Optim creation code follows below in loop, but we need it for count_params above loop?
-    # No, count_params uses model. The original code had optimizer creation outside for printing.
-    # We'll keep original flow but adapt resume)
-
-    # [SAFEGUARD] Verify base model is frozen
-    initial_base_checksum = get_base_model_checksum(model)
-    print(f"\n[SAFEGUARD] Initial base model checksum: {initial_base_checksum:.6f}")
-    model.train()
-
-    print(f"OK Model loaded: {config.n_layer} layers, {config.n_embd} dim")
-    print(f"  Fast weight type: {args.fast_weight_type}")
     total_params = count_params(model)
-    print(f"  Total parameters: {total_params:,}")
+    trainable_state = model.get_trainable_params()
+    trainable_params = sum(
+        x.size for x in jax.tree.leaves(trainable_state) if hasattr(x, "size")
+    )
 
-    # Create optimizer (only optimize TTT layer parameters)
-    print("\nCreating optimizer...")
+    logger.info(f"Total parameters: {total_params:,}")
+    logger.info(f"Trainable (TTT): {trainable_params:,}")
+    logger.info(f"Frozen: {total_params - trainable_params:,}")
 
-    # Extract TTT layer parameters only (freeze slow weights)
-    # Following PLAN.md: theta_slow (frozen), theta_fast (trainable)
-    trainable_params = model.get_trainable_params()
-    trainable_param_count = sum(x.size for x in jax.tree.leaves(trainable_params))
+    # JIT compile step functions
+    if args.action == "ADAPTIVE":
+        jit_train_step = train_step_fn  # Adaptive uses Python branching
+    elif mesh is not None:
+        jit_train_step = partial(jax.jit, static_argnames=["use_ttt"])(train_step_fn)
+    else:
+        jit_train_step = nnx.jit(train_step_fn, static_argnames=["use_ttt"])
 
-    print(f"  Total parameters: {total_params:,}")
-    print(f"  Trainable parameters (TTT layer only): {trainable_param_count:,}")
-    print(f"  Frozen parameters (base model): {total_params - trainable_param_count:,}")
+    if mesh is not None:
+        jit_eval_step = partial(jax.jit, static_argnames=["use_ttt"])(eval_step_fn)
+    else:
+        jit_eval_step = nnx.jit(eval_step_fn, static_argnames=["use_ttt"])
 
-    # Get action configuration
+    # Optimizer factory
     action_steps = action_to_steps(args.action)
-    cost_multiplier = action_to_cost(args.action)
-
-    # Scale learning rate inversely with number of updates to prevent overfitting
-    # UPDATE_1: lr = 3e-4, UPDATE_2: lr = 1.5e-4, UPDATE_4: lr = 0.75e-4
     effective_lr = args.learning_rate / max(action_steps, 1)
 
-    # Create optimizer for all parameters
-    # Base model will be frozen via stop_gradient in the model's forward pass
-    def create_optimizer():
+    def create_optimizer(mdl: TTTModel) -> nnx.Optimizer:
         return nnx.Optimizer(
-            model,
+            mdl,
             optax.chain(
                 optax.clip_by_global_norm(1.0),
                 optax.adam(effective_lr),
@@ -346,50 +666,42 @@ def main():
             wrt=nnx.All(nnx.Param),
         )
 
-    print(
-        f"OK Optimizer: Adam (base_lr={args.learning_rate}, effective_lr={effective_lr}, scaled by 1/{max(action_steps, 1)})"
-    )
-    print("   Base model frozen via stop_gradient")
+    logger.info(f"\nOptimizer: Adam (lr={effective_lr:.2e})")
 
     # Training loop
-    print("\nStarting training...")
-    print(f"Processing {args.max_chunks} chunks...")
-
+    logger.info("\nStarting training...")
     seed_results = []
 
     for seed in seeds:
         model, config = init_model(seed)
+        initial_checksum = get_base_model_checksum(model)
 
-        # Set training mode only if we're actually doing updates
-        # For SKIP action, use eval mode to disable dropout since we don't update
         if action_steps > 0:
             model.train()
         else:
             model.eval()
-            print("  Using eval mode for SKIP action (no updates, disable dropout)")
 
-        # Create optimizer once per seed
-        optimizer = create_optimizer()
-
+        optimizer = create_optimizer(model)
         start_chunk = 0
 
-        # Resume Logic
+        # Resume logic
         if args.resume_from and len(seeds) == 1:
-            print(f"Resuming from checkpoint: {args.resume_from}")
-            load_target = {
-                "state": {"model": nnx.state(model), "optimizer": nnx.state(optimizer)}
-            }
-            ckpt = load_checkpoint(args.resume_from, target=load_target)
+            logger.info(f"Resuming from: {args.resume_from}")
+            ckpt = load_checkpoint(
+                args.resume_from,
+                target={
+                    "state": {
+                        "model": nnx.state(model),
+                        "optimizer": nnx.state(optimizer),
+                    }
+                },
+            )
             nnx.update(model, ckpt["state"]["model"])
             nnx.update(optimizer, ckpt["state"]["optimizer"])
+            start_chunk = ckpt.get("metadata", {}).get("chunks", ckpt.get("step", 0))
+            logger.info(f"Resumed from chunk {start_chunk}")
 
-            if "metadata" in ckpt and "chunks" in ckpt["metadata"]:
-                start_chunk = ckpt["metadata"]["chunks"]
-            elif "step" in ckpt:
-                start_chunk = ckpt["step"]
-
-            print(f"Resumed from chunk {start_chunk}")
-
+        # Create data iterator
         data_iter = create_data_iterator(
             tokenizer=tokenizer,
             split="train",
@@ -400,153 +712,115 @@ def main():
             num_workers=args.num_workers,
         )
 
-        # Data skipping logic for resume
-        # start_chunk is the total number of chunks processed (always a multiple of batch_size)
-        # Each batch processes: batch_size * chunks_per_sequence chunks
-        chunks_per_seq = seq_length // chunk_size
+        # Skip for resume
         chunks_per_batch = batch_size * chunks_per_seq
         batches_to_skip = start_chunk // chunks_per_batch
-        remainder_chunks = start_chunk % chunks_per_batch
+        remainder = start_chunk % chunks_per_batch
 
-        if batches_to_skip > 0:
-            print(
-                f"Skipping {batches_to_skip} batches to resume from chunk {start_chunk}..."
-            )
-            for _ in range(batches_to_skip):
-                try:
-                    next(data_iter)
-                except StopIteration:
-                    print("Warning: Data iterator exhausted during skipping!")
-                    break
+        for _ in range(batches_to_skip):
+            try:
+                next(data_iter)
+            except StopIteration:
+                break
 
         first_batch = True
-
         total_loss_ce = 0.0
         total_loss_total = 0.0
         total_cost = 0.0
         chunks_processed = start_chunk
 
-        print(f"\n=== Running seed {seed} ===")
+        logger.info(f"\n=== Seed {seed} ===")
 
         with tqdm(
-            total=args.max_chunks, initial=start_chunk, desc=f"Training seed {seed}"
+            total=args.max_chunks, initial=start_chunk, desc=f"Seed {seed}"
         ) as pbar:
             while chunks_processed < args.max_chunks:
                 try:
                     batch = next(data_iter)
                 except StopIteration:
-                    print("\nData iterator exhausted")
+                    logger.info("Data exhausted")
                     break
 
-                num_chunks_available = batch["chunks"].shape[1]
-                for chunk_idx in range(num_chunks_available):
-                    # Skip already processed chunks in the first batch after resume
-                    # remainder_chunks is in units of total chunks, convert to chunk_idx units
-                    chunk_positions_to_skip = remainder_chunks // batch_size
-                    if first_batch and chunk_idx < chunk_positions_to_skip:
-                        continue
+                num_chunks_in_batch = batch["chunks"].shape[1]
 
+                for chunk_idx in range(num_chunks_in_batch):
+                    if first_batch and chunk_idx < (remainder // batch_size):
+                        continue
                     if chunks_processed >= args.max_chunks:
                         break
 
-                    chunk_batch = {
-                        "input_ids": batch["chunks"][:, chunk_idx, :],
-                        "attention_mask": batch["chunk_attention_mask"][
-                            :, chunk_idx, :
-                        ],
-                        "position_ids": jnp.arange(
-                            chunk_idx * chunk_size,
-                            (chunk_idx + 1) * chunk_size,
-                            dtype=jnp.int32,
-                        )[None, :].repeat(batch["chunks"].shape[0], axis=0),
-                    }
+                    chunk_input_ids = batch["chunks"][:, chunk_idx, :]
+                    chunk_mask = batch["chunk_attention_mask"][:, chunk_idx, :]
+                    chunk_pos = jnp.arange(chunk_size, dtype=jnp.int32)[None, :].repeat(
+                        batch_size, axis=0
+                    )
 
-                    # Check for valid tokens
-                    num_valid_tokens = jnp.sum(chunk_batch["attention_mask"][:, 1:])
-                    if num_valid_tokens < 16:
+                    # Apply sharding
+                    if data_sharding is not None:
+                        chunk_input_ids = jax.device_put(chunk_input_ids, data_sharding)
+                        chunk_mask = jax.device_put(chunk_mask, data_sharding)
+                        chunk_pos = jax.device_put(chunk_pos, data_sharding)
+
+                    # Skip if too few valid tokens
+                    if jnp.sum(chunk_mask[:, 1:]) < 16:
                         continue
 
+                    # Execute step
                     if action_steps == 0:
-                        metrics = run_chunk_step(
-                            model,
-                            None,
-                            chunk_batch,
-                            use_ttt=False,
-                            apply_update=False,
-                            ssl_weight=0.0,
+                        metrics = jit_eval_step(
+                            model, chunk_input_ids, chunk_mask, chunk_pos, use_ttt=False
                         )
+                        metrics["loss_total"] = metrics["loss_ce"]
+                        metrics["loss_aux"] = jnp.array(0.0)
                     else:
-                        metrics = None
                         for _ in range(action_steps):
-                            metrics = run_chunk_step(
+                            metrics, _ = jit_train_step(
                                 model,
                                 optimizer,
-                                chunk_batch,
+                                chunk_input_ids,
+                                chunk_mask,
+                                chunk_pos,
                                 use_ttt=True,
-                                apply_update=True,
-                                ssl_weight=args.ssl_weight,
                             )
 
-                    assert metrics is not None
-
-                    # Check for stability
+                    # Check stability
                     if (
                         not jnp.isfinite(metrics["loss_ce"])
                         or metrics["loss_ce"] > 20.0
                     ):
-                        print(
-                            f"Warning: Skipping unstable chunk (loss={metrics['loss_ce']:.4f})"
-                        )
+                        logger.warning(f"Unstable loss: {metrics['loss_ce']:.4f}")
                         continue
 
-                    total_loss_ce += metrics["loss_ce"]
-                    total_loss_total += metrics["loss_total"]
+                    total_loss_ce += float(metrics["loss_ce"])
+                    total_loss_total += float(metrics["loss_total"])
                     total_cost += cost_multiplier
-                    # Count sample-chunks processed (batch_size samples per position)
                     chunks_processed += batch_size
 
                     pbar.set_postfix(
                         {
-                            "loss_ce": f"{metrics['loss_ce']:.4f}",
-                            "loss_total": f"{metrics['loss_total']:.4f}",
-                            "ppl": f"{metrics['perplexity']:.2f}",
+                            "loss": f"{metrics['loss_ce']:.4f}",
+                            "ppl": f"{jnp.exp(metrics['loss_ce']):.2f}",
                         }
                     )
                     pbar.update(batch_size)
 
-                    # WandB Log
-                    if args.wandb_project:
+                    # WandB logging
+                    if args.wandb_project and WANDB_AVAILABLE and wandb is not None:
                         wandb.log(
                             {
-                                f"seed_{seed}/loss_total": metrics["loss_total"],
-                                f"seed_{seed}/loss_ce": metrics["loss_ce"],
-                                f"seed_{seed}/loss_aux": metrics["loss_aux"],
-                                f"seed_{seed}/perplexity": metrics["perplexity"],
+                                "loss_ce": float(metrics["loss_ce"]),
+                                "loss_total": float(metrics["loss_total"]),
                                 "chunks": chunks_processed,
                             }
                         )
 
-                    if chunks_processed % 10 == 0:
-                        denom = chunks_processed - start_chunk + 1e-6
-                        avg_ce_loss = total_loss_ce / denom
-                        avg_total_loss = total_loss_total / denom
-                        avg_ppl = math.exp(avg_ce_loss)
-                        print(f"\nChunk {chunks_processed}/{args.max_chunks}:")
-                        print(f"  Average CE loss (since start): {avg_ce_loss:.4f}")
-                        print(
-                            f"  Average total loss (since start): {avg_total_loss:.4f}"
-                        )
-                        print(f"  Average perplexity: {avg_ppl:.2f}")
-
-                    # Periodic Checkpoint
+                    # Periodic checkpoint
                     if (
                         chunks_processed % args.save_every == 0
                         and chunks_processed < args.max_chunks
                     ):
-                        checkpoint_dir = output_dir / "checkpoints"
-                        print(f"Saving checkpoint at chunk {chunks_processed}...")
                         save_checkpoint(
-                            checkpoint_dir=checkpoint_dir,
+                            checkpoint_dir=output_dir / "checkpoints",
                             step=chunks_processed,
                             state={
                                 "model": nnx.state(model),
@@ -557,71 +831,44 @@ def main():
 
                 first_batch = False
 
+        # Seed complete
         if chunks_processed > 0:
             denom = chunks_processed - start_chunk + 1e-6
-            final_avg_ce_loss = total_loss_ce / denom
-            final_avg_total_loss = total_loss_total / denom
-            final_avg_ppl = math.exp(final_avg_ce_loss)
+            final_loss = total_loss_ce / denom
+            final_ppl = math.exp(final_loss)
 
             seed_results.append(
                 {
                     "seed": seed,
-                    "chunks_processed": chunks_processed,
-                    "final_loss": final_avg_ce_loss,
-                    "final_loss_ce": final_avg_ce_loss,
-                    "final_loss_total": final_avg_total_loss,
-                    "final_perplexity": final_avg_ppl,
-                    "total_cost": total_cost,
-                    "avg_cost_per_chunk": total_cost / chunks_processed,
+                    "chunks": chunks_processed,
+                    "loss": final_loss,
+                    "perplexity": final_ppl,
+                    "cost": total_cost,
                 }
             )
 
-            # [SAFEGUARD] Verify base model didn't change
-            final_base_checksum = get_base_model_checksum(model)
-            print(f"[SAFEGUARD] Final base model checksum: {final_base_checksum:.6f}")
-            if abs(final_base_checksum - initial_base_checksum) > 1e-4:
-                print(
-                    f"[SAFEGUARD] ❌ CRITICAL WARNING: Base model weights CHANGED! ({initial_base_checksum} -> {final_base_checksum})"
-                )
-                print(
-                    "[SAFEGUARD] This invalidates the SKIP baseline. Check stop_gradient logic."
-                )
+            # Verify frozen weights
+            final_checksum = get_base_model_checksum(model)
+            if abs(final_checksum - initial_checksum) > 1e-4:
+                logger.warning("⚠️ Base model weights changed!")
             else:
-                print(
-                    f"[SAFEGUARD] ✅ Base model weights preserved (Delta: {abs(final_base_checksum - initial_base_checksum):.6e})"
-                )
+                logger.info("✓ Base model frozen")
 
+            # Save results
             results = {
                 "model_scale": args.model_scale,
                 "action": args.action,
-                "fast_weight_type": args.fast_weight_type,
-                "lora_rank": args.lora_rank
-                if args.fast_weight_type == "lora"
-                else None,
-                "num_ttt_steps": num_ttt_steps,
-                "cost_multiplier": cost_multiplier,
-                "chunks_processed": chunks_processed,
-                "final_loss": final_avg_ce_loss,
-                "final_loss_ce": final_avg_ce_loss,
-                "final_loss_total": final_avg_total_loss,
-                "final_perplexity": final_avg_ppl,
-                "learning_rate": args.learning_rate,
+                "chunks": chunks_processed,
+                "loss": final_loss,
+                "perplexity": final_ppl,
                 "seed": seed,
-                "total_cost": total_cost,
-                "avg_cost_per_chunk": total_cost / chunks_processed,
             }
-
-            suffix = f"_{args.fast_weight_type}"
-            if args.fast_weight_type == "lora":
-                suffix += f"_r{args.lora_rank}"
             results_file = (
-                output_dir
-                / f"results_{args.model_scale}_{args.action}{suffix}_seed{seed}.json"
+                output_dir / f"results_{args.model_scale}_{args.action}_seed{seed}.json"
             )
             with open(results_file, "w") as f:
                 json.dump(results, f, indent=2)
-
-            print(f"\nOK Results saved to: {results_file}")
+            logger.info(f"Results saved: {results_file}")
 
             save_checkpoint(
                 checkpoint_dir=output_dir / "checkpoints",
@@ -630,34 +877,13 @@ def main():
                 metadata=results,
             )
             wait_for_checkpoints()
-            print(f"OK Checkpoint saved to {output_dir / 'checkpoints'}")
 
-    # Aggregate across seeds if multiple
-    if seed_results:
-        if len(seed_results) > 1:
-            losses = jnp.array([r["final_loss"] for r in seed_results])
-            perplexities = jnp.array([r["final_perplexity"] for r in seed_results])
-            from ponderttt.utils.statistics import bootstrap_ci, compute_iqm
-
-            loss_ci = bootstrap_ci(losses, n_bootstrap=1000)
-            ppl_ci = bootstrap_ci(perplexities, n_bootstrap=1000)
-            summary = {
-                "seeds": [r["seed"] for r in seed_results],
-                "loss_mean": float(losses.mean()),
-                "loss_iqm": compute_iqm(losses),
-                "loss_ci": loss_ci,
-                "ppl_mean": float(perplexities.mean()),
-                "ppl_iqm": compute_iqm(perplexities),
-                "ppl_ci": ppl_ci,
-            }
-            summary_file = output_dir / f"summary_{args.model_scale}_{args.action}.json"
-            with open(summary_file, "w") as f:
-                json.dump(summary, f, indent=2)
-            print(f"\nSeed summary saved to {summary_file}")
-        else:
-            print("\nSingle-seed run complete.")
-    else:
-        print("\nNo chunks processed!")
+    # Summary
+    if seed_results and len(seed_results) > 1:
+        losses = jnp.array([r["loss"] for r in seed_results])
+        logger.info(
+            f"\nFinal: Loss = {float(losses.mean()):.4f} ± {float(losses.std()):.4f}"
+        )
 
 
 if __name__ == "__main__":
