@@ -236,6 +236,16 @@ def load_gemma3_from_huggingface(
     print(f"Downloading/Loading weights for {model_id} (safetensors)...")
     state_dict = _download_safetensors(model_id, cache_dir)
 
+    # Gemma 3 HuggingFace checkpoints use 'language_model.' prefix on all keys
+    # Strip this prefix to match our weight_mapping
+    prefix = "language_model."
+    if any(k.startswith(prefix) for k in state_dict.keys()):
+        state_dict = {
+            k[len(prefix) :] if k.startswith(prefix) else k: v
+            for k, v in state_dict.items()
+        }
+        print(f"DEBUG: Stripped '{prefix}' prefix from state_dict keys")
+
     # Get gemma_config from model (Gemma3TTTModel has this attribute)
     gemma_config = getattr(model, "gemma_config", None)
     if gemma_config is None:
