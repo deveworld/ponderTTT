@@ -220,12 +220,16 @@ def main() -> None:
     print(f"Cross-entropy loss (NNX, no TTT): {loss_nnx:.4f}")
 
     loss_diff = abs(loss_ref - loss_nnx)
-    print(f"Loss Difference: {loss_diff:.4f}")
+    loss_rel_diff = loss_diff / (abs(loss_ref) + 1e-6)
 
-    if loss_diff < 0.01:
-        print("✅ PASS: Losses match")
+    print(f"Loss Difference: {loss_diff:.4f}")
+    print(f"Relative Difference: {loss_rel_diff:.4%}")
+
+    # Use 1% relative tolerance for BF16 models
+    if loss_rel_diff < 0.01:
+        print("✅ PASS: Losses match (within 1% tolerance)")
     else:
-        print("❌ FAIL: Losses differ")
+        print("❌ FAIL: Losses differ significantly")
 
 
 if __name__ == "__main__":

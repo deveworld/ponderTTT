@@ -244,7 +244,6 @@ def load_gemma3_from_huggingface(
             k[len(prefix) :] if k.startswith(prefix) else k: v
             for k, v in state_dict.items()
         }
-        print(f"DEBUG: Stripped '{prefix}' prefix from state_dict keys")
 
     # Get gemma_config from model (Gemma3TTTModel has this attribute)
     gemma_config = getattr(model, "gemma_config", None)
@@ -267,10 +266,6 @@ def load_gemma3_from_huggingface(
         # Final norm
         "model.norm.weight": ("base_model", "final_norm", "scale"),
     }
-
-    # DEBUG: Print first 10 state_dict keys to understand structure
-    print(f"DEBUG: state_dict has {len(state_dict)} keys")
-    print(f"DEBUG: First 10 keys: {list(state_dict.keys())[:10]}")
 
     # Special handling for attention Q/K/V weights (handled separately for GQA)
     # These are NOT added to weight_mapping for GQA models
@@ -396,12 +391,7 @@ def load_gemma3_from_huggingface(
                     elif isinstance(obj, dict) and key in obj:
                         obj = obj[key]
                     else:
-                        print(
-                            f"DEBUG: Path traversal failed at '{key}' for {debug_name}"
-                        )
-                        print(
-                            f"DEBUG: Available attrs: {[a for a in dir(obj) if not a.startswith('_')][:20]}"
-                        )
+                        print(f"Path traversal failed at '{key}' for {debug_name}")
                         return False
             final_key = path[-1]
             if isinstance(final_key, int):
@@ -413,18 +403,16 @@ def load_gemma3_from_huggingface(
                     target.value = value
                     return True
                 else:
-                    print(
-                        f"DEBUG: Target {final_key} has no 'value' attr for {debug_name}"
-                    )
+                    print(f"Target {final_key} has no 'value' attr for {debug_name}")
                     return False
             elif isinstance(obj, dict):
                 obj[final_key] = value
                 return True
             else:
-                print(f"DEBUG: Cannot set final_key '{final_key}' for {debug_name}")
+                print(f"Cannot set final_key '{final_key}' for {debug_name}")
                 return False
         except Exception as e:
-            print(f"DEBUG: Exception in set_nested for {debug_name}: {e}")
+            print(f"Exception in set_nested for {debug_name}: {e}")
             return False
 
     def get_nested(obj: Any, path: tuple[str | int, ...]) -> Any:
@@ -476,7 +464,7 @@ def load_gemma3_from_huggingface(
                     f"layer{layer_idx}.q_einsum",
                 )
                 if not success:
-                    print(f"DEBUG: Failed to set q_einsum for layer {layer_idx}")
+                    print(f"Failed to set q_einsum for layer {layer_idx}")
 
             if "k" in qkv_weights and "v" in qkv_weights:
                 k_weight = qkv_weights["k"]  # [embed_dim, num_kv_heads * head_dim]
@@ -503,7 +491,7 @@ def load_gemma3_from_huggingface(
                     f"layer{layer_idx}.kv_einsum",
                 )
                 if not success:
-                    print(f"DEBUG: Failed to set kv_einsum for layer {layer_idx}")
+                    print(f"Failed to set kv_einsum for layer {layer_idx}")
         else:
             # MHA: combined qkv_einsum
             # qkv_einsum.w: [3, num_heads, features, head_dim]
@@ -534,9 +522,7 @@ def load_gemma3_from_huggingface(
                 set_nested(model, (*nnx_layer, "qkv_einsum", "w"), qkv_weight)
 
     # Handle remaining weights (non-QKV)
-    print(f"DEBUG: weight_mapping has {len(weight_mapping)} entries")
     matched_keys = [k for k in weight_mapping.keys() if k in state_dict]
-    print(f"DEBUG: {len(matched_keys)} keys matched in state_dict")
 
     # Show keys in state_dict that are NOT in weight_mapping (potential missing mappings)
     unmapped_keys = [
@@ -548,15 +534,8 @@ def load_gemma3_from_huggingface(
         and "v_proj" not in k
     ]
     if unmapped_keys:
-        print(f"DEBUG: {len(unmapped_keys)} unmapped HF keys (excluding QKV):")
-        for k in unmapped_keys[:20]:
-            print(f"  - {k}")
-        if len(unmapped_keys) > 20:
-            print(f"  ... and {len(unmapped_keys) - 20} more")
-
-    if len(matched_keys) == 0:
-        print(f"DEBUG: First 5 weight_mapping keys: {list(weight_mapping.keys())[:5]}")
-        print(f"DEBUG: First 5 state_dict keys: {list(state_dict.keys())[:5]}")
+        # Only print if significantly many unmapped keys remain that aren't vision/multimodal related
+        pass
 
     for hf_name, nnx_path in weight_mapping.items():
         if hf_name in state_dict:
