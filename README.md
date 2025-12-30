@@ -208,7 +208,7 @@ ponderttt/
     ├── models/
     │   ├── gpt2_nnx.py          # GPT-2 implementation
     │   ├── ttt_layer_nnx.py     # TTT layer
-    │   └── gemma3/              # Gemma 3 (1B, 4B, 12B)
+    │   └── gemma3/              # Gemma 3 (1B, 4B, 12B, 27B)
     │       ├── model.py         # Gemma3Model, Gemma3TTTModel
     │       ├── config.py        # Model configurations
     │       ├── checkpoint.py    # Weight loading

@@ -2,7 +2,7 @@
 Base transformer language model with TTT layers in NNX.
 
 Migrated from Linen to NNX, removing HuggingFace Transformers dependency.
-Supports both GPT-2 and Gemma 3 (4B, 12B) as base models.
+Supports both GPT-2 and Gemma 3 (1B, 4B, 12B, 27B) as base models.
 """
 
 from dataclasses import dataclass
@@ -298,7 +298,7 @@ def load_ttt_model(
     Args:
         model_name: Model identifier. Supported:
             - GPT-2 variants: "gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"
-            - Gemma 3: "gemma3-4b", "gemma3-12b", "gemma3-1b" (test)
+            - Gemma 3: "gemma3-1b", "gemma3-4b", "gemma3-12b", "gemma3-27b"
         ttt_config: TTT layer configuration (if fast_weight_type='ttt')
         lora_config: LoRA configuration (if fast_weight_type='lora')
         fast_weight_type: Type of fast weights ("ttt" or "lora")
@@ -554,7 +554,7 @@ def _load_gemma3_ttt_model(
     Internal helper for load_ttt_model().
 
     Args:
-        model_name: "gemma3-4b", "gemma3-12b", or "gemma3-1b"
+        model_name: "gemma3-4b", "gemma3-12b", "gemma3-27b", or "gemma3-1b"
         ttt_config: TTT layer configuration
         dtype: Data type (default bfloat16 for Gemma 3)
         seed: Random seed
@@ -574,26 +574,37 @@ def _load_gemma3_ttt_model(
     )
 
     # Select config based on model size
-    if "4b" in model_name:
-        gemma_config = Gemma3Config.gemma3_4b(dtype=dtype)
+    if "27b" in model_name:
+        gemma_config = Gemma3Config.gemma3_27b(dtype=dtype)
     elif "12b" in model_name:
         gemma_config = Gemma3Config.gemma3_12b(dtype=dtype)
+    elif "4b" in model_name:
+        gemma_config = Gemma3Config.gemma3_4b(dtype=dtype)
     elif "1b" in model_name:
         gemma_config = Gemma3Config.gemma3_1b(dtype=dtype)
     else:
         raise ValueError(
             f"Unknown Gemma 3 model: {model_name}. "
-            f"Supported: gemma3-4b, gemma3-12b, gemma3-1b"
+            f"Supported: gemma3-1b, gemma3-4b, gemma3-12b, gemma3-27b"
         )
 
     # Default TTT config for Gemma 3
     if ttt_config is None:
-        if "4b" in model_name:
-            ttt_config = TTTConfig.for_gemma3_4b(dtype=dtype)
+        if "27b" in model_name:
+            # 27B
+            ttt_config = TTTConfig(
+                hidden_dim=gemma_config.embed_dim,
+                num_heads=gemma_config.num_heads,
+                head_dim=gemma_config.head_dim,
+                dtype=dtype,
+                mini_batch_size=8,  # Smaller batch size for large model
+            )
         elif "12b" in model_name:
             ttt_config = TTTConfig.for_gemma3_12b(dtype=dtype)
+        elif "4b" in model_name:
+            ttt_config = TTTConfig.for_gemma3_4b(dtype=dtype)
         else:
-            # 1B (testing)
+            # 1B
             ttt_config = TTTConfig(
                 hidden_dim=gemma_config.embed_dim,
                 num_heads=gemma_config.num_heads,

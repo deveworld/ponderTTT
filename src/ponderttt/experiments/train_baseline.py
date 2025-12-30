@@ -3,7 +3,7 @@ Train TTT models with fixed action schedules.
 
 Supports:
 - GPT-2 models (125m, 350m, 1b, xl)
-- Gemma 3 models (4b, 12b)
+- Gemma 3 models (1b, 4b, 12b, 27b)
 - Single-host and multi-host TPU with explicit sharding
 
 Architecture:
@@ -83,9 +83,9 @@ def parse_args():
     parser.add_argument(
         "--model_scale",
         type=str,
-        choices=["125m", "350m", "1b", "xl", "4b", "12b"],
+        choices=["125m", "350m", "1b", "xl", "4b", "12b", "27b", "gemma-1b"],
         default="125m",
-        help="Model scale: GPT-2 (125m/350m/1b/xl) or Gemma 3 (4b/12b)",
+        help="Model scale: GPT-2 (125m/350m/1b/xl) or Gemma 3 (1b/4b/12b/27b)",
     )
     parser.add_argument(
         "--checkpoint_path",
@@ -279,7 +279,7 @@ def parse_args():
 
 def is_gemma_model(model_scale: str) -> bool:
     """Check if model scale is Gemma 3."""
-    return model_scale in ["4b", "12b"]
+    return model_scale in ["4b", "12b", "27b", "gemma-1b"]
 
 
 def action_to_steps(action: str) -> int:
@@ -307,6 +307,8 @@ def get_model_name(model_scale: str) -> str:
         # Gemma 3
         "4b": "gemma3-4b",
         "12b": "gemma3-12b",
+        "27b": "gemma3-27b",
+        "gemma-1b": "gemma3-1b",
     }
     return mapping[model_scale]
 

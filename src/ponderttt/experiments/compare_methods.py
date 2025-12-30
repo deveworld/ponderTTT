@@ -3,7 +3,7 @@ Compare gating methods for adaptive Test-Time Training.
 
 Supports:
 - GPT-2 models (125m, 350m, 1b, xl)
-- Gemma 3 models (4b, 12b) with TPU sharding
+- Gemma 3 models (1b, 4b, 12b, 27b) with TPU sharding
 
 Methods:
     1. SKIP (Baseline): No TTT updates
@@ -64,9 +64,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def is_gemma_model(model_scale: str) -> bool:
-    """Check if model scale is Gemma 3."""
-    return model_scale in ["4b", "12b"]
+    return model_scale in ["4b", "12b", "27b", "gemma-1b"]
 
 
 def get_model_name(model_scale: str) -> str:
@@ -78,6 +76,8 @@ def get_model_name(model_scale: str) -> str:
         "xl": "gpt2-xl",
         "4b": "gemma3-4b",
         "12b": "gemma3-12b",
+        "27b": "gemma3-27b",
+        "gemma-1b": "gemma3-1b",
     }[model_scale]
 
 
@@ -372,7 +372,7 @@ def parse_args():
         "--model_scale",
         type=str,
         default="125m",
-        choices=["125m", "350m", "1b", "xl", "4b", "12b"],
+        choices=["125m", "350m", "1b", "xl", "4b", "12b", "27b", "gemma-1b"],
     )
     parser.add_argument("--checkpoint_path", type=str, default=None)
 

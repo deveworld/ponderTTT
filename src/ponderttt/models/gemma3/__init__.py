@@ -1,6 +1,6 @@
 """Gemma 3 model implementation for PonderTTT.
 
-This module provides Gemma 3 (4B, 12B) models with Test-Time Training (TTT) support.
+This module provides Gemma 3 (1B, 4B, 12B, 27B) models with Test-Time Training (TTT) support.
 Based on the official Flax Gemma implementation with TTT layer integration.
 """
 
