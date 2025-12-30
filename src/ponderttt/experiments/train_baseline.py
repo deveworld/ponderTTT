@@ -582,7 +582,8 @@ def main() -> None:
     chunk_size = args.chunk_size
     batch_size = args.batch_size
     chunks_per_seq = seq_length // chunk_size
-    examples_needed = math.ceil(args.max_chunks / max(chunks_per_seq, 1)) * batch_size
+    # Each sequence contains chunks_per_seq chunks, so we need max_chunks / chunks_per_seq sequences
+    examples_needed = math.ceil(args.max_chunks / max(chunks_per_seq, 1))
 
     # Create training step functions
     if args.action == "ADAPTIVE":
