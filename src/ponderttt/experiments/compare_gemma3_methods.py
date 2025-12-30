@@ -107,12 +107,13 @@ def evaluate_oracle_gemma(
 
     data_iter = create_data_iterator(
         tokenizer=tokenizer,
-        split="test",
+        split="train",  # the-stack-v2 only has train split
         language=args.language,
         batch_size=args.batch_size,
         seq_length=4096,  # Gemma 3 context
         chunk_size=512,
         max_examples=args.batch_size * args.num_batches * 2,
+        skip_examples=100000,  # Use held-out portion for evaluation
         num_workers=16,
     )
 
