@@ -62,9 +62,16 @@ def main() -> None:
     print(f"Comparing Gemma 3 ({args.model_scale}) NNX vs Transformers")
     print("=" * 60)
 
-    # Tokenizer (use Gemma 2 tokenizer for compatibility)
-    tokenizer_name = "google/gemma-2-2b"
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    # Tokenizer
+    tokenizer_name = f"google/gemma-3-{args.model_scale}-pt"
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    except Exception:
+        print(
+            f"Warning: Could not load {tokenizer_name}, falling back to google/gemma-3-4b-pt"
+        )
+        tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-4b-pt")
+
     print(f"Tokenizer: {tokenizer_name}")
     print(f"Vocab size: {tokenizer.vocab_size}")
 
