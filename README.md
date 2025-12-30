@@ -42,10 +42,10 @@ graph LR
 | **Small (124M)** | JavaScript | 3.164 | 2.461 | **2.343** | **116.5%** |
 | **Small (124M)** | Java | 3.148 | 2.425 | **2.060** | **150.5%** |
 | **Small (124M)** | Go | 6.130 | 4.189 | **4.053** | **107.0%** |
-| **XL** | Python | 1.875 | 1.615 | **1.597** | **106.9%** |
-| **XL** | JavaScript | 2.852 | 2.114 | **1.796** | **143.1%** |
-| **XL** | Java | 3.213 | 2.268 | **2.057** | **122.3%** |
-| **XL** | Go | 6.520 | 4.223 | **4.275** | **97.7%** |
+| **XL (1.5B)** | Python | 1.875 | 1.615 | **1.597** | **106.9%** |
+| **XL (1.5B)** | JavaScript | 2.852 | 2.114 | **1.796** | **143.1%** |
+| **XL (1.5B)** | Java | 3.213 | 2.268 | **2.057** | **122.3%** |
+| **XL (1.5B)** | Go | 6.520 | 4.223 | **4.275** | **97.7%** |
 
 > **Note**: Full-Sequence Reconstruction Gating achieves **>100% Oracle recovery** due to EMA-based thresholding, outperforming both Random and Oracle baselines.
 
@@ -54,10 +54,10 @@ graph LR
 | Model | Language | **Pearson r** | Oracle Recovery |
 | :--- | :--- | :--- | :--- |
 | **Small (124M)** | Python | **0.84** | 103.6% |
-| **XL** | Python | **0.61** | 106.9% |
-| **XL** | JavaScript (OOD) | **0.74** | 143.1% |
-| **XL** | Java (OOD) | **0.84** | 122.3% |
-| **XL** | Go (OOD) | **0.58** | 97.7% |
+| **XL (1.5B)** | Python | **0.61** | 106.9% |
+| **XL (1.5B)** | JavaScript (OOD) | **0.74** | 143.1% |
+| **XL (1.5B)** | Java (OOD) | **0.84** | 122.3% |
+| **XL (1.5B)** | Go (OOD) | **0.58** | 97.7% |
 
 > **Finding**: Small models show strong correlation ($r=0.84$), improving to moderate correlation at XL ($r=0.61$). Oracle Recovery consistently exceeds 100%.
 
@@ -68,7 +68,7 @@ Pure JAX/Flax NNX implementation with multi-scale model support.
 ### Supported Models
 
 | Model | Parameters | Status |
-|-------|------------|--------|
+| ------- | ------------ | -------- |
 | GPT-2 Small | 124M | ✅ Validated |
 | GPT-2 Medium | 355M | ✅ Validated |
 | GPT-2 Large | 774M | ✅ Validated |
@@ -192,7 +192,7 @@ mesh = create_device_mesh(ShardingConfig())
 ### Phase 2: In Progress
 
 | Component | Status |
-|-----------|--------|
+| ----------- | -------- |
 | Reconstruction Gating | ✅ Complete |
 | Budget-aware Threshold | In Progress |
 | Learned Gating Signals | In Progress |
@@ -203,7 +203,7 @@ mesh = create_device_mesh(ShardingConfig())
 
 ## Repository Structure
 
-```
+```text
 ponderttt/
 └── src/ponderttt/
     ├── models/

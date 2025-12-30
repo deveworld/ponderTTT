@@ -12,7 +12,7 @@ Architecture:
 
 Usage:
     # GPT-2 (single device):
-    python -m ponderttt.experiments.train_baseline --model_scale gpt2 --action UPDATE_1
+    python -m ponderttt.experiments.train_baseline --model_scale small --action UPDATE_1
 
     # Gemma 3 (single device):
     python -m ponderttt.experiments.train_baseline --model_scale 4b --action UPDATE_1
