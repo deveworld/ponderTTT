@@ -90,7 +90,7 @@ def main() -> None:
     print(f"\nLoading HuggingFace model: {hf_model_name}")
     hf_model = AutoModelForCausalLM.from_pretrained(
         hf_model_name,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
     )
     hf_model.eval()
@@ -98,9 +98,6 @@ def main() -> None:
         outputs_hf = hf_model(input_ids_pt.to(hf_model.device))
         logits_pt = outputs_hf.logits.float().cpu().numpy()
     print(f"HF logits shape: {logits_pt.shape}")
-    print(f"HF logits shape: {logits_pt.shape}")
-    # print(f"HF model vocab size: {hf_model.config.vocab_size}")
-    # print(f"HF embed_tokens shape: {hf_model.model.embed_tokens.weight.shape}")
     print(f"HF model structure: {hf_model}")
     print(f"HF logits range: [{logits_pt.min():.2f}, {logits_pt.max():.2f}]")
 
@@ -131,7 +128,7 @@ def main() -> None:
     logits_nnx = np.array(outputs_nnx["logits"], dtype=np.float32)
     print(f"NNX logits shape: {logits_nnx.shape}")
     print(
-        f"NNX embedding shape: {model_nnx.base_model.embedder.input_embedding.value.shape}"
+        f"NNX embedding shape: {model_nnx.base_model.embedder.input_embedding[...].shape}"
     )
     print(f"NNX logits range: [{logits_nnx.min():.2f}, {logits_nnx.max():.2f}]")
 
@@ -157,18 +154,30 @@ def main() -> None:
     else:
         print("\n❌ FAIL: Logits differ significantly")
 
-    # Show top-5 tokens for first position
-    def top_k(logits: np.ndarray, k: int = 5):
-        top_idx = np.argsort(logits)[..., ::-1][0, 0, :k]
-        return [(int(idx), float(logits[0, 0, idx])) for idx in top_idx]
+    # Show top-5 tokens
+    def top_k(logits: np.ndarray, pos: int, k: int = 5):
+        top_idx = np.argsort(logits)[..., ::-1][0, pos, :k]
+        return [(int(idx), float(logits[0, pos, idx])) for idx in top_idx]
 
     print("\nTop-5 tokens at position 0 (Transformers):")
-    for idx, val in top_k(logits_pt):
+    for idx, val in top_k(logits_pt, 0):
         token = tokenizer.decode([idx])
         print(f"  {idx:6d}: {val:8.4f}  {token!r}")
 
     print("\nTop-5 tokens at position 0 (NNX):")
-    for idx, val in top_k(logits_nnx):
+    for idx, val in top_k(logits_nnx, 0):
+        token = tokenizer.decode([idx])
+        print(f"  {idx:6d}: {val:8.4f}  {token!r}")
+
+    # Show top-5 tokens for last position
+    last_pos = min_len - 1
+    print(f"\nTop-5 tokens at position {last_pos} (Transformers):")
+    for idx, val in top_k(logits_pt, last_pos):
+        token = tokenizer.decode([idx])
+        print(f"  {idx:6d}: {val:8.4f}  {token!r}")
+
+    print(f"\nTop-5 tokens at position {last_pos} (NNX):")
+    for idx, val in top_k(logits_nnx, last_pos):
         token = tokenizer.decode([idx])
         print(f"  {idx:6d}: {val:8.4f}  {token!r}")
 
