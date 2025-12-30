@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import abc
 import dataclasses
-from typing import Any, Protocol, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 
 if TYPE_CHECKING:
-    from ..models import TTTModel
+    pass
 
 
 @dataclasses.dataclass

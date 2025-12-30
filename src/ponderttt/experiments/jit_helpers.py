@@ -7,14 +7,14 @@ recompilation in experiments.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Tuple
+from typing import TYPE_CHECKING, Tuple
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
 if TYPE_CHECKING:
-    from ..models import TTTModel, TTTTransformerLM
+    from ..models import TTTTransformerLM
 
 
 def cross_entropy_loss(
@@ -219,15 +219,19 @@ def get_ttt_loss_from_stats(ttt_stats: dict | None) -> Tuple[float, float]:
     if ttt_stats is None:
         return 0.0, 0.0
 
-    ttt_loss_init = ttt_stats.get("ttt_loss_init", 0.0)
+    # Original compare_methods.py uses "ttt_loss_step_0" as key
+    # Also support "ttt_loss_init" as fallback
+    ttt_loss_init = ttt_stats.get(
+        "ttt_loss_step_0", ttt_stats.get("ttt_loss_init", 0.0)
+    )
     ttt_loss_final = ttt_stats.get(
         "ttt_loss_step_1", ttt_stats.get("ttt_loss_final", 0.0)
     )
 
-    # Handle array types
-    if hasattr(ttt_loss_init, "item"):
+    # Handle array types - take mean across heads/batch
+    if hasattr(ttt_loss_init, "mean"):
         ttt_loss_init = float(ttt_loss_init.mean())
-    if hasattr(ttt_loss_final, "item"):
+    if hasattr(ttt_loss_final, "mean"):
         ttt_loss_final = float(ttt_loss_final.mean())
 
     return float(ttt_loss_init), float(ttt_loss_final)

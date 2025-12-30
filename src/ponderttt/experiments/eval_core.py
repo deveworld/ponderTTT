@@ -8,24 +8,21 @@ across different experiment scripts.
 from __future__ import annotations
 
 import dataclasses
-from typing import Iterator, TYPE_CHECKING, Optional, Callable
+from typing import Iterator, TYPE_CHECKING
 import logging
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
 from .jit_helpers import (
-    compute_skip_loss,
     compute_update_loss,
     compute_both_losses,
-    compute_gated_loss,
     get_ttt_loss_from_stats,
 )
 
 if TYPE_CHECKING:
     from ..models import TTTModel
-    from ..gating import GatingStrategy, GatingDecision
+    from ..gating import GatingStrategy
 
 
 logger = logging.getLogger(__name__)
@@ -170,44 +167,70 @@ def evaluate_oracle(
     data_iter: Iterator,
     num_batches: int,
     chunk_size: int = 512,
-    position_offset: int = 0,
+    use_local_positions: bool = True,
 ) -> EvalResult:
     """Evaluate Oracle baseline (upper bound).
 
     For each chunk, compute both SKIP and UPDATE paths and
-    select the one with lower loss.
+    select the one with lower loss (greedy Oracle).
 
     Args:
         model: TTT model.
-        data_iter: Iterator yielding (input_ids, attention_mask).
+        data_iter: Iterator yielding dict with 'chunks' and 'chunk_attention_mask',
+                   or tuple (input_ids, attention_mask).
         num_batches: Number of batches to process.
         chunk_size: Tokens per chunk.
-        position_offset: Starting position offset.
+        use_local_positions: If True, use local position IDs (0 to chunk_len-1)
+                             for each chunk (matches original compare_methods.py).
 
     Returns:
         EvalResult with all chunk results.
     """
-    chunks = []
+    chunks_results = []
     batch_idx = 0
 
     for batch_data in data_iter:
         if batch_idx >= num_batches:
             break
 
-        input_ids, attention_mask = batch_data[:2]
-        seq_len = input_ids.shape[1]
-        num_chunks = seq_len // chunk_size
+        # Handle both dict-style and tuple-style batch data
+        if isinstance(batch_data, dict):
+            # Dict style: from create_data_iterator
+            input_chunks = batch_data["chunks"]  # [batch, num_chunks, chunk_len]
+            chunk_masks = batch_data["chunk_attention_mask"]
+            num_chunks = input_chunks.shape[1]
+        else:
+            # Tuple style: (input_ids, attention_mask)
+            input_ids, attention_mask = batch_data[:2]
+            seq_len = input_ids.shape[1]
+            num_chunks = seq_len // chunk_size
+            # Will slice below
+            input_chunks = None
+            chunk_masks = None
 
         for c_idx in range(num_chunks):
-            start = c_idx * chunk_size
-            end = start + chunk_size
+            if input_chunks is not None:
+                # Dict style
+                chunk_input = input_chunks[:, c_idx]
+                chunk_mask = chunk_masks[:, c_idx]
+            else:
+                # Tuple style
+                start = c_idx * chunk_size
+                end = start + chunk_size
+                chunk_input = input_ids[:, start:end]
+                chunk_mask = attention_mask[:, start:end]
 
-            chunk_input = input_ids[:, start:end]
-            chunk_mask = attention_mask[:, start:end]
+            chunk_len = chunk_input.shape[-1]
 
-            # Position IDs with offset
-            pos_start = position_offset + start
-            position_ids = jnp.arange(pos_start, pos_start + chunk_size)[None, :]
+            # Position IDs: use local (0 to chunk_len-1) like original
+            if use_local_positions:
+                position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
+            else:
+                # Global position IDs
+                pos_start = c_idx * chunk_size
+                position_ids = jnp.arange(
+                    pos_start, pos_start + chunk_len, dtype=jnp.int32
+                )
             position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
 
             # Compute both paths
@@ -221,10 +244,10 @@ def evaluate_oracle(
             loss_update_val = float(loss_update)
             advantage = loss_skip_val - loss_update_val
 
-            # Oracle chooses the path with lower loss
+            # Oracle chooses the path with lower loss (greedy)
             decision = "UPDATE" if advantage > 0 else "SKIP"
 
-            chunks.append(
+            chunks_results.append(
                 ChunkResult(
                     batch_idx=batch_idx,
                     chunk_idx=c_idx,
@@ -239,7 +262,7 @@ def evaluate_oracle(
 
         batch_idx += 1
 
-    return EvalResult(chunks=chunks, method_name="Oracle")
+    return EvalResult(chunks=chunks_results, method_name="Oracle")
 
 
 def evaluate_with_gating(
@@ -248,43 +271,63 @@ def evaluate_with_gating(
     gating: "GatingStrategy",
     num_batches: int,
     chunk_size: int = 512,
-    position_offset: int = 0,
+    use_local_positions: bool = True,
     compute_oracle: bool = True,
 ) -> EvalResult:
     """Evaluate with a gating strategy.
 
     Args:
         model: TTT model.
-        data_iter: Iterator yielding (input_ids, attention_mask).
+        data_iter: Iterator yielding dict with 'chunks' and 'chunk_attention_mask',
+                   or tuple (input_ids, attention_mask).
         gating: Gating strategy to use.
         num_batches: Number of batches to process.
         chunk_size: Tokens per chunk.
-        position_offset: Starting position offset.
+        use_local_positions: If True, use local position IDs (0 to chunk_len-1).
         compute_oracle: Whether to compute Oracle stats (slower).
 
     Returns:
         EvalResult with all chunk results.
     """
-    chunks = []
+    chunks_results = []
     batch_idx = 0
 
     for batch_data in data_iter:
         if batch_idx >= num_batches:
             break
 
-        input_ids, attention_mask = batch_data[:2]
-        seq_len = input_ids.shape[1]
-        num_chunks = seq_len // chunk_size
+        # Handle both dict-style and tuple-style batch data
+        if isinstance(batch_data, dict):
+            input_chunks = batch_data["chunks"]
+            chunk_masks = batch_data["chunk_attention_mask"]
+            num_chunks = input_chunks.shape[1]
+        else:
+            input_ids, attention_mask = batch_data[:2]
+            seq_len = input_ids.shape[1]
+            num_chunks = seq_len // chunk_size
+            input_chunks = None
+            chunk_masks = None
 
         for c_idx in range(num_chunks):
-            start = c_idx * chunk_size
-            end = start + chunk_size
+            if input_chunks is not None:
+                chunk_input = input_chunks[:, c_idx]
+                chunk_mask = chunk_masks[:, c_idx]
+            else:
+                start = c_idx * chunk_size
+                end = start + chunk_size
+                chunk_input = input_ids[:, start:end]
+                chunk_mask = attention_mask[:, start:end]
 
-            chunk_input = input_ids[:, start:end]
-            chunk_mask = attention_mask[:, start:end]
+            chunk_len = chunk_input.shape[-1]
 
-            pos_start = position_offset + start
-            position_ids = jnp.arange(pos_start, pos_start + chunk_size)[None, :]
+            # Position IDs: use local (0 to chunk_len-1) like original
+            if use_local_positions:
+                position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
+            else:
+                pos_start = c_idx * chunk_size
+                position_ids = jnp.arange(
+                    pos_start, pos_start + chunk_len, dtype=jnp.int32
+                )
             position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
 
             if compute_oracle:
@@ -322,7 +365,7 @@ def evaluate_with_gating(
                 }
             )
 
-            chunks.append(
+            chunks_results.append(
                 ChunkResult(
                     batch_idx=batch_idx,
                     chunk_idx=c_idx,
@@ -337,7 +380,7 @@ def evaluate_with_gating(
 
         batch_idx += 1
 
-    return EvalResult(chunks=chunks, method_name=type(gating).__name__)
+    return EvalResult(chunks=chunks_results, method_name=type(gating).__name__)
 
 
 def print_eval_summary(result: EvalResult) -> None:
