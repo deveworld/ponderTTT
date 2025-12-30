@@ -1,41 +1,63 @@
 """
 Compare gating methods for adaptive Test-Time Training.
 
-Implemented Methods:
+Supports:
+- GPT-2 models (125m, 350m, 1b, xl)
+- Gemma 3 models (4b, 12b) with TPU sharding
+
+Methods:
     1. SKIP (Baseline): No TTT updates
-    2. UPDATE_1 (Fixed): Always update with 1 gradient step
-    3. Random Skip: Randomly select chunks to update
-    4. Oracle: Upper bound using ground-truth advantage
-    5. PonderTTT (Ours): Reconstruction loss-based gating
+    2. UPDATE_1 (Fixed): Always update
+    3. Random Skip: Randomly update
+    4. Oracle: Upper bound
+    5. PonderTTT (Ours): Reconstruction loss gating
 
 Usage:
+    # GPT-2
     python -m ponderttt.experiments.compare_methods --model_scale 125m --budget 2.0
+
+    # Gemma 3
+    python -m ponderttt.experiments.compare_methods --model_scale 4b --budget 2.0
+
+    # Gemma 3 with TPU sharding
+    python -m ponderttt.experiments.compare_methods --model_scale 4b --enable_sharding
 """
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import pandas as pd
+from flax import nnx
 from tqdm import tqdm
 
 from ..data import create_data_iterator, get_tokenizer
 from ..models import load_ttt_model, TTTModel
+from ..utils import cross_entropy_loss
 
 from ..gating import (
     FixedGating,
     RandomGating,
     ReconstructionGating,
 )
-from .jit_helpers import (
-    compute_both_losses,
-    get_ttt_loss_from_stats,
-)
 
-# Global correlation data collector
-_correlation_data: dict = {}
+# Optional Gemma 3 sharding
+try:
+    from ..models.gemma3 import (
+        ShardingConfig,
+        create_device_mesh,
+        get_data_sharding,
+    )
+
+    GEMMA3_AVAILABLE = True
+except ImportError:
+    GEMMA3_AVAILABLE = False
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -43,37 +65,104 @@ _correlation_data: dict = {}
 # =============================================================================
 
 
-def permute_within_chunks(input_ids: jax.Array, seed: int) -> jax.Array:
-    """Permute tokens randomly within each chunk."""
-    B, L = input_ids.shape
-    key = jax.random.PRNGKey(seed)
-
-    def permute_seq(seq, k):
-        return jax.random.permutation(k, seq)
-
-    keys = jax.random.split(key, B)
-    return jax.vmap(permute_seq)(input_ids, keys)
+def is_gemma_model(model_scale: str) -> bool:
+    """Check if model scale is Gemma 3."""
+    return model_scale in ["4b", "12b"]
 
 
 def get_model_name(model_scale: str) -> str:
-    """Convert model scale to HuggingFace model name."""
+    """Convert model scale to model name."""
     return {
         "125m": "gpt2",
         "350m": "gpt2-medium",
         "1b": "gpt2-large",
         "xl": "gpt2-xl",
+        "4b": "gemma3-4b",
+        "12b": "gemma3-12b",
     }[model_scale]
 
 
+def get_default_tokenizer(model_scale: str) -> str:
+    """Get default tokenizer name."""
+    if is_gemma_model(model_scale):
+        return "google/gemma-2-2b"
+    return get_model_name(model_scale)
+
+
+def get_seq_length(model_scale: str) -> int:
+    """Get sequence length for model."""
+    return 4096 if is_gemma_model(model_scale) else 1024
+
+
 def budget_to_update_rate(budget: float) -> float:
-    """Convert budget (cost multiplier) to target update rate."""
-    # cost = 1 + 2 * update_rate => update_rate = (budget - 1) / 2
+    """Convert budget to update rate."""
     rate = (budget - 1.0) / 2.0
     return float(min(max(rate, 0.0), 1.0))
 
 
+def permute_within_chunks(input_ids: jax.Array, seed: int) -> jax.Array:
+    """Permute tokens randomly within chunk."""
+    B, L = input_ids.shape
+    key = jax.random.PRNGKey(seed)
+    keys = jax.random.split(key, B)
+    return jax.vmap(lambda seq, k: jax.random.permutation(k, seq))(input_ids, keys)
+
+
 # =============================================================================
-# Core Evaluation Function
+# JIT Step Functions
+# =============================================================================
+
+
+def make_step_fn(is_gemma: bool):
+    """Create step function for computing losses."""
+
+    def step_fn(model, input_ids, attention_mask, position_ids, use_ttt):
+        if is_gemma:
+            # Gemma 3 returns (output_dict, cache)
+            out, _ = model(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_ttt=use_ttt,
+            )
+        else:
+            # GPT-2 returns output_dict
+            out = model(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_ttt=use_ttt,
+            )
+
+        loss = cross_entropy_loss(
+            out["logits"][:, :-1],
+            input_ids[:, 1:],
+            attention_mask[:, 1:],
+        )
+        ttt_stats = out.get("ttt_stats", {})
+        return loss, ttt_stats
+
+    return step_fn
+
+
+def get_ttt_loss_from_stats(ttt_stats: dict | None) -> tuple[float, float]:
+    """Extract TTT loss values from stats dict."""
+    if ttt_stats is None:
+        return 0.0, 0.0
+
+    init_loss = ttt_stats.get("ttt_loss_step_0", ttt_stats.get("ttt_loss_init", 0.0))
+    final_loss = ttt_stats.get("ttt_loss_step_1", ttt_stats.get("ttt_loss_final", 0.0))
+
+    if hasattr(init_loss, "mean"):
+        init_loss = float(init_loss.mean())
+    if hasattr(final_loss, "mean"):
+        final_loss = float(final_loss.mean())
+
+    return float(init_loss), float(final_loss)
+
+
+# =============================================================================
+# Core Evaluation Functions
 # =============================================================================
 
 
@@ -83,14 +172,12 @@ def evaluate_method(
     data_iter,
     num_batches: int,
     gating_strategy,
+    step_fn,
     seed: int = 42,
     shuffle: bool = False,
+    data_sharding=None,
 ) -> pd.DataFrame:
-    """
-    Evaluate a gating method on the given data.
-
-    Returns DataFrame with per-chunk results.
-    """
+    """Evaluate a gating method."""
     results = {
         "method": [],
         "loss": [],
@@ -102,8 +189,11 @@ def evaluate_method(
         "cost": [],
     }
 
-    batch_idx = 0
-    for batch in tqdm(data_iter, total=num_batches, desc=method_name):
+    jit_step = nnx.jit(step_fn, static_argnames=["use_ttt"])
+
+    for batch_idx, batch in enumerate(
+        tqdm(data_iter, total=num_batches, desc=method_name)
+    ):
         if batch_idx >= num_batches:
             break
 
@@ -117,17 +207,24 @@ def evaluate_method(
             chunk_mask = masks[:, c_idx]
             chunk_len = chunk_input.shape[-1]
 
-            # Apply shuffle if requested
             if shuffle:
                 chunk_input = permute_within_chunks(chunk_input, seed + c_idx)
 
-            # Local position IDs
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
             position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
 
+            # Apply sharding if available
+            if data_sharding is not None:
+                chunk_input = jax.device_put(chunk_input, data_sharding)
+                chunk_mask = jax.device_put(chunk_mask, data_sharding)
+                position_ids = jax.device_put(position_ids, data_sharding)
+
             # Compute both paths
-            loss_skip, loss_update, ttt_stats = compute_both_losses(
-                model, chunk_input, chunk_mask, position_ids
+            loss_skip, _ = jit_step(
+                model, chunk_input, chunk_mask, position_ids, use_ttt=False
+            )
+            loss_update, ttt_stats = jit_step(
+                model, chunk_input, chunk_mask, position_ids, use_ttt=True
             )
 
             loss_skip_val = float(loss_skip)
@@ -135,7 +232,6 @@ def evaluate_method(
             ttt_loss_init, _ = get_ttt_loss_from_stats(ttt_stats)
             advantage = loss_skip_val - loss_update_val
 
-            # Make gating decision
             decision_result = gating_strategy.decide(
                 loss_skip=loss_skip_val,
                 ttt_loss_init=ttt_loss_init,
@@ -143,7 +239,6 @@ def evaluate_method(
             )
             decision = "UPDATE" if decision_result.should_update else "SKIP"
 
-            # Update gating state
             gating_strategy.update_state(
                 {
                     "ttt_loss_init": ttt_loss_init,
@@ -151,7 +246,6 @@ def evaluate_method(
                 }
             )
 
-            # Record results
             for _ in range(batch_size):
                 results["method"].append(method_name)
                 results["loss"].append(
@@ -164,8 +258,6 @@ def evaluate_method(
                 results["ttt_loss_init"].append(ttt_loss_init)
                 results["cost"].append(3.0 if decision == "UPDATE" else 1.0)
 
-        batch_idx += 1
-
     return pd.DataFrame(results)
 
 
@@ -173,18 +265,19 @@ def evaluate_oracle(
     model: TTTModel,
     data_iter,
     num_batches: int,
-    target_update_rate: float = 0.5,
+    target_update_rate: float,
+    step_fn,
     seed: int = 42,
     shuffle: bool = False,
+    data_sharding=None,
 ) -> pd.DataFrame:
-    """
-    Oracle baseline: select top-k% chunks by advantage.
-    """
-    # First pass: collect all chunk data
+    """Oracle: select top-k% chunks by advantage."""
     chunk_data = []
+    jit_step = nnx.jit(step_fn, static_argnames=["use_ttt"])
 
-    batch_idx = 0
-    for batch in tqdm(data_iter, total=num_batches, desc="Oracle"):
+    for batch_idx, batch in enumerate(
+        tqdm(data_iter, total=num_batches, desc="Oracle")
+    ):
         if batch_idx >= num_batches:
             break
 
@@ -204,14 +297,21 @@ def evaluate_oracle(
             position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
             position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
 
-            loss_skip, loss_update, ttt_stats = compute_both_losses(
-                model, chunk_input, chunk_mask, position_ids
+            if data_sharding is not None:
+                chunk_input = jax.device_put(chunk_input, data_sharding)
+                chunk_mask = jax.device_put(chunk_mask, data_sharding)
+                position_ids = jax.device_put(position_ids, data_sharding)
+
+            loss_skip, _ = jit_step(
+                model, chunk_input, chunk_mask, position_ids, use_ttt=False
+            )
+            loss_update, ttt_stats = jit_step(
+                model, chunk_input, chunk_mask, position_ids, use_ttt=True
             )
 
             loss_skip_val = float(loss_skip)
             loss_update_val = float(loss_update)
             ttt_loss_init, _ = get_ttt_loss_from_stats(ttt_stats)
-            advantage = loss_skip_val - loss_update_val
 
             chunk_data.append(
                 {
@@ -220,21 +320,18 @@ def evaluate_oracle(
                     "batch_size": batch_size,
                     "loss_skip": loss_skip_val,
                     "loss_update": loss_update_val,
-                    "advantage": advantage,
+                    "advantage": loss_skip_val - loss_update_val,
                     "ttt_loss_init": ttt_loss_init,
                 }
             )
 
-        batch_idx += 1
-
-    # Second pass: select top-k by advantage
+    # Select top-k
     num_to_update = max(1, int(len(chunk_data) * target_update_rate))
     sorted_chunks = sorted(chunk_data, key=lambda x: x["advantage"], reverse=True)
     update_set = set(
         (c["batch_idx"], c["chunk_idx"]) for c in sorted_chunks[:num_to_update]
     )
 
-    # Build results
     results = {
         "method": [],
         "loss": [],
@@ -247,9 +344,9 @@ def evaluate_oracle(
     }
 
     for c in chunk_data:
-        key = (c["batch_idx"], c["chunk_idx"])
-        decision = "UPDATE" if key in update_set else "SKIP"
-
+        decision = (
+            "UPDATE" if (c["batch_idx"], c["chunk_idx"]) in update_set else "SKIP"
+        )
         for _ in range(c["batch_size"]):
             results["method"].append("Oracle")
             results["loss"].append(
@@ -272,44 +369,40 @@ def evaluate_oracle(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare gating methods")
+
+    # Model
     parser.add_argument(
         "--model_scale",
         type=str,
         default="125m",
-        choices=["125m", "350m", "1b", "xl"],
+        choices=["125m", "350m", "1b", "xl", "4b", "12b"],
     )
-    parser.add_argument(
-        "--budget",
-        type=float,
-        default=2.0,
-        help="Target budget (cost multiplier)",
-    )
-    parser.add_argument(
-        "--num_eval_batches",
-        type=int,
-        default=20,
-        help="Number of batches",
-    )
+    parser.add_argument("--checkpoint_path", type=str, default=None)
+
+    # Experiment
+    parser.add_argument("--budget", type=float, default=2.0)
+    parser.add_argument("--num_eval_batches", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--output_dir", type=str, default="outputs/comparison")
-    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--language", type=str, default="Python")
     parser.add_argument("--split", type=str, default="train")
     parser.add_argument("--skip_examples", type=int, default=0)
     parser.add_argument("--num_workers", type=int, default=32)
     parser.add_argument("--shuffle", action="store_true")
-    parser.add_argument(
-        "--methods",
-        type=str,
-        default="all",
-        help="Comma-separated methods: skip,update1,random,oracle,ours,all",
-    )
-    parser.add_argument(
-        "--ttt_base_lr",
-        type=float,
-        default=None,
-        help="Override TTT base learning rate",
-    )
+    parser.add_argument("--methods", type=str, default="all")
+
+    # Sharding
+    parser.add_argument("--enable_sharding", action="store_true")
+    parser.add_argument("--dcn_data_parallelism", type=int, default=-1)
+    parser.add_argument("--dcn_fsdp_parallelism", type=int, default=1)
+    parser.add_argument("--dcn_tensor_parallelism", type=int, default=1)
+    parser.add_argument("--ici_data_parallelism", type=int, default=1)
+    parser.add_argument("--ici_fsdp_parallelism", type=int, default=-1)
+    parser.add_argument("--ici_tensor_parallelism", type=int, default=1)
+
+    # Output
+    parser.add_argument("--output_dir", type=str, default="outputs/comparison")
+    parser.add_argument("--seed", type=int, default=42)
+
     return parser.parse_args()
 
 
@@ -320,50 +413,88 @@ def parse_args():
 
 def main():
     args = parse_args()
+    is_gemma = is_gemma_model(args.model_scale)
 
-    print("=" * 60)
-    print("PonderTTT Method Comparison")
-    print("=" * 60)
-    print(f"Model: {args.model_scale}")
-    print(f"Budget: {args.budget}")
-    print(f"Batches: {args.num_eval_batches}")
-    print(f"Language: {args.language}")
+    # Initialize distributed for multi-host
+    if args.enable_sharding:
+        if not GEMMA3_AVAILABLE:
+            raise RuntimeError("Sharding requires Gemma 3 module")
+        jax.distributed.initialize()
+
+    logger.info("=" * 60)
+    logger.info("PonderTTT Method Comparison")
+    logger.info("=" * 60)
+    logger.info(f"Model: {args.model_scale} ({'Gemma 3' if is_gemma else 'GPT-2'})")
+    logger.info(f"Budget: {args.budget}")
+    logger.info(f"Batches: {args.num_eval_batches}")
+    logger.info(f"Language: {args.language}")
+    logger.info(f"Devices: {len(jax.devices())}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Setup sharding
+    mesh = None
+    data_sharding = None
+    if args.enable_sharding and GEMMA3_AVAILABLE:
+        sharding_config = ShardingConfig(
+            dcn_data_parallelism=args.dcn_data_parallelism,
+            dcn_fsdp_parallelism=args.dcn_fsdp_parallelism,
+            dcn_tensor_parallelism=args.dcn_tensor_parallelism,
+            ici_data_parallelism=args.ici_data_parallelism,
+            ici_fsdp_parallelism=args.ici_fsdp_parallelism,
+            ici_tensor_parallelism=args.ici_tensor_parallelism,
+        )
+        mesh = create_device_mesh(sharding_config)
+        data_sharding = get_data_sharding(mesh, sharding_config)
+        logger.info(f"Mesh: {mesh.shape}")
+
     # Load model
     model_name = get_model_name(args.model_scale)
-    tokenizer = get_tokenizer(model_name)
+    tokenizer_name = get_default_tokenizer(args.model_scale)
+    tokenizer = get_tokenizer(tokenizer_name)
+    seq_length = get_seq_length(args.model_scale)
 
-    model, _ = load_ttt_model(
-        model_name=model_name,
-        fast_weight_type="ttt",
-        seed=args.seed,
-        load_pretrained=True,
-        vocab_size=tokenizer.get_vocab_size(),
-    )
+    if is_gemma:
+        model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            dtype=jnp.bfloat16,
+            seed=args.seed,
+            load_pretrained=True,
+            checkpoint_path=args.checkpoint_path,
+        )
+    else:
+        model, _ = load_ttt_model(
+            model_name=model_name,
+            fast_weight_type="ttt",
+            seed=args.seed,
+            load_pretrained=True,
+            vocab_size=tokenizer.get_vocab_size(),
+        )
     model.eval()
 
     target_update_rate = budget_to_update_rate(args.budget)
-    print(f"Target update rate: {target_update_rate:.1%}")
+    logger.info(f"Target update rate: {target_update_rate:.1%}")
 
-    # Parse methods to evaluate
+    # Parse methods
     methods_str = args.methods.lower()
-    if methods_str == "all":
-        methods = ["skip", "update1", "random", "oracle", "ours"]
-    else:
-        methods = [m.strip() for m in methods_str.split(",")]
+    methods = (
+        ["skip", "update1", "random", "oracle", "ours"]
+        if methods_str == "all"
+        else [m.strip() for m in methods_str.split(",")]
+    )
 
-    all_results = []
+    # Create step function
+    step_fn = make_step_fn(is_gemma)
 
-    # Helper to create data iterator
+    # Data iterator factory
     def make_data_iter():
         return create_data_iterator(
             tokenizer=tokenizer,
             split=args.split,
             batch_size=args.batch_size,
-            seq_length=1024,
+            seq_length=seq_length,
             chunk_size=512,
             max_examples=args.num_eval_batches * args.batch_size * 2,
             num_workers=args.num_workers,
@@ -371,9 +502,11 @@ def main():
             skip_first_n=args.skip_examples,
         )
 
-    # SKIP baseline
+    all_results = []
+
+    # Evaluate methods
     if "skip" in methods:
-        print("\n--- SKIP ---")
+        logger.info("\n--- SKIP ---")
         gating = FixedGating(always_update=False)
         df = evaluate_method(
             "SKIP",
@@ -381,15 +514,16 @@ def main():
             make_data_iter(),
             args.num_eval_batches,
             gating,
+            step_fn,
             args.seed,
             args.shuffle,
+            data_sharding,
         )
         all_results.append(df)
-        print(f"  Avg loss: {df['loss'].mean():.4f}")
+        logger.info(f"  Avg loss: {df['loss'].mean():.4f}")
 
-    # UPDATE_1 baseline
     if "update1" in methods:
-        print("\n--- UPDATE_1 ---")
+        logger.info("\n--- UPDATE_1 ---")
         gating = FixedGating(always_update=True)
         df = evaluate_method(
             "UPDATE_1",
@@ -397,15 +531,16 @@ def main():
             make_data_iter(),
             args.num_eval_batches,
             gating,
+            step_fn,
             args.seed,
             args.shuffle,
+            data_sharding,
         )
         all_results.append(df)
-        print(f"  Avg loss: {df['loss'].mean():.4f}")
+        logger.info(f"  Avg loss: {df['loss'].mean():.4f}")
 
-    # Random Skip
     if "random" in methods:
-        print("\n--- Random Skip ---")
+        logger.info("\n--- Random Skip ---")
         gating = RandomGating(update_prob=target_update_rate)
         df = evaluate_method(
             "Random Skip",
@@ -413,31 +548,35 @@ def main():
             make_data_iter(),
             args.num_eval_batches,
             gating,
+            step_fn,
             args.seed,
             args.shuffle,
+            data_sharding,
         )
         all_results.append(df)
-        print(f"  Avg loss: {df['loss'].mean():.4f}")
-        print(f"  Update rate: {(df['decision'] == 'UPDATE').mean():.1%}")
+        logger.info(
+            f"  Avg loss: {df['loss'].mean():.4f}, Update rate: {(df['decision'] == 'UPDATE').mean():.1%}"
+        )
 
-    # Oracle
     if "oracle" in methods:
-        print("\n--- Oracle ---")
+        logger.info("\n--- Oracle ---")
         df = evaluate_oracle(
             model,
             make_data_iter(),
             args.num_eval_batches,
             target_update_rate,
+            step_fn,
             args.seed,
             args.shuffle,
+            data_sharding,
         )
         all_results.append(df)
-        print(f"  Avg loss: {df['loss'].mean():.4f}")
-        print(f"  Update rate: {(df['decision'] == 'UPDATE').mean():.1%}")
+        logger.info(
+            f"  Avg loss: {df['loss'].mean():.4f}, Update rate: {(df['decision'] == 'UPDATE').mean():.1%}"
+        )
 
-    # PonderTTT (Ours)
     if "ours" in methods:
-        print("\n--- PonderTTT (Ours) ---")
+        logger.info("\n--- PonderTTT (Ours) ---")
         gating = ReconstructionGating(target_update_rate=target_update_rate)
         df = evaluate_method(
             "Ours",
@@ -445,46 +584,41 @@ def main():
             make_data_iter(),
             args.num_eval_batches,
             gating,
+            step_fn,
             args.seed,
             args.shuffle,
+            data_sharding,
         )
         all_results.append(df)
-        print(f"  Avg loss: {df['loss'].mean():.4f}")
-        print(f"  Update rate: {(df['decision'] == 'UPDATE').mean():.1%}")
+        logger.info(
+            f"  Avg loss: {df['loss'].mean():.4f}, Update rate: {(df['decision'] == 'UPDATE').mean():.1%}"
+        )
 
-    # Combine results
+    # Summary
     if all_results:
         combined_df = pd.concat(all_results, ignore_index=True)
 
-        # Summary
-        print("\n" + "=" * 60)
-        print("SUMMARY")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("SUMMARY")
+        logger.info("=" * 60)
         summary = (
-            combined_df.groupby("method")
-            .agg(
-                {
-                    "loss": "mean",
-                    "cost": "mean",
-                }
-            )
-            .round(4)
+            combined_df.groupby("method").agg({"loss": "mean", "cost": "mean"}).round(4)
         )
-        print(summary)
+        logger.info(f"\n{summary}")
 
-        # Save
         combined_df.to_csv(output_dir / "results.csv", index=False)
-
-        summary_dict = {
-            "model_scale": args.model_scale,
-            "budget": args.budget,
-            "num_batches": args.num_eval_batches,
-            "methods": summary.to_dict(),
-        }
         with open(output_dir / "summary.json", "w") as f:
-            json.dump(summary_dict, f, indent=2)
+            json.dump(
+                {
+                    "model_scale": args.model_scale,
+                    "budget": args.budget,
+                    "methods": summary.to_dict(),
+                },
+                f,
+                indent=2,
+            )
 
-        print(f"\nResults saved to {output_dir}")
+        logger.info(f"\nSaved to {output_dir}")
 
 
 if __name__ == "__main__":
