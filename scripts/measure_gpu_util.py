@@ -7,7 +7,7 @@ minimal difference between SKIP and UPDATE. GPU utilization is a more
 meaningful metric showing the actual compute workload.
 
 Usage:
-    python scripts/measure_gpu_util.py --model_scale 125m --batch_size 1
+    python scripts/measure_gpu_util.py --model_scale small --batch_size 1
 """
 
 import time

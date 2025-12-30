@@ -6,16 +6,16 @@ from .config import (
     ExperimentConfig,
     ExperimentModelConfig,
     TrainingConfig,
-    get_1b_config,
-    get_125m_config,
-    get_350m_config,
+    get_large_config,
+    get_small_config,
+    get_medium_config,
 )
 
 __all__ = [
     "ExperimentConfig",
     "ExperimentModelConfig",
     "TrainingConfig",
-    "get_125m_config",
-    "get_350m_config",
-    "get_1b_config",
+    "get_small_config",
+    "get_medium_config",
+    "get_large_config",
 ]

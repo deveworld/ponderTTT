@@ -75,10 +75,10 @@ class ExperimentConfig:
     mesh_axes: tuple = ("batch", "model")
 
 
-def get_125m_config() -> ExperimentConfig:
-    """Get configuration for 125M model (GPT-2)."""
+def get_small_config() -> ExperimentConfig:
+    """Get configuration for GPT-2 Small (124M)."""
     model = ExperimentModelConfig(
-        model_name="gpt2",
+        model_name="gpt2",  # 124M
         lora_rank=64,
         chunk_size=512,
     )
@@ -92,14 +92,14 @@ def get_125m_config() -> ExperimentConfig:
     return ExperimentConfig(
         model=model,
         training=training,
-        experiment_name="ponderttt_125m",
+        experiment_name="ponderttt_small",
     )
 
 
-def get_350m_config() -> ExperimentConfig:
-    """Get configuration for 350M model (GPT-2 Medium)."""
+def get_medium_config() -> ExperimentConfig:
+    """Get configuration for GPT-2 Medium (355M)."""
     model = ExperimentModelConfig(
-        model_name="gpt2-medium",
+        model_name="gpt2-medium",  # 355M
         lora_rank=128,
         chunk_size=512,
     )
@@ -113,14 +113,14 @@ def get_350m_config() -> ExperimentConfig:
     return ExperimentConfig(
         model=model,
         training=training,
-        experiment_name="ponderttt_350m",
+        experiment_name="ponderttt_medium",
     )
 
 
-def get_1b_config() -> ExperimentConfig:
-    """Get configuration for 1B model (GPT-2 Large)."""
+def get_large_config() -> ExperimentConfig:
+    """Get configuration for GPT-2 Large (774M)."""
     model = ExperimentModelConfig(
-        model_name="gpt2-large",
+        model_name="gpt2-large",  # 774M
         lora_rank=256,
         chunk_size=512,
     )
@@ -134,5 +134,5 @@ def get_1b_config() -> ExperimentConfig:
     return ExperimentConfig(
         model=model,
         training=training,
-        experiment_name="ponderttt_1b",
+        experiment_name="ponderttt_large",
     )

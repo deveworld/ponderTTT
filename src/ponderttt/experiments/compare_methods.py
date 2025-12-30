@@ -2,7 +2,7 @@
 Compare gating methods for adaptive Test-Time Training.
 
 Supports:
-- GPT-2 models (gpt2, medium, large, xl)
+- GPT-2 models (small, medium, large, xl)
 - Gemma 3 models (1b, 4b, 12b, 27b) with TPU sharding
 
 Methods:
@@ -14,7 +14,7 @@ Methods:
 
 Usage:
     # GPT-2
-    python -m ponderttt.experiments.compare_methods --model_scale gpt2 --budget 2.0
+    python -m ponderttt.experiments.compare_methods --model_scale small --budget 2.0
 
     # Gemma 3
     python -m ponderttt.experiments.compare_methods --model_scale 4b --budget 2.0
@@ -373,8 +373,8 @@ def parse_args():
     parser.add_argument(
         "--model_scale",
         type=str,
-        default="gpt2",
-        choices=["gpt2", "medium", "large", "xl", "1b", "4b", "12b", "27b"],
+        default="small",
+        choices=["small", "medium", "large", "xl", "1b", "4b", "12b", "27b"],
     )
     parser.add_argument("--checkpoint_path", type=str, default=None)
 

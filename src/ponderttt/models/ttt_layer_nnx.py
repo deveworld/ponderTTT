@@ -82,7 +82,7 @@ class TTTConfig:
     causal_k: int = 0  # Causal mask diagonal: 0 includes diagonal, -1 excludes it
     # Eta decay rate for exponential position weighting (0 = linear, >0 = exponential)
     # Higher values give more weight to recent positions, fixing gradient misalignment
-    # for larger models (350M+). Recommended: 0.3-0.5 for 350M.
+    # for larger models (355M+). Recommended: 0.3-0.5 for 355M.
     eta_decay_rate: float = 0.0
     # Sharding configuration (for multi-host TPU)
     axis_rules: Optional[Callable[..., P]] = None
@@ -90,36 +90,36 @@ class TTTConfig:
     max_grad_norm: Optional[float] = None
 
     @classmethod
-    def for_gpt2(cls, model_size: str = "125m") -> "TTTConfig":
+    def for_gpt2(cls, model_size: str = "small") -> "TTTConfig":
         """TTT config for GPT-2 models."""
         configs: dict[str, dict] = {
-            "125m": {
+            "small": {  # 124M
                 "hidden_dim": 768,
                 "num_heads": 12,
                 "head_dim": 64,
                 "eta_decay_rate": 0.0,
             },
-            # 350M+ needs eta_decay_rate to fix gradient misalignment across positions
-            "350m": {
+            # 355M+ needs eta_decay_rate to fix gradient misalignment across positions
+            "medium": {  # 355M
                 "hidden_dim": 1024,
                 "num_heads": 16,
                 "head_dim": 64,
                 "eta_decay_rate": 0.3,
             },
-            "1b": {
+            "large": {  # 774M
                 "hidden_dim": 1280,
                 "num_heads": 20,
                 "head_dim": 64,
                 "eta_decay_rate": 0.3,
             },
-            "xl": {
+            "xl": {  # 1.5B
                 "hidden_dim": 1600,
                 "num_heads": 25,
                 "head_dim": 64,
                 "eta_decay_rate": 0.3,
             },
         }
-        config = configs.get(model_size, configs["125m"])
+        config = configs.get(model_size, configs["small"])
         return cls(
             hidden_dim=config["hidden_dim"],
             num_heads=config["num_heads"],
@@ -490,7 +490,7 @@ class TTTLayer(nnx.Module):
         # Combined learning rate
         # Scale by head_dim for gradient magnitude normalization (standard TTT approach)
         # Additional 768/hidden_dim scaling prevents overshooting for larger models
-        # (350M with hidden_dim=1024 needs 25% smaller eta than 125M with hidden_dim=768)
+        # (355M with hidden_dim=1024 needs 25% smaller eta than 124M with hidden_dim=768)
         hidden_dim_scale = 768.0 / self.config.hidden_dim
         eta = (
             (self.config.ttt_base_lr * token_idx).reshape(

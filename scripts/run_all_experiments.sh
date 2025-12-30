@@ -3,8 +3,8 @@
 #
 # Usage:
 #   ./scripts/run_all_experiments.sh                    # Run all phases, all models
-#   ./scripts/run_all_experiments.sh --small            # Run only GPT-2 Small (125M)
-#   ./scripts/run_all_experiments.sh --medium           # Run only GPT-2 Medium (350M)
+#   ./scripts/run_all_experiments.sh --small            # Run only GPT-2 Small (124M)
+#   ./scripts/run_all_experiments.sh --medium           # Run only GPT-2 Medium (355M)
 #   ./scripts/run_all_experiments.sh --small phase1     # Run specific phase for small
 #   ./scripts/run_all_experiments.sh phase1 phase2      # Run multiple phases
 #
@@ -32,13 +32,13 @@ RUN_XL=false
 # Configuration - Common
 NUM_WORKERS=128
 
-# Configuration - GPT-2 Small (125M)
+# Configuration - GPT-2 Small (124M)
 BATCH_SIZE_SMALL=16
 MAX_CHUNKS_SMALL=160000
 NUM_EVAL_BATCHES_SMALL=1000
 NUM_EVAL_BATCHES_OOD_SMALL=500
 
-# Configuration - GPT-2 Medium (350M)
+# Configuration - GPT-2 Medium (355M)
 BATCH_SIZE_MEDIUM=16
 MAX_CHUNKS_MEDIUM=160000
 NUM_EVAL_BATCHES_MEDIUM=1000
@@ -132,7 +132,7 @@ run_experiment() {
 phase1_baselines() {
     log_phase "Phase 1: Training Baselines"
 
-    # GPT-2 Small (125M) Baselines
+    # GPT-2 Small (124M) Baselines
     if [ "$RUN_SMALL" = true ]; then
         run_experiment "GPT-2 Small UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
@@ -156,7 +156,7 @@ phase1_baselines() {
                 --wandb_project ponderttt-small --save_every $SAVE_EVERY_BASELINE_SMALL
     fi
 
-    # GPT-2 Medium (350M) Baselines
+    # GPT-2 Medium (355M) Baselines
     if [ "$RUN_MEDIUM" = true ]; then
         run_experiment "GPT-2 Medium UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
@@ -214,7 +214,7 @@ phase2_eval_id() {
     # Training uses ~160K examples, so skip those for fair evaluation
     local SKIP_EXAMPLES=160000
 
-    # GPT-2 Small (125M) Evaluation (Standard Gating)
+    # GPT-2 Small (124M) Evaluation (Standard Gating)
     if [ "$RUN_SMALL" = true ]; then
         local ckpt_small_update1=$(get_latest_checkpoint "outputs/baselines/small_update1/checkpoints")
         if [ -z "$ckpt_small_update1" ]; then
@@ -236,7 +236,7 @@ phase2_eval_id() {
         fi
     fi
 
-    # GPT-2 Medium (350M) Evaluation
+    # GPT-2 Medium (355M) Evaluation
     if [ "$RUN_MEDIUM" = true ]; then
         local ckpt_medium_update1=$(get_latest_checkpoint "outputs/baselines/medium_update1/checkpoints")
         if [ -z "$ckpt_medium_update1" ]; then
@@ -324,7 +324,7 @@ phase3_eval_ood() {
 
     local languages=("JavaScript" "Java" "Go")
 
-    # GPT-2 Small (125M) OOD
+    # GPT-2 Small (124M) OOD
     if [ "$RUN_SMALL" = true ]; then
         local ckpt_small_update1=$(get_latest_checkpoint "outputs/baselines/small_update1/checkpoints")
         if [ -z "$ckpt_small_update1" ]; then
@@ -347,7 +347,7 @@ phase3_eval_ood() {
         fi
     fi
 
-    # GPT-2 Medium (350M) OOD
+    # GPT-2 Medium (355M) OOD
     if [ "$RUN_MEDIUM" = true ]; then
         local ckpt_medium_update1=$(get_latest_checkpoint "outputs/baselines/medium_update1/checkpoints")
         if [ -z "$ckpt_medium_update1" ]; then
@@ -707,8 +707,8 @@ else
                 echo "  all                     - Run all phases"
                 echo ""
                 echo "Model selection:"
-                echo "  --small                 - Run only GPT-2 Small (125M) experiments"
-                echo "  --medium                - Run only GPT-2 Medium (350M) experiments"
+                echo "  --small                 - Run only GPT-2 Small (124M) experiments"
+                echo "  --medium                - Run only GPT-2 Medium (355M) experiments"
                 echo "  --large                 - Run only GPT-2 Large (774M) experiments"
                 echo "  --xl                    - Run only GPT-2 XL (1.5B) experiments"
                 exit 1

@@ -297,6 +297,7 @@ def load_ttt_model(
 
     Args:
         model_name_or_path: Name of model in HuggingFace, or one of our supported scales:
+        model_name_or_path: Name of model in HuggingFace, or one of our supported scales:
             - GPT-2: "small", "medium", "large", "xl"
             - Gemma 3: "gemma3-1b", "gemma3-4b", "gemma3-12b", "gemma3-27b"
         ttt_config: TTT layer configuration (if fast_weight_type='ttt')
@@ -339,14 +340,14 @@ def load_ttt_model(
 
     # Default configs if not provided
     if fast_weight_type == "ttt" and ttt_config is None:
-        # Use for_gpt2() to get correct model-specific settings (e.g., eta_decay_rate for 350M+)
+        # Use for_gpt2() to get correct model-specific settings (e.g., eta_decay_rate for 355M+)
         model_size_map = {
-            "gpt2": "125m",
-            "gpt2-medium": "350m",
-            "gpt2-large": "1b",
+            "gpt2": "small",
+            "gpt2-medium": "medium",
+            "gpt2-large": "large",
             "gpt2-xl": "xl",
         }
-        model_size = model_size_map.get(model_name, "125m")
+        model_size = model_size_map.get(model_name, "small")
         ttt_config = TTTConfig.for_gpt2(model_size)
         ttt_config.dtype = dtype
     elif fast_weight_type == "lora" and lora_config is None:
