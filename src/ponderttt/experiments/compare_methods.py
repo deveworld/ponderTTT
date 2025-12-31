@@ -259,7 +259,10 @@ def evaluate_method(
             ttt_loss_init, _ = get_ttt_loss_from_stats(ttt_stats)
             advantage = loss_skip_val - loss_update_val
 
+            # Generate rng key for RandomGating (ignored by other strategies)
+            rng_key = jax.random.PRNGKey(seed + batch_idx * 1000 + c_idx)
             decision_result = gating_strategy.decide(
+                rng=rng_key,
                 loss_skip=loss_skip_val,
                 ttt_loss_init=ttt_loss_init,
                 ttt_loss_final=0.0,
@@ -561,7 +564,7 @@ def main():
 
     if "random" in methods:
         logger.info("\n--- Random Skip ---")
-        gating = RandomGating(update_prob=target_update_rate)
+        gating = RandomGating(probability=target_update_rate)
         df = evaluate_method(
             "Random Skip",
             model,
