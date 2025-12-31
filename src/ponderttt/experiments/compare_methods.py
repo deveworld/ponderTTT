@@ -613,7 +613,7 @@ def main():
     # Parse methods
     methods_str = args.methods.lower()
     methods = (
-        ["skip", "update1", "random", "oracle", "ours", "ttt_improvement"]
+        ["skip", "update1", "random", "oracle", "ours"]
         if methods_str == "all"
         else [m.strip() for m in methods_str.split(",")]
     )
