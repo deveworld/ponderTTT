@@ -459,7 +459,7 @@ phase5_shuffle() {
                     --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/small_shuffle
+                    --output_dir outputs/eval/small_shuffle \
                     --shuffle
         fi
     fi
@@ -479,7 +479,7 @@ phase5_shuffle() {
                     --batch_size $BATCH_SIZE_MEDIUM \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/medium_shuffle
+                    --output_dir outputs/eval/medium_shuffle \
                     --shuffle
         fi
     fi
@@ -533,7 +533,7 @@ phase6_diagonal() {
                     --batch_size $BATCH_SIZE_MEDIUM \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/medium_diagonal_k_minus_1
+                    --output_dir outputs/eval/medium_diagonal_k_minus_1 \
                     --diagonal_offset -1
 
         fi
