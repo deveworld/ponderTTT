@@ -512,7 +512,7 @@ phase6_diagonal() {
                     --batch_size $BATCH_SIZE_SMALL \
                     --language Python \
                     --skip_examples $SKIP_EXAMPLES \
-                    --output_dir outputs/eval/small_diagonal_k_minus_1
+                    --output_dir outputs/eval/small_diagonal_k_minus_1 \
                     --diagonal_offset -1
         fi
     fi
