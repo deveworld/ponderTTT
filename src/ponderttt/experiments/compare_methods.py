@@ -504,7 +504,7 @@ def main():
     # Evaluate methods
     if "skip" in methods:
         logger.info("\n--- SKIP ---")
-        gating = FixedGating(always_update=False)
+        gating = FixedGating(action="SKIP")
         df = evaluate_method(
             "SKIP",
             model,
@@ -520,7 +520,7 @@ def main():
 
     if "update1" in methods:
         logger.info("\n--- UPDATE_1 ---")
-        gating = FixedGating(always_update=True)
+        gating = FixedGating(action="UPDATE")
         df = evaluate_method(
             "UPDATE_1",
             model,
