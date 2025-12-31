@@ -115,33 +115,63 @@ def permute_within_chunks(input_ids: jax.Array, seed: int) -> jax.Array:
 
 
 def make_step_fn(is_gemma: bool):
-    """Create step function for computing losses."""
+    """Create step function for computing losses.
 
-    def step_fn(model, input_ids, attention_mask, position_ids, use_ttt):
+    Returns a function that computes BOTH skip and update losses in one call
+    to maximize JIT efficiency.
+    """
+
+    def step_fn(model, input_ids, attention_mask, position_ids):
+        """Compute both SKIP and UPDATE losses efficiently.
+
+        Returns:
+            loss_skip: Loss without TTT
+            loss_update: Loss with TTT
+            ttt_stats: TTT statistics from update path
+        """
         if is_gemma:
-            # Gemma 3 returns (output_dict, cache)
-            out, _ = model(
+            # SKIP path
+            out_skip, _ = model(
                 input_ids,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                use_ttt=use_ttt,
+                use_ttt=False,
+            )
+            # UPDATE path
+            out_update, _ = model(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_ttt=True,
             )
         else:
-            # GPT-2 returns output_dict
-            out = model(
+            # SKIP path
+            out_skip = model(
                 input_ids,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                use_ttt=use_ttt,
+                use_ttt=False,
+            )
+            # UPDATE path
+            out_update = model(
+                input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_ttt=True,
             )
 
-        loss = cross_entropy_loss(
-            out["logits"][:, :-1],
+        loss_skip = cross_entropy_loss(
+            out_skip["logits"][:, :-1],
             input_ids[:, 1:],
             attention_mask[:, 1:],
         )
-        ttt_stats = out.get("ttt_stats", {})
-        return loss, ttt_stats
+        loss_update = cross_entropy_loss(
+            out_update["logits"][:, :-1],
+            input_ids[:, 1:],
+            attention_mask[:, 1:],
+        )
+        ttt_stats = out_update.get("ttt_stats", {})
+        return loss_skip, loss_update, ttt_stats
 
     return step_fn
 
@@ -189,7 +219,7 @@ def evaluate_method(
         "cost": [],
     }
 
-    jit_step = nnx.jit(step_fn, static_argnames=["use_ttt"])
+    jit_step = nnx.jit(step_fn)
 
     for batch_idx, batch in enumerate(
         tqdm(data_iter, total=num_batches, desc=method_name)
@@ -219,12 +249,9 @@ def evaluate_method(
             chunk_mask = jnp.asarray(chunk_mask)
             position_ids = jnp.asarray(position_ids)
 
-            # Compute both paths
-            loss_skip, _ = jit_step(
-                model, chunk_input, chunk_mask, position_ids, use_ttt=False
-            )
-            loss_update, ttt_stats = jit_step(
-                model, chunk_input, chunk_mask, position_ids, use_ttt=True
+            # Compute both paths in single JIT call for efficiency
+            loss_skip, loss_update, ttt_stats = jit_step(
+                model, chunk_input, chunk_mask, position_ids
             )
 
             loss_skip_val = float(loss_skip)
@@ -272,7 +299,7 @@ def evaluate_oracle(
 ) -> pd.DataFrame:
     """Oracle: select top-k% chunks by advantage."""
     chunk_data = []
-    jit_step = nnx.jit(step_fn, static_argnames=["use_ttt"])
+    jit_step = nnx.jit(step_fn)
 
     for batch_idx, batch in enumerate(
         tqdm(data_iter, total=num_batches, desc="Oracle")
@@ -301,11 +328,9 @@ def evaluate_oracle(
             chunk_mask = jnp.asarray(chunk_mask)
             position_ids = jnp.asarray(position_ids)
 
-            loss_skip, _ = jit_step(
-                model, chunk_input, chunk_mask, position_ids, use_ttt=False
-            )
-            loss_update, ttt_stats = jit_step(
-                model, chunk_input, chunk_mask, position_ids, use_ttt=True
+            # Compute both paths in single JIT call for efficiency
+            loss_skip, loss_update, ttt_stats = jit_step(
+                model, chunk_input, chunk_mask, position_ids
             )
 
             loss_skip_val = float(loss_skip)
