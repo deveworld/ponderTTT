@@ -216,6 +216,7 @@ def evaluate_method(
         "advantage": [],
         "decision": [],
         "ttt_loss_init": [],
+        "ttt_loss_final": [],
         "cost": [],
     }
 
@@ -256,7 +257,7 @@ def evaluate_method(
 
             loss_skip_val = float(loss_skip)
             loss_update_val = float(loss_update)
-            ttt_loss_init, _ = get_ttt_loss_from_stats(ttt_stats)
+            ttt_loss_init, ttt_loss_final = get_ttt_loss_from_stats(ttt_stats)
             advantage = loss_skip_val - loss_update_val
 
             # Generate rng key for RandomGating (ignored by other strategies)
@@ -265,7 +266,7 @@ def evaluate_method(
                 rng=rng_key,
                 loss_skip=loss_skip_val,
                 ttt_loss_init=ttt_loss_init,
-                ttt_loss_final=0.0,
+                ttt_loss_final=ttt_loss_final,
             )
             decision = "UPDATE" if decision_result.should_update else "SKIP"
 
@@ -286,6 +287,7 @@ def evaluate_method(
                 results["advantage"].append(advantage)
                 results["decision"].append(decision)
                 results["ttt_loss_init"].append(ttt_loss_init)
+                results["ttt_loss_final"].append(ttt_loss_final)
                 results["cost"].append(3.0 if decision == "UPDATE" else 1.0)
 
     return pd.DataFrame(results)
@@ -384,6 +386,112 @@ def evaluate_oracle(
             results["advantage"].append(c["advantage"])
             results["decision"].append(decision)
             results["ttt_loss_init"].append(c["ttt_loss_init"])
+            results["cost"].append(3.0 if decision == "UPDATE" else 1.0)
+
+    return pd.DataFrame(results)
+
+
+def evaluate_ttt_improvement(
+    model: TTTModel,
+    data_iter,
+    num_batches: int,
+    target_update_rate: float,
+    step_fn,
+    seed: int = 42,
+    shuffle: bool = False,
+) -> pd.DataFrame:
+    """TTT Improvement gating: select top-k% chunks by ttt_improvement.
+
+    TTT Improvement = ttt_loss_step_0 - ttt_loss_step_1
+    This measures how much the reconstruction loss improved after the TTT step.
+    Higher improvement suggests the chunk was more "learnable".
+    """
+    chunk_data = []
+    jit_step = nnx.jit(step_fn)
+
+    for batch_idx, batch in enumerate(
+        tqdm(data_iter, total=num_batches, desc="TTT Improvement")
+    ):
+        if batch_idx >= num_batches:
+            break
+
+        chunks = batch["chunks"]
+        masks = batch["chunk_attention_mask"]
+        num_chunks = chunks.shape[1]
+        batch_size = chunks.shape[0]
+
+        for c_idx in range(num_chunks):
+            chunk_input = chunks[:, c_idx]
+            chunk_mask = masks[:, c_idx]
+            chunk_len = chunk_input.shape[-1]
+
+            if shuffle:
+                chunk_input = permute_within_chunks(chunk_input, seed + c_idx)
+
+            position_ids = jnp.arange(chunk_len, dtype=jnp.int32)
+            position_ids = jnp.broadcast_to(position_ids, chunk_input.shape)
+
+            chunk_input = jnp.asarray(chunk_input)
+            chunk_mask = jnp.asarray(chunk_mask)
+            position_ids = jnp.asarray(position_ids)
+
+            loss_skip, loss_update, ttt_stats = jit_step(
+                model, chunk_input, chunk_mask, position_ids
+            )
+
+            loss_skip_val = float(loss_skip)
+            loss_update_val = float(loss_update)
+            ttt_loss_init, ttt_loss_final = get_ttt_loss_from_stats(ttt_stats)
+            ttt_improvement = ttt_loss_init - ttt_loss_final
+
+            chunk_data.append(
+                {
+                    "batch_idx": batch_idx,
+                    "chunk_idx": c_idx,
+                    "batch_size": batch_size,
+                    "loss_skip": loss_skip_val,
+                    "loss_update": loss_update_val,
+                    "advantage": loss_skip_val - loss_update_val,
+                    "ttt_loss_init": ttt_loss_init,
+                    "ttt_loss_final": ttt_loss_final,
+                    "ttt_improvement": ttt_improvement,
+                }
+            )
+
+    # Select top-k by ttt_improvement (higher = more learnable = should update)
+    num_to_update = max(1, int(len(chunk_data) * target_update_rate))
+    sorted_chunks = sorted(chunk_data, key=lambda x: x["ttt_improvement"], reverse=True)
+    update_set = set(
+        (c["batch_idx"], c["chunk_idx"]) for c in sorted_chunks[:num_to_update]
+    )
+
+    results = {
+        "method": [],
+        "loss": [],
+        "loss_skip": [],
+        "loss_update": [],
+        "advantage": [],
+        "decision": [],
+        "ttt_loss_init": [],
+        "ttt_loss_final": [],
+        "cost": [],
+    }
+
+    for c in chunk_data:
+        decision = (
+            "UPDATE" if (c["batch_idx"], c["chunk_idx"]) in update_set else "SKIP"
+        )
+        for _ in range(c["batch_size"]):
+            results["method"].append("TTT Improvement")
+            results["loss"].append(
+                c["loss_update"] if decision == "UPDATE" else c["loss_skip"]
+            )
+            results["loss_skip"].append(c["loss_skip"])
+            results["loss_update"].append(c["loss_update"])
+            results["advantage"].append(c["advantage"])
+            results["decision"].append(decision)
+            results["ttt_loss_init"].append(c["ttt_loss_init"])
+            results["ttt_loss_final"].append(c["ttt_loss_final"])
             results["cost"].append(3.0 if decision == "UPDATE" else 1.0)
 
     return pd.DataFrame(results)
@@ -505,7 +613,7 @@ def main():
     # Parse methods
     methods_str = args.methods.lower()
     methods = (
-        ["skip", "update1", "random", "oracle", "ours"]
+        ["skip", "update1", "random", "oracle", "ours", "ttt_improvement"]
         if methods_str == "all"
         else [m.strip() for m in methods_str.split(",")]
     )
@@ -605,6 +713,22 @@ def main():
             make_data_iter(),
             args.num_eval_batches,
             gating,
+            step_fn,
+            args.seed,
+            args.shuffle,
+        )
+        all_results.append(df)
+        logger.info(
+            f"  Avg loss: {df['loss'].mean():.4f}, Update rate: {(df['decision'] == 'UPDATE').mean():.1%}"
+        )
+
+    if "ttt_improvement" in methods:
+        logger.info("\n--- TTT Improvement ---")
+        df = evaluate_ttt_improvement(
+            model,
+            make_data_iter(),
+            args.num_eval_batches,
+            target_update_rate,
             step_fn,
             args.seed,
             args.shuffle,
