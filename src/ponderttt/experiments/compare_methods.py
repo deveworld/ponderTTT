@@ -538,6 +538,14 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="outputs/comparison")
     parser.add_argument("--seed", type=int, default=42)
 
+    # Ablation
+    parser.add_argument(
+        "--diagonal_offset",
+        type=int,
+        default=0,
+        help="Diagonal offset for causal mask ablation (k=-1 means lag-1)",
+    )
+
     return parser.parse_args()
 
 
@@ -606,6 +614,12 @@ def main():
             checkpoint_path=args.checkpoint_path,
         )
     model.eval()
+
+    # Apply diagonal offset for ablation experiments
+    if args.diagonal_offset != 0:
+        if hasattr(model, "fast_layer") and hasattr(model.fast_layer, "config"):
+            logger.info(f"[Config Override] Setting causal_k = {args.diagonal_offset}")
+            model.fast_layer.config.causal_k = args.diagonal_offset
 
     target_update_rate = budget_to_update_rate(args.budget)
     logger.info(f"Target update rate: {target_update_rate:.1%}")
