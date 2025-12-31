@@ -614,7 +614,7 @@ def main():
             f"  Avg loss: {df['loss'].mean():.4f}, Update rate: {(df['decision'] == 'UPDATE').mean():.1%}"
         )
 
-    # Summary
+    # Summary and save results
     if all_results:
         combined_df = pd.concat(all_results, ignore_index=True)
 
@@ -626,7 +626,91 @@ def main():
         )
         logger.info(f"\n{summary}")
 
-        combined_df.to_csv(output_dir / "results.csv", index=False)
+        # Save detailed results
+        combined_df.to_csv(output_dir / "detailed_results.csv", index=False)
+
+        # Save summary CSV
+        summary.to_csv(output_dir / "summary.csv")
+
+        # Compute correlations if we have the data
+        correlation_data = {}
+        if (
+            "ttt_loss_init" in combined_df.columns
+            and "advantage" not in combined_df.columns
+        ):
+            # Compute advantage for correlation
+            combined_df["advantage"] = (
+                combined_df["loss_skip"] - combined_df["loss_update"]
+            )
+
+        if (
+            "ttt_loss_init" in combined_df.columns
+            and "advantage" in combined_df.columns
+        ):
+            try:
+                from scipy import stats as scipy_stats
+
+                # Filter to valid data
+                valid_mask = (
+                    combined_df["ttt_loss_init"].notna()
+                    & combined_df["advantage"].notna()
+                    & (combined_df["ttt_loss_init"] > 0)
+                )
+                valid_df = combined_df[valid_mask]
+
+                if len(valid_df) > 10:
+                    ttt_recon = valid_df["ttt_loss_init"].values
+                    advantage = valid_df["advantage"].values
+                    loss_skip = valid_df["loss_skip"].values
+
+                    # TTT Reconstruction Loss correlation
+                    pearson_r, _ = scipy_stats.pearsonr(ttt_recon, advantage)
+                    spearman_r, _ = scipy_stats.spearmanr(ttt_recon, advantage)
+                    correlation_data["ttt_recon_loss"] = {
+                        "pearson_r": float(pearson_r),
+                        "spearman_rho": float(spearman_r),
+                    }
+
+                    # Loss Skip correlation
+                    pearson_r, _ = scipy_stats.pearsonr(loss_skip, advantage)
+                    spearman_r, _ = scipy_stats.spearmanr(loss_skip, advantage)
+                    correlation_data["loss_skip"] = {
+                        "pearson_r": float(pearson_r),
+                        "spearman_rho": float(spearman_r),
+                    }
+
+                    # TTT Improvement if available
+                    if "ttt_loss_final" in valid_df.columns:
+                        ttt_improvement = (
+                            valid_df["ttt_loss_init"] - valid_df["ttt_loss_final"]
+                        )
+                        if ttt_improvement.notna().sum() > 10:
+                            pearson_r, _ = scipy_stats.pearsonr(
+                                ttt_improvement, advantage
+                            )
+                            spearman_r, _ = scipy_stats.spearmanr(
+                                ttt_improvement, advantage
+                            )
+                            correlation_data["ttt_improvement"] = {
+                                "pearson_r": float(pearson_r),
+                                "spearman_rho": float(spearman_r),
+                            }
+
+                    logger.info(
+                        f"\nCorrelation (ttt_recon_loss vs advantage): r={correlation_data['ttt_recon_loss']['pearson_r']:.4f}"
+                    )
+
+            except ImportError:
+                logger.warning("scipy not available, skipping correlation analysis")
+            except Exception as e:
+                logger.warning(f"Correlation analysis failed: {e}")
+
+        # Save correlation.json
+        if correlation_data:
+            with open(output_dir / "correlation.json", "w") as f:
+                json.dump(correlation_data, f, indent=2)
+
+        # Save summary.json
         with open(output_dir / "summary.json", "w") as f:
             json.dump(
                 {
