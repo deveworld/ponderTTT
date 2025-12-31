@@ -2,7 +2,7 @@
 
 > **When to Ponder: Adaptive Compute Allocation for Code Generation via Test-Time Training**
 
-[arXiv Paper](https://arxiv.org/abs/XXXX.XXXXX) | [Project Page](https://ponderttt.worldsw.dev)
+[arXiv Paper (coming soon)](https://ponderttt.worldsw.dev/PonderTTT_v1_Preprint.pdf) | [Project Page](https://ponderttt.worldsw.dev)
 
 Adaptive Test-Time Training (TTT) for code language modeling. Built with JAX/Flax NNX.
 
