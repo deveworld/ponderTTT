@@ -75,11 +75,11 @@ else:
 ## Citation
 
 ```bibtex
-@article{sim2026ponderttt,
+@article{sim2025ponderttt,
   title={When to Ponder: Adaptive Compute Allocation for Code Generation via Test-Time Training},
   author={Sim, Gihyeon},
   journal={arXiv preprint arXiv:2601.00894},
-  year={2026}
+  year={2025}
 }
 ```
 
