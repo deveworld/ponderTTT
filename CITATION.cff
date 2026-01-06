@@ -9,6 +9,7 @@ repository-code: "https://github.com/deveworld/ponderTTT"
 url: "https://ponderttt.worldsw.dev/"
 abstract: "Training-free gating for Test-Time Training updates using reconstruction loss."
 license: "MIT"
+doi: "10.5281/zenodo.18160850"
 preferred-citation:
   type: article
   title: "When to Ponder: Adaptive Compute Allocation for Code Generation via Test-Time Training"
