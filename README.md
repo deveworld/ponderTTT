@@ -6,6 +6,7 @@
 
 <p align="center">
     <a href="https://arxiv.org/abs/2601.00894"><img src="https://img.shields.io/badge/arXiv-2601.00894-b31b1b.svg"></a>
+    <a href="https://doi.org/10.5281/zenodo.18160850"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.18160850.svg"></a>
     <a href="https://ponderttt.worldsw.dev"><img src="https://img.shields.io/badge/Project-Page-blue"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg"></a>
 </p>
