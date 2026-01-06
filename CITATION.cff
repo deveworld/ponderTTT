@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "PonderTTT"
+type: software
+authors:
+  - given-names: "Gihyeon"
+    family-names: "Sim"
+repository-code: "https://github.com/deveworld/ponderTTT"
+url: "https://ponderttt.worldsw.dev/"
+abstract: "Training-free gating for Test-Time Training updates using reconstruction loss."
+license: "MIT"
+preferred-citation:
+  type: article
+  title: "When to Ponder: Adaptive Compute Allocation for Code Generation via Test-Time Training"
+  authors:
+    - given-names: "Gihyeon"
+      family-names: "Sim"
+  year: 2026
+  archive-prefix: "arXiv"
+  eprint: "2601.00894"
