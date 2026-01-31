@@ -2,6 +2,8 @@
 """
 Evaluate Gemma 3 on HumanEval with and without TTT.
 
+Uses fixed-size chunks for JIT efficiency (same pattern as compare_methods.py).
+
 Usage:
     python scripts/eval_gemma3_humaneval.py --model_scale 4b --use_ttt
     python scripts/eval_gemma3_humaneval.py --model_scale 4b --no_ttt
@@ -30,7 +32,6 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
-# Model name mapping (same as train_gemma3_ttt.py)
 def get_model_name(scale: str) -> str:
     """Get model name from scale."""
     return f"gemma3-{scale}"
@@ -102,43 +103,29 @@ def parse_args() -> argparse.Namespace:
         help="Random seed",
     )
     parser.add_argument(
-        "--max_seq_length",
+        "--chunk_size",
         type=int,
         default=512,
-        help="Maximum sequence length (for JIT compilation)",
+        help="Fixed chunk size for JIT compilation (must match training)",
     )
     return parser.parse_args()
 
 
-def create_generate_fn(
-    model: Any,
-    tokenizer: Any,
-    max_new_tokens: int,
-    temperature: float,
-    use_ttt: bool,
-    num_samples: int,
-    max_seq_length: int,
-):
-    """Create generation function for HumanEval with JIT compilation."""
+def make_forward_fn(use_ttt: bool):
+    """Create forward function for JIT compilation.
 
-    # Get EOS token ID from tokenizer (Gemma 3 uses ID 1 for <eos>)
-    eos_id = (
-        tokenizer.token_to_id("<eos>")
-        or tokenizer.token_to_id("</s>")
-        or tokenizer.token_to_id("<end_of_turn>")
-        or 1
-    )
+    This follows the pattern from compare_methods.py - create the function
+    once with fixed signature, then JIT compile.
+    """
 
-    # Create JIT-compiled forward function
-    @nnx.jit
-    def forward_step(
-        mdl: Any,
+    def forward_fn(
+        model: Any,
         input_ids: jax.Array,
-        position_ids: jax.Array,
         attention_mask: jax.Array,
+        position_ids: jax.Array,
     ) -> jax.Array:
-        """JIT-compiled forward pass returning logits."""
-        result = mdl(
+        """Forward pass returning logits."""
+        result = model(
             input_ids,
             position_ids=position_ids,
             attention_mask=attention_mask,
@@ -151,39 +138,80 @@ def create_generate_fn(
             outputs = result
         return outputs["logits"]
 
-    # Warmup JIT compilation with dummy input
-    logger.info("Warming up JIT compilation...")
-    dummy_ids = jnp.ones((1, 128), dtype=jnp.int32)
-    dummy_pos = jnp.arange(128)[None, :]
-    dummy_mask = jnp.ones((1, 128), dtype=jnp.int32)
-    _ = forward_step(model, dummy_ids, dummy_pos, dummy_mask)
+    return forward_fn
+
+
+def create_generate_fn(
+    model: Any,
+    tokenizer: Any,
+    max_new_tokens: int,
+    temperature: float,
+    use_ttt: bool,
+    num_samples: int,
+    chunk_size: int,
+):
+    """Create generation function for HumanEval with fixed chunk sizes."""
+
+    # Get EOS token ID
+    eos_id = (
+        tokenizer.token_to_id("<eos>")
+        or tokenizer.token_to_id("</s>")
+        or tokenizer.token_to_id("<end_of_turn>")
+        or 1
+    )
+    pad_id = tokenizer.token_to_id("<|pad|>") or 0
+
+    # Create and JIT compile the forward function (same pattern as compare_methods.py)
+    forward_fn = make_forward_fn(use_ttt)
+    jit_forward = nnx.jit(forward_fn)
+
+    # Warmup with fixed chunk size
+    logger.info(f"Warming up JIT with chunk_size={chunk_size}...")
+    dummy_ids = jnp.ones((1, chunk_size), dtype=jnp.int32)
+    dummy_mask = jnp.ones((1, chunk_size), dtype=jnp.int32)
+    dummy_pos = jnp.arange(chunk_size, dtype=jnp.int32)[None, :]
+    _ = jit_forward(model, dummy_ids, dummy_mask, dummy_pos)
     logger.info("JIT warmup complete.")
 
     def generate(prompt: str) -> list[str]:
-        """Generate completions for a prompt."""
+        """Generate completions using fixed-size chunked inference."""
         # Tokenize
         encoded = tokenizer.encode(prompt, add_special_tokens=False)
-        prompt_ids = encoded.ids
+        prompt_ids = list(encoded.ids)
 
-        # Truncate if too long
-        if len(prompt_ids) > max_seq_length - max_new_tokens:
-            prompt_ids = prompt_ids[-(max_seq_length - max_new_tokens) :]
+        # Truncate if necessary
+        max_prompt_len = chunk_size - max_new_tokens
+        if len(prompt_ids) > max_prompt_len:
+            prompt_ids = prompt_ids[-max_prompt_len:]
 
         completions = []
         for sample_idx in range(num_samples):
             generated = list(prompt_ids)
 
             for step in range(max_new_tokens):
+                # Prepare fixed-size input with left padding
                 seq_len = len(generated)
+                if seq_len < chunk_size:
+                    # Pad to chunk_size
+                    pad_len = chunk_size - seq_len
+                    padded_ids = [pad_id] * pad_len + generated
+                    mask = [0] * pad_len + [1] * seq_len
+                else:
+                    # Truncate from left (keep last chunk_size tokens)
+                    padded_ids = generated[-chunk_size:]
+                    mask = [1] * chunk_size
 
-                # Prepare inputs
-                input_ids = jnp.array(generated)[None, :]
-                position_ids = jnp.arange(seq_len)[None, :]
-                attention_mask = jnp.ones((1, seq_len), dtype=jnp.int32)
+                # Convert to JAX arrays with fixed shape
+                input_ids = jnp.array(padded_ids, dtype=jnp.int32)[None, :]
+                attention_mask = jnp.array(mask, dtype=jnp.int32)[None, :]
+                position_ids = jnp.arange(chunk_size, dtype=jnp.int32)[None, :]
 
-                # Forward pass (JIT compiled)
-                logits = forward_step(model, input_ids, position_ids, attention_mask)
-                next_token_logits = logits[0, -1, :]
+                # Forward pass (JIT compiled, fixed shape = no recompilation)
+                logits = jit_forward(model, input_ids, attention_mask, position_ids)
+
+                # Get logits for last actual token position
+                last_pos = chunk_size - 1  # Always last position with left padding
+                next_token_logits = logits[0, last_pos, :]
 
                 # Sample or greedy
                 if temperature > 0:
@@ -201,15 +229,11 @@ def create_generate_fn(
 
                 generated.append(next_token)
 
-                # Check max length
-                if len(generated) >= max_seq_length:
-                    break
-
             # Decode only the new tokens
             new_ids = generated[len(prompt_ids) :]
             completion = tokenizer.decode(new_ids)
 
-            # Stop at first double newline
+            # Stop at first double newline (end of function)
             if "\n\n" in completion:
                 completion = completion.split("\n\n")[0]
 
@@ -234,7 +258,7 @@ def main():
     logger.info(f"Samples per problem: {args.num_samples}")
     logger.info(f"Max new tokens: {args.max_new_tokens}")
     logger.info(f"Temperature: {args.temperature}")
-    logger.info(f"Max sequence length: {args.max_seq_length}")
+    logger.info(f"Chunk size: {args.chunk_size}")
 
     # Load tokenizer
     tokenizer_name = get_default_tokenizer(args.model_scale)
@@ -271,7 +295,7 @@ def main():
         temperature=args.temperature,
         use_ttt=use_ttt,
         num_samples=args.num_samples,
-        max_seq_length=args.max_seq_length,
+        chunk_size=args.chunk_size,
     )
 
     # Evaluate
@@ -310,6 +334,7 @@ def main():
         "num_samples": args.num_samples,
         "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
+        "chunk_size": args.chunk_size,
         **results,
     }
 
