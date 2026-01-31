@@ -114,7 +114,8 @@ def get_latest_checkpoint_step(checkpoint_dir: str | Path) -> int | None:
 
     # Find all checkpoint directories (exclude temporary files)
     checkpoints = [
-        cp for cp in checkpoint_dir.glob("checkpoint_*")
+        cp
+        for cp in checkpoint_dir.glob("checkpoint_*")
         if not cp.name.endswith(".orbax-checkpoint-tmp") and cp.is_dir()
     ]
 
@@ -172,10 +173,11 @@ def load_checkpoint(
     if step is None:
         # Find latest checkpoint (exclude temporary files)
         checkpoints = [
-            cp for cp in checkpoint_dir.glob("checkpoint_*")
+            cp
+            for cp in checkpoint_dir.glob("checkpoint_*")
             if not cp.name.endswith(".orbax-checkpoint-tmp") and cp.is_dir()
         ]
-        
+
         if not checkpoints:
             # Fallback: check if the directory itself is a checkpoint
             checkpoint_path = checkpoint_dir
@@ -201,8 +203,8 @@ def load_checkpoint(
 def unwrap_state(state: Any) -> Any:
     """Recursively unwrap Orbax-serialized NNX state dicts (remove 'value' wrappers).
 
-    Also converts integer keys to strings to ensure consistent key types,
-    which is required for NNX state sorting during optimizer creation.
+    Preserves key types - integer keys remain integers for nnx.List compatibility,
+    string keys remain strings for module attributes.
 
     Args:
         state: Orbax checkpoint state (possibly nested dict with 'value' wrappers)
@@ -213,6 +215,6 @@ def unwrap_state(state: Any) -> Any:
     if isinstance(state, dict):
         if "value" in state and len(state) == 1:
             return state["value"]
-        # Convert integer keys to strings for consistency (nnx.List indices)
-        return {str(k) if isinstance(k, int) else k: unwrap_state(v) for k, v in state.items()}
+        # Preserve key types - NNX List needs integer indices
+        return {k: unwrap_state(v) for k, v in state.items()}
     return state
