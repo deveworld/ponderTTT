@@ -640,9 +640,34 @@ def _load_gemma3_ttt_model(
                 ckpt = load_checkpoint(checkpoint_path, target=None)
 
                 if "state" in ckpt and "model" in ckpt.get("state", {}):
-                    # This is a training checkpoint - load NNX state directly
-                    model_state = unwrap_state(ckpt["state"]["model"])
-                    nnx.update(model, model_state)
+                    # This is a training checkpoint - restore using nnx.split/merge
+                    model_state_dict = unwrap_state(ckpt["state"]["model"])
+
+                    # Get graphdef and current state from model
+                    graphdef, current_state = nnx.split(model)
+
+                    # Recursively update values in current_state with loaded values
+                    def update_values(state_node, loaded_dict):
+                        """Update nnx.State values from loaded dict."""
+                        if not isinstance(loaded_dict, dict):
+                            return
+                        for k, v in loaded_dict.items():
+                            if hasattr(state_node, "__getitem__"):
+                                try:
+                                    child = state_node[k]
+                                    if hasattr(child, "value"):
+                                        # It's an nnx.Variable
+                                        child.value = v
+                                    elif isinstance(v, dict):
+                                        update_values(child, v)
+                                except (KeyError, IndexError, TypeError):
+                                    pass
+
+                    update_values(current_state, model_state_dict)
+
+                    # Merge to create updated model
+                    model = nnx.merge(graphdef, current_state)
+
                     step = ckpt.get("step", "unknown")
                     print(
                         f"Loaded training checkpoint from {checkpoint_path} (step {step})"
