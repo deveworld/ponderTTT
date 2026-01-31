@@ -647,23 +647,35 @@ def _load_gemma3_ttt_model(
                     graphdef, current_state = nnx.split(model)
 
                     # Recursively update values in current_state with loaded values
-                    def update_values(state_node, loaded_dict):
+                    def update_values(state_node, loaded_dict, path=""):
                         """Update nnx.State values from loaded dict."""
                         if not isinstance(loaded_dict, dict):
-                            return
+                            return 0
+                        updated = 0
                         for k, v in loaded_dict.items():
-                            if hasattr(state_node, "__getitem__"):
-                                try:
+                            child_path = f"{path}.{k}" if path else str(k)
+                            try:
+                                if hasattr(state_node, "__getitem__"):
                                     child = state_node[k]
                                     if hasattr(child, "value"):
-                                        # It's an nnx.Variable
+                                        # It's an nnx.Variable - update its value
                                         child.value = v
+                                        updated += 1
                                     elif isinstance(v, dict):
-                                        update_values(child, v)
-                                except (KeyError, IndexError, TypeError):
-                                    pass
+                                        # Recurse into nested structure
+                                        updated += update_values(child, v, child_path)
+                                    else:
+                                        # Try direct assignment for non-Variable nodes
+                                        if hasattr(child, "__setitem__"):
+                                            state_node[k] = v
+                                            updated += 1
+                            except (KeyError, IndexError, TypeError):
+                                # Key not found in state - might be metadata or mismatch
+                                pass
+                        return updated
 
-                    update_values(current_state, model_state_dict)
+                    num_updated = update_values(current_state, model_state_dict)
+                    print(f"Updated {num_updated} parameters from checkpoint")
 
                     # Merge to create updated model
                     model = nnx.merge(graphdef, current_state)
