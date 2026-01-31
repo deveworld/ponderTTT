@@ -622,8 +622,9 @@ def main() -> None:
 
                 chunk_input_ids = batch["chunks"][:, chunk_idx, :]
                 chunk_mask = batch["chunk_attention_mask"][:, chunk_idx, :]
+                actual_batch_size = chunk_input_ids.shape[0]
                 chunk_pos = jnp.arange(chunk_size, dtype=jnp.int32)[None, :].repeat(
-                    batch_size, axis=0
+                    actual_batch_size, axis=0
                 )
 
                 # Apply sharding
