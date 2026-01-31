@@ -542,6 +542,7 @@ def main() -> None:
             optax.clip_by_global_norm(1.0),
             optax.adam(effective_lr),
         ),
+        wrt=nnx.All(nnx.Param),  # Only trainable params in wrapper
     )
 
     logger.info(f"\nOptimizer: Adam (lr={effective_lr:.2e})")
