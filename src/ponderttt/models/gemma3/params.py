@@ -26,61 +26,94 @@ Params = Mapping[str, Any]
 
 
 def load_and_format_params(path: str) -> Params:
-  """Loads parameters and formats them for compatibility."""
-  params = load_params(path)
-  param_state = jax.tree.map(jnp.array, params)
-  remapped_params = param_remapper(param_state)
-  nested_params = nest_params(remapped_params)
-  return nested_params
+    """Loads parameters and formats them for compatibility."""
+    params = load_params(path)
+
+    # Filter to only include array-like values (skip metadata strings etc.)
+    def safe_to_array(x):
+        """Convert to jnp.array only if it's a valid array-like type."""
+        if isinstance(x, (jnp.ndarray, jax.Array)):
+            return x
+        if hasattr(x, "__array__"):
+            # numpy arrays or array-like objects
+            return jnp.array(x)
+        if isinstance(x, (str, bool, type(None))):
+            # Skip metadata values - these will be filtered out later
+            return None
+        if isinstance(x, (int, float)):
+            # Allow scalars
+            return jnp.array(x)
+        # Unknown type - try to convert, but may fail
+        try:
+            return jnp.array(x)
+        except (TypeError, ValueError):
+            return None
+
+    param_state = jax.tree.map(
+        safe_to_array, params, is_leaf=lambda x: isinstance(x, str)
+    )
+
+    # Filter out None values (non-array metadata)
+    def filter_nones(d):
+        if isinstance(d, dict):
+            return {
+                k: filter_nones(v) for k, v in d.items() if filter_nones(v) is not None
+            }
+        return d
+
+    param_state = filter_nones(param_state)
+    remapped_params = param_remapper(param_state)
+    nested_params = nest_params(remapped_params)
+    return nested_params
 
 
 def load_metadata(path: str) -> Any | None:
-  """Loads metadata from a checkpoint path."""
-  checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-  metadata = checkpointer.metadata(path)
-  return metadata
+    """Loads metadata from a checkpoint path."""
+    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    metadata = checkpointer.metadata(path)
+    return metadata
 
 
 @functools.cache
 def load_params(path: str) -> Params:
-  """Loads parameters from a checkpoint path."""
-  checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-  params = checkpointer.restore(path)
-  return params
+    """Loads parameters from a checkpoint path."""
+    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    params = checkpointer.restore(path)
+    return params
 
 
 def param_remapper(orig_params: Params) -> Params:
-  """Remaps params to new module layout.
+    """Remaps params to new module layout.
 
-  This is needed here because the model definition  does not have a separate
-  `mlp` module.
+    This is needed here because the model definition  does not have a separate
+    `mlp` module.
 
-  Args:
-    orig_params: original dict of parameters in Gemma format.
+    Args:
+      orig_params: original dict of parameters in Gemma format.
 
-  Returns:
-    dict of params with different names.
-  """
-  new_params = {}
-  for k, v in orig_params.items():
-    if 'mlp/' in k:
-      layer_name, param = k.rsplit('/', maxsplit=1)
-      if layer_name not in new_params:
-        new_params[layer_name] = {}
-      if 'w' in v:
-        new_params[layer_name][param] = v['w']
-    else:
-      new_params[k] = v
-  return new_params
+    Returns:
+      dict of params with different names.
+    """
+    new_params = {}
+    for k, v in orig_params.items():
+        if "mlp/" in k:
+            layer_name, param = k.rsplit("/", maxsplit=1)
+            if layer_name not in new_params:
+                new_params[layer_name] = {}
+            if "w" in v:
+                new_params[layer_name][param] = v["w"]
+        else:
+            new_params[k] = v
+    return new_params
 
 
 def nest_params(params: Params) -> Params:
-  """Nests params as a dict of dicts rather than a flat dict."""
-  nested_params = {}
-  for path, param in params.items():
-    *path, leaf = path.split('/')
-    subdict = nested_params
-    for key in path:
-      subdict = subdict.setdefault(key, {})
-    subdict[leaf] = param
-  return nested_params
+    """Nests params as a dict of dicts rather than a flat dict."""
+    nested_params = {}
+    for path, param in params.items():
+        *path, leaf = path.split("/")
+        subdict = nested_params
+        for key in path:
+            subdict = subdict.setdefault(key, {})
+        subdict[leaf] = param
+    return nested_params
