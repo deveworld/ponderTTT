@@ -630,8 +630,35 @@ def _load_gemma3_ttt_model(
             hf_model_id = checkpoint_path[3:]  # Remove "hf:" prefix
             model = load_gemma3_from_huggingface(model, hf_model_id)
         else:
-            # Orbax checkpoint
-            model = load_gemma3_from_orbax(model, checkpoint_path)
+            # Orbax checkpoint - detect type by checking structure
+            # Training checkpoints have {"state": {"model": ...}, "step": ...}
+            # Original Google checkpoints have {"transformer": ...}
+            from ponderttt.utils.checkpointing import load_checkpoint, unwrap_state
+
+            try:
+                # First, try to load as training checkpoint
+                ckpt = load_checkpoint(checkpoint_path, target=None)
+
+                if "state" in ckpt and "model" in ckpt.get("state", {}):
+                    # This is a training checkpoint - load NNX state directly
+                    model_state = unwrap_state(ckpt["state"]["model"])
+                    nnx.update(model, model_state)
+                    step = ckpt.get("step", "unknown")
+                    print(
+                        f"Loaded training checkpoint from {checkpoint_path} (step {step})"
+                    )
+                elif "transformer" in ckpt:
+                    # This is an original Google Orbax checkpoint
+                    model = load_gemma3_from_orbax(model, checkpoint_path)
+                else:
+                    # Unknown format - try Google Orbax loader as fallback
+                    print(
+                        "Warning: Unknown checkpoint format, trying Google Orbax loader..."
+                    )
+                    model = load_gemma3_from_orbax(model, checkpoint_path)
+            except Exception as e:
+                print(f"Error loading checkpoint: {e}")
+                raise e
 
     print(f"Created Gemma 3 TTT model: {model_name}")
     print(f"  - Layers: {gemma_config.num_layers}")
