@@ -113,8 +113,14 @@ def create_generate_fn(
 ):
     """Create generation function for HumanEval."""
 
-    # Get EOS token ID from tokenizer (tokenizers library uses token_to_id)
-    eos_id = tokenizer.token_to_id("<eos>") or tokenizer.token_to_id("</s>") or 1
+    # Get EOS token ID from tokenizer (Gemma 3 uses ID 1 for <eos>)
+    # Try multiple possible EOS tokens in order of preference
+    eos_id = (
+        tokenizer.token_to_id("<eos>")
+        or tokenizer.token_to_id("</s>")
+        or tokenizer.token_to_id("<end_of_turn>")
+        or 1  # Fallback to ID 1 which is <eos> in Gemma 3
+    )
 
     def generate(prompt: str) -> list[str]:
         """Generate completions for a prompt."""
@@ -132,11 +138,12 @@ def create_generate_fn(
                 position_ids = jnp.arange(generated_ids.shape[1])[None, :]
                 attention_mask = jnp.ones_like(generated_ids)
 
-                # Model returns (outputs_dict, cache) for Gemma3TTTModel
+                # Model call - Gemma3TTTModel signature:
+                # __call__(input_ids, position_ids=None, attention_mask=None, cache=None, use_ttt=True)
                 result = model(
                     generated_ids,
-                    attention_mask=attention_mask,
                     position_ids=position_ids,
+                    attention_mask=attention_mask,
                     use_ttt=use_ttt,
                 )
 
