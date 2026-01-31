@@ -62,6 +62,8 @@ class EMAGating(GatingStrategy):
         self,
         loss_skip: jax.Array | float | None = None,
         ttt_loss_init: jax.Array | float | None = None,
+        ttt_loss_final: jax.Array | float | None = None,
+        rng: jax.Array | None = None,
         **kwargs,
     ) -> GatingDecision:
         # Select signal
@@ -96,7 +98,9 @@ class EMAGating(GatingStrategy):
             )
 
         # Normal operation: threshold-based decision
-        should_update = signal_value > self.threshold
+        should_update = (
+            signal_value > self.threshold if self.threshold is not None else True
+        )
 
         return GatingDecision(
             should_update=jnp.array(should_update),
@@ -120,7 +124,12 @@ class EMAGating(GatingStrategy):
             return
 
         signal_value = float(metrics[signal_key])
-        was_update = float(metrics.get("was_update", signal_value > self.threshold))
+        was_update = float(
+            metrics.get(
+                "was_update",
+                signal_value > self.threshold if self.threshold is not None else True,
+            )
+        )
 
         # Update EMAs
         if self.ema_signal is not None:

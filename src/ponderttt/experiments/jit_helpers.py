@@ -14,7 +14,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 if TYPE_CHECKING:
-    from ..models import TTTTransformerLM
+    from ..models import TTTModel
 
 
 def cross_entropy_loss(
@@ -49,7 +49,7 @@ def cross_entropy_loss(
 
 @nnx.jit
 def compute_skip_loss(
-    model: TTTTransformerLM,
+    model: "TTTModel",
     input_ids: jax.Array,
     attention_mask: jax.Array,
     position_ids: jax.Array,
@@ -83,7 +83,7 @@ def compute_skip_loss(
 
 @nnx.jit
 def compute_update_loss(
-    model: TTTTransformerLM,
+    model: "TTTModel",
     input_ids: jax.Array,
     attention_mask: jax.Array,
     position_ids: jax.Array,
@@ -119,7 +119,7 @@ def compute_update_loss(
 
 @nnx.jit
 def compute_both_losses(
-    model: TTTTransformerLM,
+    model: "TTTModel",
     input_ids: jax.Array,
     attention_mask: jax.Array,
     position_ids: jax.Array,
@@ -168,7 +168,7 @@ def compute_both_losses(
 
 @nnx.jit
 def compute_gated_loss(
-    model: TTTTransformerLM,
+    model: "TTTModel",
     input_ids: jax.Array,
     attention_mask: jax.Array,
     position_ids: jax.Array,

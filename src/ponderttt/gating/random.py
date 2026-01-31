@@ -31,6 +31,9 @@ class RandomGating(GatingStrategy):
 
     def decide(
         self,
+        loss_skip: jax.Array | float | None = None,
+        ttt_loss_init: jax.Array | float | None = None,
+        ttt_loss_final: jax.Array | float | None = None,
         rng: jax.Array | None = None,
         **kwargs,
     ) -> GatingDecision:

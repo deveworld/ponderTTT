@@ -60,7 +60,7 @@ try:
 
     WANDB_AVAILABLE = True
 except ImportError:
-    wandb = None  # type: ignore
+    wandb = None
     WANDB_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)

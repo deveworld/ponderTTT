@@ -52,7 +52,7 @@ def scan_remat_every_n_iterations_scan(f, n, carry, x):
         return jax.lax.scan(f, c, xs)
 
     carry, y_grouped = jax.lax.scan(
-        jax.remat(inner_scan, prevent_cse=False),  # type: ignore[arg-type]
+        jax.remat(inner_scan, prevent_cse=False),
         carry,
         x_grouped,
     )

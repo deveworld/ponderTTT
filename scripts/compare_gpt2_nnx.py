@@ -26,10 +26,14 @@ from ponderttt.models import load_ttt_model
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Compare GPT-2 NNX vs Transformers logits")
+    parser = argparse.ArgumentParser(
+        description="Compare GPT-2 NNX vs Transformers logits"
+    )
     parser.add_argument("--model_name", type=str, default="gpt2", help="GPT-2 variant")
     parser.add_argument("--text", type=str, default="Hello world", help="Input text")
-    parser.add_argument("--max_length", type=int, default=32, help="Max tokens to compare")
+    parser.add_argument(
+        "--max_length", type=int, default=32, help="Max tokens to compare"
+    )
     parser.add_argument(
         "--add_pad_token",
         action="store_true",
@@ -48,8 +52,8 @@ def main() -> None:
     args = parse_args()
 
     try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore[import-not-found]
-        import torch  # type: ignore[import-not-found]
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
     except Exception as exc:  # pragma: no cover
         print(f"[FAIL] transformers/torch not available: {exc}")
         return

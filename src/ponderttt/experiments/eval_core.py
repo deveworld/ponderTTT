@@ -211,6 +211,7 @@ def evaluate_oracle(
         for c_idx in range(num_chunks):
             if input_chunks is not None:
                 # Dict style
+                assert chunk_masks is not None  # type narrowing for ty
                 chunk_input = input_chunks[:, c_idx]
                 chunk_mask = chunk_masks[:, c_idx]
             else:
@@ -310,6 +311,7 @@ def evaluate_with_gating(
 
         for c_idx in range(num_chunks):
             if input_chunks is not None:
+                assert chunk_masks is not None  # type narrowing for ty
                 chunk_input = input_chunks[:, c_idx]
                 chunk_mask = chunk_masks[:, c_idx]
             else:

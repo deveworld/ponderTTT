@@ -43,6 +43,14 @@ DEFAULT_ROPE_BASE_FREQUENCY = 10_000
 DEFAULT_ROPE_SCALE_FACTOR = 1.0
 
 
+def apply_logit_soft_cap(logits: Array, soft_cap: float) -> Array:
+  """Applies tanh-based logit soft-capping with float32 stability."""
+  logits_f32 = logits.astype(jnp.float32)
+  soft_cap_f32 = jnp.asarray(soft_cap, dtype=jnp.float32)
+  gated = jnp.tanh(logits_f32 / soft_cap_f32) * soft_cap_f32
+  return gated.astype(logits.dtype)
+
+
 class AttentionType(enum.Enum):
   GLOBAL = 1
   LOCAL_SLIDING = 2
@@ -112,6 +120,8 @@ class Attention(nnx.Module):
       raise ValueError(
           '`sliding_window_size` must be set if `attn_type` is Local Sliding.'
       )
+    if attn_logits_soft_cap is not None and attn_logits_soft_cap <= 0:
+      raise ValueError('`attn_logits_soft_cap` must be positive if set.')
 
     self.query_pre_attn_scalar = query_pre_attn_scalar
     self.attn_type = attn_type
@@ -242,8 +252,7 @@ class Attention(nnx.Module):
       logits = jnp.einsum('BTNH,BSNH->BTNS', query_scaled, key_proj)
 
     if self.attn_logits_soft_cap is not None:
-      logits = jnp.tanh(logits / self.attn_logits_soft_cap)
-      logits = logits * self.attn_logits_soft_cap
+      logits = apply_logit_soft_cap(logits, self.attn_logits_soft_cap)
     if self.attn_type == AttentionType.LOCAL_SLIDING:
       if self.sliding_window_size is None:
         raise ValueError(
@@ -409,7 +418,11 @@ class Block(nnx.Module):
     embed_dim = config.embed_dim
     head_dim = config.head_dim
     hidden_dim = config.hidden_dim
-    sliding_window_size = config.sliding_window_size
+    sliding_window_size = (
+      config.sliding_window_size
+      if attn_type == AttentionType.LOCAL_SLIDING
+      else None
+    )
     use_post_attn_norm = config.use_post_attn_norm
     use_post_ffw_norm = config.use_post_ffw_norm
     query_pre_attn_scalar = config.query_pre_attn_scalar()

@@ -46,11 +46,11 @@ dev = [
     "pyright>=1.1.350",
     "pytest>=8.0.0",
     "ruff>=0.3.0",
-    "ty>=0.0.1",
 ]
 gpu = ["jax[cuda12]"]
 gpu12 = ["jax[cuda12]"]
 tpu = ["jax[tpu]"]
 
 [tool.pyright]
-exclude = [".venv/**", "dist/**", "archive/**"]
+exclude = [".venv/**", "dist/**", "archive/**", "build/**"]
+typeCheckingMode = "basic"

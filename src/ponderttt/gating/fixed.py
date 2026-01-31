@@ -4,6 +4,7 @@ Fixed action gating: Always SKIP or always UPDATE.
 
 from typing import Literal
 
+import jax
 import jax.numpy as jnp
 
 from .base import GatingDecision, GatingStrategy
@@ -30,7 +31,14 @@ class FixedGating(GatingStrategy):
         self.action = action
         self._should_update = action == "UPDATE"
 
-    def decide(self, **kwargs) -> GatingDecision:
+    def decide(
+        self,
+        loss_skip: jax.Array | float | None = None,
+        ttt_loss_init: jax.Array | float | None = None,
+        ttt_loss_final: jax.Array | float | None = None,
+        rng: jax.Array | None = None,
+        **kwargs,
+    ) -> GatingDecision:
         return GatingDecision(
             should_update=jnp.array(self._should_update),
             metrics={"action": self.action},

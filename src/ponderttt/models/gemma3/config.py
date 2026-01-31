@@ -35,6 +35,7 @@ GEMMA3_ATTENTION_PATTERN = (
     AttentionType.LOCAL_SLIDING,
     AttentionType.GLOBAL,
 )
+GEMMA3_27B_SLIDING_WINDOW_SIZE = 1024
 
 
 def make_attention_layers_types(
@@ -138,7 +139,7 @@ class Gemma3Config:
             "dtype": dtype,
         }
         config.update(override)
-        return cls(**config)  # type: ignore[arg-type]
+        return cls(**config)
 
     @classmethod
     def gemma3_27b(cls, dtype: Any = jnp.bfloat16, **override) -> Gemma3Config:
@@ -163,7 +164,7 @@ class Gemma3Config:
             "attention_types": make_attention_layers_types(
                 GEMMA3_ATTENTION_PATTERN, num_layers
             ),
-            "sliding_window_size": 1024,
+            "sliding_window_size": GEMMA3_27B_SLIDING_WINDOW_SIZE,
             "use_qk_norm": True,
             "use_post_attn_norm": True,
             "use_post_ffw_norm": True,
@@ -177,7 +178,7 @@ class Gemma3Config:
             "dtype": dtype,
         }
         config.update(override)
-        return cls(**config)  # type: ignore[arg-type]
+        return cls(**config)
 
     @classmethod
     def gemma3_12b(cls, dtype: Any = jnp.bfloat16, **override) -> Gemma3Config:
@@ -215,7 +216,7 @@ class Gemma3Config:
             "dtype": dtype,
         }
         config.update(override)
-        return cls(**config)  # type: ignore[arg-type]
+        return cls(**config)
 
     @classmethod
     def gemma3_1b(cls, dtype: Any = jnp.bfloat16, **override) -> Gemma3Config:
@@ -246,7 +247,7 @@ class Gemma3Config:
             "dtype": dtype,
         }
         config.update(override)
-        return cls(**config)  # type: ignore[arg-type]
+        return cls(**config)
 
     def __post_init__(self):
         if self.num_heads != self.num_kv_heads:
