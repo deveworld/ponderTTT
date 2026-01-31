@@ -203,8 +203,8 @@ def load_checkpoint(
 def unwrap_state(state: Any) -> Any:
     """Recursively unwrap Orbax-serialized NNX state dicts (remove 'value' wrappers).
 
-    Preserves key types - integer keys remain integers for nnx.List compatibility,
-    string keys remain strings for module attributes.
+    Also converts string keys that look like integers back to integers,
+    since Orbax may serialize integer keys as strings but NNX List needs int indices.
 
     Args:
         state: Orbax checkpoint state (possibly nested dict with 'value' wrappers)
@@ -215,6 +215,12 @@ def unwrap_state(state: Any) -> Any:
     if isinstance(state, dict):
         if "value" in state and len(state) == 1:
             return state["value"]
-        # Preserve key types - NNX List needs integer indices
-        return {k: unwrap_state(v) for k, v in state.items()}
+        # Convert string keys that are integers back to int for NNX List
+        result = {}
+        for k, v in state.items():
+            # Try to convert string keys that look like integers
+            if isinstance(k, str) and k.isdigit():
+                k = int(k)
+            result[k] = unwrap_state(v)
+        return result
     return state
