@@ -19,6 +19,7 @@ os.environ["JAX_PLATFORMS"] = "cuda"
 
 import jax
 import jax.numpy as jnp
+from flax import nnx
 from tqdm import tqdm
 
 from ponderttt.data import get_tokenizer
@@ -100,6 +101,12 @@ def parse_args() -> argparse.Namespace:
         default=42,
         help="Random seed",
     )
+    parser.add_argument(
+        "--max_seq_length",
+        type=int,
+        default=512,
+        help="Maximum sequence length (for JIT compilation)",
+    )
     return parser.parse_args()
 
 
@@ -110,75 +117,99 @@ def create_generate_fn(
     temperature: float,
     use_ttt: bool,
     num_samples: int,
+    max_seq_length: int,
 ):
-    """Create generation function for HumanEval."""
+    """Create generation function for HumanEval with JIT compilation."""
 
     # Get EOS token ID from tokenizer (Gemma 3 uses ID 1 for <eos>)
-    # Try multiple possible EOS tokens in order of preference
     eos_id = (
         tokenizer.token_to_id("<eos>")
         or tokenizer.token_to_id("</s>")
         or tokenizer.token_to_id("<end_of_turn>")
-        or 1  # Fallback to ID 1 which is <eos> in Gemma 3
+        or 1
     )
+
+    # Create JIT-compiled forward function
+    @nnx.jit
+    def forward_step(
+        mdl: Any,
+        input_ids: jax.Array,
+        position_ids: jax.Array,
+        attention_mask: jax.Array,
+    ) -> jax.Array:
+        """JIT-compiled forward pass returning logits."""
+        result = mdl(
+            input_ids,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            use_ttt=use_ttt,
+        )
+        # Handle tuple return (Gemma3) vs dict return
+        if isinstance(result, tuple):
+            outputs = result[0]
+        else:
+            outputs = result
+        return outputs["logits"]
+
+    # Warmup JIT compilation with dummy input
+    logger.info("Warming up JIT compilation...")
+    dummy_ids = jnp.ones((1, 128), dtype=jnp.int32)
+    dummy_pos = jnp.arange(128)[None, :]
+    dummy_mask = jnp.ones((1, 128), dtype=jnp.int32)
+    _ = forward_step(model, dummy_ids, dummy_pos, dummy_mask)
+    logger.info("JIT warmup complete.")
 
     def generate(prompt: str) -> list[str]:
         """Generate completions for a prompt."""
-        # Tokenize using tokenizers library (returns Encoding object)
+        # Tokenize
         encoded = tokenizer.encode(prompt, add_special_tokens=False)
-        input_ids = jnp.array(encoded.ids)[None, :]  # [1, seq_len]
+        prompt_ids = encoded.ids
 
-        # Generate
+        # Truncate if too long
+        if len(prompt_ids) > max_seq_length - max_new_tokens:
+            prompt_ids = prompt_ids[-(max_seq_length - max_new_tokens) :]
+
         completions = []
         for sample_idx in range(num_samples):
-            generated_ids = input_ids
+            generated = list(prompt_ids)
 
             for step in range(max_new_tokens):
-                # Forward pass
-                position_ids = jnp.arange(generated_ids.shape[1])[None, :]
-                attention_mask = jnp.ones_like(generated_ids)
+                seq_len = len(generated)
 
-                # Model call - Gemma3TTTModel signature:
-                # __call__(input_ids, position_ids=None, attention_mask=None, cache=None, use_ttt=True)
-                result = model(
-                    generated_ids,
-                    position_ids=position_ids,
-                    attention_mask=attention_mask,
-                    use_ttt=use_ttt,
-                )
+                # Prepare inputs
+                input_ids = jnp.array(generated)[None, :]
+                position_ids = jnp.arange(seq_len)[None, :]
+                attention_mask = jnp.ones((1, seq_len), dtype=jnp.int32)
 
-                # Handle both tuple return (Gemma3) and dict return (GPT-2)
-                if isinstance(result, tuple):
-                    outputs = result[0]
-                else:
-                    outputs = result
-
-                logits = outputs["logits"]
-                next_token_logits = logits[:, -1, :]
+                # Forward pass (JIT compiled)
+                logits = forward_step(model, input_ids, position_ids, attention_mask)
+                next_token_logits = logits[0, -1, :]
 
                 # Sample or greedy
                 if temperature > 0:
                     probs = jax.nn.softmax(next_token_logits / temperature, axis=-1)
-                    # Use different key for each sample and step
                     key = jax.random.PRNGKey(
                         (hash(prompt) + sample_idx * 1000 + step) % (2**31)
                     )
-                    next_token = jax.random.categorical(key, jnp.log(probs))
+                    next_token = int(jax.random.categorical(key, jnp.log(probs)))
                 else:
-                    next_token = jnp.argmax(next_token_logits, axis=-1)
-
-                next_token = next_token.reshape(1, 1)
-                generated_ids = jnp.concatenate([generated_ids, next_token], axis=1)
+                    next_token = int(jnp.argmax(next_token_logits))
 
                 # Check for EOS
-                if int(next_token[0, 0]) == eos_id:
+                if next_token == eos_id:
                     break
 
-            # Decode only the new tokens (tokenizers library decode doesn't have skip_special_tokens)
-            new_ids = generated_ids[0, input_ids.shape[1] :].tolist()
+                generated.append(next_token)
+
+                # Check max length
+                if len(generated) >= max_seq_length:
+                    break
+
+            # Decode only the new tokens
+            new_ids = generated[len(prompt_ids) :]
             completion = tokenizer.decode(new_ids)
 
-            # Stop at first double newline (HumanEval convention for end of function)
+            # Stop at first double newline
             if "\n\n" in completion:
                 completion = completion.split("\n\n")[0]
 
@@ -203,13 +234,14 @@ def main():
     logger.info(f"Samples per problem: {args.num_samples}")
     logger.info(f"Max new tokens: {args.max_new_tokens}")
     logger.info(f"Temperature: {args.temperature}")
+    logger.info(f"Max sequence length: {args.max_seq_length}")
 
     # Load tokenizer
     tokenizer_name = get_default_tokenizer(args.model_scale)
     logger.info(f"\nTokenizer: {tokenizer_name}")
     tokenizer = get_tokenizer(tokenizer_name)
 
-    # Load model using load_ttt_model (same as training script)
+    # Load model
     logger.info("\nLoading model...")
     model_name = get_model_name(args.model_scale)
     checkpoint_path = args.checkpoint_path or f"hf:google/gemma-3-{args.model_scale}-pt"
@@ -231,7 +263,7 @@ def main():
     benchmark = HumanEvalBenchmark()
     logger.info(f"Loaded {len(benchmark)} problems")
 
-    # Create generate function
+    # Create generate function (includes JIT warmup)
     generate_fn = create_generate_fn(
         model=model,
         tokenizer=tokenizer,
@@ -239,19 +271,18 @@ def main():
         temperature=args.temperature,
         use_ttt=use_ttt,
         num_samples=args.num_samples,
+        max_seq_length=args.max_seq_length,
     )
 
     # Evaluate
     logger.info("\nEvaluating...")
 
     if args.num_problems:
-        # Evaluate subset
         problems = benchmark.problems[: args.num_problems]
         scores = []
 
         for problem in tqdm(problems, desc="HumanEval"):
             samples = generate_fn(problem.prompt)
-            # For single sample, just check if it passes
             from ponderttt.evaluation.benchmarks import _check_solution
 
             passed = any(_check_solution(problem, s) for s in samples)
