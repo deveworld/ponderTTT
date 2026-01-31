@@ -37,7 +37,40 @@ def load_and_format_params(path: str) -> Params:
         Nested parameter dictionary
     """
     params = load_params(path)
-    param_state = jax.tree.map(jnp.array, params)
+
+    # Filter to only include array-like values (skip metadata strings etc.)
+    def safe_to_array(x):
+        """Convert to jnp.array only if it's a valid array-like type."""
+        if isinstance(x, (jnp.ndarray, jax.Array)):
+            return x
+        if hasattr(x, "__array__"):
+            # numpy arrays or array-like objects
+            return jnp.array(x)
+        if isinstance(x, (str, bool, type(None))):
+            # Skip metadata values - these will be filtered out later
+            return None
+        if isinstance(x, (int, float)):
+            # Allow scalars
+            return jnp.array(x)
+        # Unknown type - try to convert, but may fail
+        try:
+            return jnp.array(x)
+        except (TypeError, ValueError):
+            return None
+
+    param_state = jax.tree.map(
+        safe_to_array, params, is_leaf=lambda x: isinstance(x, str)
+    )
+
+    # Filter out None values (non-array metadata)
+    def filter_nones(d):
+        if isinstance(d, dict):
+            return {
+                k: filter_nones(v) for k, v in d.items() if filter_nones(v) is not None
+            }
+        return d
+
+    param_state = filter_nones(param_state)
     remapped_params = param_remapper(param_state)
     nested_params = nest_params(remapped_params)
     return nested_params
