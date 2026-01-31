@@ -25,7 +25,7 @@
 #   - Phase 6: Diagonal Mask Ablation
 #
 # Requirements:
-#   - TPU v6e-16 or similar (16 chips, 512 GB HBM)
+#   - NVIDIA RTX PRO 6000 Blackwell (96GB VRAM) or similar
 #   - Gemma 3 weights (HuggingFace or Orbax checkpoint)
 
 # NOTE: No 'set -e' - we want to continue even if individual experiments fail
@@ -36,31 +36,35 @@ RUN_4B=false
 RUN_12B=false
 RUN_27B=false
 
-# Configuration - Common
-NUM_WORKERS=64
+# Configuration - Common (single GPU, reduced workers)
+NUM_WORKERS=16
 
 # Configuration - Gemma 3 1B (for testing)
-BATCH_SIZE_1B=16
+# ~2GB model, fits easily with large batch
+BATCH_SIZE_1B=32
 MAX_CHUNKS_1B=80000
 NUM_EVAL_BATCHES_1B=500
 NUM_EVAL_BATCHES_OOD_1B=250
 CHECKPOINT_1B="hf:google/gemma-3-1b-pt"
 
 # Configuration - Gemma 3 4B
-BATCH_SIZE_4B=8
+# ~8GB model, 96GB VRAM allows larger batch
+BATCH_SIZE_4B=16
 MAX_CHUNKS_4B=160000
 NUM_EVAL_BATCHES_4B=1000
 NUM_EVAL_BATCHES_OOD_4B=500
 CHECKPOINT_4B="hf:google/gemma-3-4b-pt"
 
 # Configuration - Gemma 3 12B
-BATCH_SIZE_12B=4
+# ~24GB model, moderate batch size
+BATCH_SIZE_12B=8
 MAX_CHUNKS_12B=160000
 NUM_EVAL_BATCHES_12B=1000
 NUM_EVAL_BATCHES_OOD_12B=500
 CHECKPOINT_12B="hf:google/gemma-3-12b-pt"
 
 # Configuration - Gemma 3 27B
+# ~54GB model, limited batch size on 96GB
 BATCH_SIZE_27B=2
 MAX_CHUNKS_27B=80000
 NUM_EVAL_BATCHES_27B=500
@@ -162,7 +166,7 @@ phase1_baselines() {
                 --output_dir outputs/gemma3/baselines/1b_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_1B \
                 --wandb_project ponderttt-gemma3-1b --save_every $SAVE_EVERY_1B \
-                --checkpoint_path "$CHECKPOINT_1B" --enable_sharding
+                --checkpoint_path "$CHECKPOINT_1B"
 
         run_experiment "Gemma 3 1B UPDATE_2" \
             python scripts/train_gemma3_ttt.py \
@@ -170,7 +174,7 @@ phase1_baselines() {
                 --output_dir outputs/gemma3/baselines/1b_update2 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_1B \
                 --wandb_project ponderttt-gemma3-1b --save_every $SAVE_EVERY_1B \
-                --checkpoint_path "$CHECKPOINT_1B" --enable_sharding
+                --checkpoint_path "$CHECKPOINT_1B"
     fi
 
     # Gemma 3 4B Baselines
@@ -183,7 +187,7 @@ phase1_baselines() {
                 --output_dir outputs/gemma3/baselines/4b_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_4B \
                 --wandb_project ponderttt-gemma3-4b --save_every $SAVE_EVERY_4B \
-                --checkpoint_path "$CHECKPOINT_4B" --enable_sharding
+                --checkpoint_path "$CHECKPOINT_4B"
 
         run_experiment "Gemma 3 4B UPDATE_2" \
             python scripts/train_gemma3_ttt.py \
@@ -191,7 +195,7 @@ phase1_baselines() {
                 --output_dir outputs/gemma3/baselines/4b_update2 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_4B \
                 --wandb_project ponderttt-gemma3-4b --save_every $SAVE_EVERY_4B \
-                --checkpoint_path "$CHECKPOINT_4B" --enable_sharding
+                --checkpoint_path "$CHECKPOINT_4B"
 
         run_experiment "Gemma 3 4B UPDATE_4" \
             python scripts/train_gemma3_ttt.py \
@@ -199,7 +203,7 @@ phase1_baselines() {
                 --output_dir outputs/gemma3/baselines/4b_update4 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_4B \
                 --wandb_project ponderttt-gemma3-4b --save_every $SAVE_EVERY_4B \
-                --checkpoint_path "$CHECKPOINT_4B" --enable_sharding
+                --checkpoint_path "$CHECKPOINT_4B"
     fi
 
     # Gemma 3 12B Baselines
@@ -212,7 +216,7 @@ phase1_baselines() {
                 --output_dir outputs/gemma3/baselines/12b_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_12B \
                 --wandb_project ponderttt-gemma3-12b --save_every $SAVE_EVERY_12B \
-                --checkpoint_path "$CHECKPOINT_12B" --enable_sharding
+                --checkpoint_path "$CHECKPOINT_12B"
 
         run_experiment "Gemma 3 12B UPDATE_2" \
             python scripts/train_gemma3_ttt.py \
@@ -220,7 +224,7 @@ phase1_baselines() {
                 --output_dir outputs/gemma3/baselines/12b_update2 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_12B \
                 --wandb_project ponderttt-gemma3-12b --save_every $SAVE_EVERY_12B \
-                --checkpoint_path "$CHECKPOINT_12B" --enable_sharding
+                --checkpoint_path "$CHECKPOINT_12B"
     fi
 
     # Gemma 3 27B Baselines
@@ -233,7 +237,7 @@ phase1_baselines() {
                 --output_dir outputs/gemma3/baselines/27b_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_27B \
                 --wandb_project ponderttt-gemma3-27b --save_every $SAVE_EVERY_27B \
-                --checkpoint_path "$CHECKPOINT_27B" --enable_sharding
+                --checkpoint_path "$CHECKPOINT_27B"
     fi
 
     log_info "Phase 1 Complete!"
