@@ -161,7 +161,7 @@ phase1_baselines() {
         log_info "Training Gemma 3 1B baselines..."
         
         run_experiment "Gemma 3 1B UPDATE_1" \
-            python scripts/train_gemma3_ttt.py \
+            python -m ponderttt.experiments.train_baseline \
                 --model_scale 1b --action UPDATE_1 --max_chunks $MAX_CHUNKS_1B \
                 --output_dir outputs/gemma3/baselines/1b_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_1B \
@@ -169,7 +169,7 @@ phase1_baselines() {
                 --checkpoint_path "$CHECKPOINT_1B"
 
         run_experiment "Gemma 3 1B UPDATE_2" \
-            python scripts/train_gemma3_ttt.py \
+            python -m ponderttt.experiments.train_baseline \
                 --model_scale 1b --action UPDATE_2 --max_chunks $MAX_CHUNKS_1B \
                 --output_dir outputs/gemma3/baselines/1b_update2 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_1B \
@@ -182,7 +182,7 @@ phase1_baselines() {
         log_info "Training Gemma 3 4B baselines..."
         
         run_experiment "Gemma 3 4B UPDATE_1" \
-            python scripts/train_gemma3_ttt.py \
+            python -m ponderttt.experiments.train_baseline \
                 --model_scale 4b --action UPDATE_1 --max_chunks $MAX_CHUNKS_4B \
                 --output_dir outputs/gemma3/baselines/4b_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_4B \
@@ -190,7 +190,7 @@ phase1_baselines() {
                 --checkpoint_path "$CHECKPOINT_4B"
 
         run_experiment "Gemma 3 4B UPDATE_2" \
-            python scripts/train_gemma3_ttt.py \
+            python -m ponderttt.experiments.train_baseline \
                 --model_scale 4b --action UPDATE_2 --max_chunks $MAX_CHUNKS_4B \
                 --output_dir outputs/gemma3/baselines/4b_update2 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_4B \
@@ -198,7 +198,7 @@ phase1_baselines() {
                 --checkpoint_path "$CHECKPOINT_4B"
 
         run_experiment "Gemma 3 4B UPDATE_4" \
-            python scripts/train_gemma3_ttt.py \
+            python -m ponderttt.experiments.train_baseline \
                 --model_scale 4b --action UPDATE_4 --max_chunks $MAX_CHUNKS_4B \
                 --output_dir outputs/gemma3/baselines/4b_update4 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_4B \
@@ -211,7 +211,7 @@ phase1_baselines() {
         log_info "Training Gemma 3 12B baselines..."
         
         run_experiment "Gemma 3 12B UPDATE_1" \
-            python scripts/train_gemma3_ttt.py \
+            python -m ponderttt.experiments.train_baseline \
                 --model_scale 12b --action UPDATE_1 --max_chunks $MAX_CHUNKS_12B \
                 --output_dir outputs/gemma3/baselines/12b_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_12B \
@@ -219,7 +219,7 @@ phase1_baselines() {
                 --checkpoint_path "$CHECKPOINT_12B"
 
         run_experiment "Gemma 3 12B UPDATE_2" \
-            python scripts/train_gemma3_ttt.py \
+            python -m ponderttt.experiments.train_baseline \
                 --model_scale 12b --action UPDATE_2 --max_chunks $MAX_CHUNKS_12B \
                 --output_dir outputs/gemma3/baselines/12b_update2 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_12B \
@@ -232,7 +232,7 @@ phase1_baselines() {
         log_info "Training Gemma 3 27B baselines..."
         
         run_experiment "Gemma 3 27B UPDATE_1" \
-            python scripts/train_gemma3_ttt.py \
+            python -m ponderttt.experiments.train_baseline \
                 --model_scale 27b --action UPDATE_1 --max_chunks $MAX_CHUNKS_27B \
                 --output_dir outputs/gemma3/baselines/27b_update1 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_27B \
