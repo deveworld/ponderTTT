@@ -22,7 +22,7 @@ from flax import nnx
 from tqdm import tqdm
 
 from ponderttt.evaluation.benchmarks import HumanEvalBenchmark
-from ponderttt.models import Gemma3TTTModel
+from ponderttt.models.gemma3.model import Gemma3TTTModel
 from ponderttt.models.gemma3.tokenizer import Gemma3Tokenizer
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
