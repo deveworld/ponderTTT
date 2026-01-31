@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 os.environ["PONDER_TTT_ALLOW_UNSAFE_BENCHMARKS"] = "1"
 os.environ["JAX_PLATFORMS"] = "cuda"
@@ -21,12 +22,17 @@ import jax.numpy as jnp
 from flax import nnx
 from tqdm import tqdm
 
+from ponderttt.data import get_tokenizer
 from ponderttt.evaluation.benchmarks import HumanEvalBenchmark
 from ponderttt.models.gemma3.model import Gemma3TTTModel
-from ponderttt.models.gemma3.tokenizer import Gemma3Tokenizer
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def get_default_tokenizer(model_scale: str) -> str:
+    """Get default tokenizer for model scale."""
+    return f"google/gemma-3-{model_scale}-pt"
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,7 +94,7 @@ def parse_args() -> argparse.Namespace:
 
 def create_generate_fn(
     model: Gemma3TTTModel,
-    tokenizer: Gemma3Tokenizer,
+    tokenizer: Any,
     max_new_tokens: int,
     temperature: float,
     use_ttt: bool,
@@ -96,18 +102,21 @@ def create_generate_fn(
 ):
     """Create generation function for HumanEval."""
 
+    # Get EOS token ID from tokenizer
+    eos_id = tokenizer.eos_token_id if hasattr(tokenizer, "eos_token_id") else 1
+
     def generate(prompt: str) -> list[str]:
         """Generate completions for a prompt."""
-        # Tokenize
-        input_ids = tokenizer.encode(prompt)
-        input_ids = jnp.array(input_ids)[None, :]  # [1, seq_len]
+        # Tokenize using HuggingFace tokenizer
+        encoded = tokenizer.encode(prompt, add_special_tokens=False)
+        input_ids = jnp.array(encoded)[None, :]  # [1, seq_len]
 
         # Generate
         completions = []
-        for _ in range(num_samples):
+        for sample_idx in range(num_samples):
             generated_ids = input_ids
 
-            for _ in range(max_new_tokens):
+            for step in range(max_new_tokens):
                 # Forward pass
                 position_ids = jnp.arange(generated_ids.shape[1])[None, :]
                 attention_mask = jnp.ones_like(generated_ids)
@@ -125,10 +134,11 @@ def create_generate_fn(
                 # Sample or greedy
                 if temperature > 0:
                     probs = jax.nn.softmax(next_token_logits / temperature, axis=-1)
-                    next_token = jax.random.categorical(
-                        jax.random.PRNGKey(hash(prompt) % (2**31)),
-                        jnp.log(probs),
+                    # Use different key for each sample and step
+                    key = jax.random.PRNGKey(
+                        (hash(prompt) + sample_idx * 1000 + step) % (2**31)
                     )
+                    next_token = jax.random.categorical(key, jnp.log(probs))
                 else:
                     next_token = jnp.argmax(next_token_logits, axis=-1)
 
@@ -136,14 +146,14 @@ def create_generate_fn(
                 generated_ids = jnp.concatenate([generated_ids, next_token], axis=1)
 
                 # Check for EOS
-                if int(next_token[0, 0]) == tokenizer.eos_id:
+                if int(next_token[0, 0]) == eos_id:
                     break
 
             # Decode only the new tokens
             new_ids = generated_ids[0, input_ids.shape[1] :].tolist()
-            completion = tokenizer.decode(new_ids)
+            completion = tokenizer.decode(new_ids, skip_special_tokens=True)
 
-            # Stop at first newline after function definition (HumanEval convention)
+            # Stop at first double newline (HumanEval convention for end of function)
             if "\n\n" in completion:
                 completion = completion.split("\n\n")[0]
 
@@ -169,6 +179,11 @@ def main():
     logger.info(f"Max new tokens: {args.max_new_tokens}")
     logger.info(f"Temperature: {args.temperature}")
 
+    # Load tokenizer first (needed for model config)
+    tokenizer_name = get_default_tokenizer(args.model_scale)
+    logger.info(f"\nTokenizer: {tokenizer_name}")
+    tokenizer = get_tokenizer(tokenizer_name)
+
     # Load model
     logger.info("\nLoading model...")
     checkpoint = args.checkpoint_path or f"hf:google/gemma-3-{args.model_scale}-pt"
@@ -179,9 +194,6 @@ def main():
         rngs=nnx.Rngs(0),
     )
     model.eval()
-
-    # Load tokenizer
-    tokenizer = Gemma3Tokenizer.from_pretrained(f"google/gemma-3-{args.model_scale}-pt")
 
     logger.info(f"Model loaded: {args.model_scale}")
 
