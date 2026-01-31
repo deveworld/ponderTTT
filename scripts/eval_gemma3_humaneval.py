@@ -19,15 +19,20 @@ os.environ["JAX_PLATFORMS"] = "cuda"
 
 import jax
 import jax.numpy as jnp
-from flax import nnx
 from tqdm import tqdm
 
 from ponderttt.data import get_tokenizer
 from ponderttt.evaluation.benchmarks import HumanEvalBenchmark
-from ponderttt.models.gemma3.model import Gemma3TTTModel
+from ponderttt.models import load_ttt_model
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+
+# Model name mapping (same as train_gemma3_ttt.py)
+def get_model_name(scale: str) -> str:
+    """Get model name from scale."""
+    return f"gemma3-{scale}"
 
 
 def get_default_tokenizer(model_scale: str) -> str:
@@ -89,11 +94,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Number of problems to evaluate (None = all)",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed",
+    )
     return parser.parse_args()
 
 
 def create_generate_fn(
-    model: Gemma3TTTModel,
+    model: Any,
     tokenizer: Any,
     max_new_tokens: int,
     temperature: float,
@@ -103,7 +114,7 @@ def create_generate_fn(
     """Create generation function for HumanEval."""
 
     # Get EOS token ID from tokenizer
-    eos_id = tokenizer.eos_token_id if hasattr(tokenizer, "eos_token_id") else 1
+    eos_id = getattr(tokenizer, "eos_token_id", 1)
 
     def generate(prompt: str) -> list[str]:
         """Generate completions for a prompt."""
@@ -121,12 +132,19 @@ def create_generate_fn(
                 position_ids = jnp.arange(generated_ids.shape[1])[None, :]
                 attention_mask = jnp.ones_like(generated_ids)
 
-                outputs = model(
+                # Model returns (outputs_dict, cache) for Gemma3TTTModel
+                result = model(
                     generated_ids,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     use_ttt=use_ttt,
                 )
+
+                # Handle both tuple return (Gemma3) and dict return (GPT-2)
+                if isinstance(result, tuple):
+                    outputs = result[0]
+                else:
+                    outputs = result
 
                 logits = outputs["logits"]
                 next_token_logits = logits[:, -1, :]
@@ -179,23 +197,27 @@ def main():
     logger.info(f"Max new tokens: {args.max_new_tokens}")
     logger.info(f"Temperature: {args.temperature}")
 
-    # Load tokenizer first (needed for model config)
+    # Load tokenizer
     tokenizer_name = get_default_tokenizer(args.model_scale)
     logger.info(f"\nTokenizer: {tokenizer_name}")
     tokenizer = get_tokenizer(tokenizer_name)
 
-    # Load model
+    # Load model using load_ttt_model (same as training script)
     logger.info("\nLoading model...")
-    checkpoint = args.checkpoint_path or f"hf:google/gemma-3-{args.model_scale}-pt"
+    model_name = get_model_name(args.model_scale)
+    checkpoint_path = args.checkpoint_path or f"hf:google/gemma-3-{args.model_scale}-pt"
 
-    model = Gemma3TTTModel.from_pretrained(
-        checkpoint,
-        model_scale=args.model_scale,
-        rngs=nnx.Rngs(0),
+    model, config = load_ttt_model(
+        model_name=model_name,
+        fast_weight_type="ttt",
+        dtype=jnp.bfloat16,
+        seed=args.seed,
+        load_pretrained=True,
+        checkpoint_path=checkpoint_path,
     )
     model.eval()
 
-    logger.info(f"Model loaded: {args.model_scale}")
+    logger.info(f"Model loaded: {model_name}")
 
     # Load benchmark
     logger.info("\nLoading HumanEval benchmark...")
@@ -246,7 +268,7 @@ def main():
     full_results = {
         "model_scale": args.model_scale,
         "use_ttt": use_ttt,
-        "checkpoint": checkpoint,
+        "checkpoint": checkpoint_path,
         "num_samples": args.num_samples,
         "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
