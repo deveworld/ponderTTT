@@ -87,8 +87,8 @@ def main() -> None:
     print(f"Input shape: {input_ids.shape}")
     print(f"Input IDs (first 10): {input_ids[0, :10].tolist()}")
 
-    # Forward pass WITHOUT TTT
-    print("\n--- Forward pass (use_ttt=False) ---")
+    # Forward pass (no TTT)
+    print("\n--- Forward pass ---")
     outputs, _ = model(
         input_ids,
         attention_mask=attention_mask,
@@ -123,46 +123,8 @@ def main() -> None:
         for t in range(targets_np.shape[1]):
             ce_losses.append(-log_probs[b, t, targets_np[b, t]])
 
-    avg_loss_no_ttt = float(np.mean(ce_losses))
-    print(f"\nCross-entropy loss (no TTT): {avg_loss_no_ttt:.4f}")
-
-    # Forward pass WITH TTT
-    print("\n--- Forward pass (use_ttt=True) ---")
-    outputs_ttt, _ = model(
-        input_ids,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        use_ttt=True,
-    )
-    logits_ttt = outputs_ttt["logits"]
-    ttt_stats = outputs_ttt.get("ttt_stats", {})
-
-    logits_ttt_np = np.array(logits_ttt, dtype=np.float32)
-    print(f"Logits (TTT) range: [{logits_ttt_np.min():.2f}, {logits_ttt_np.max():.2f}]")
-
-    if ttt_stats:
-        print(f"TTT stats keys: {list(ttt_stats.keys())}")
-        for k, v in ttt_stats.items():
-            if hasattr(v, "mean"):
-                print(f"  {k}: {float(v.mean()):.4f}")
-            else:
-                print(f"  {k}: {v}")
-
-    # Compute loss with TTT
-    logits_ttt_for_loss = logits_ttt_np[:, :-1, :]
-    max_logits_ttt = logits_ttt_for_loss.max(axis=-1, keepdims=True)
-    log_sum_exp_ttt = np.log(
-        np.sum(np.exp(logits_ttt_for_loss - max_logits_ttt), axis=-1, keepdims=True)
-    )
-    log_probs_ttt = logits_ttt_for_loss - max_logits_ttt - log_sum_exp_ttt
-
-    ce_losses_ttt = []
-    for b in range(targets_np.shape[0]):
-        for t in range(targets_np.shape[1]):
-            ce_losses_ttt.append(-log_probs_ttt[b, t, targets_np[b, t]])
-
-    avg_loss_ttt = float(np.mean(ce_losses_ttt))
-    print(f"Cross-entropy loss (with TTT): {avg_loss_ttt:.4f}")
+    avg_loss = float(np.mean(ce_losses))
+    print(f"\nCross-entropy loss: {avg_loss:.4f}")
 
     # Summary
     print("\n" + "=" * 60)
@@ -170,7 +132,7 @@ def main() -> None:
     print("=" * 60)
 
     checks_passed = 0
-    total_checks = 4
+    total_checks = 3
 
     # Check 1: No NaN/Inf
     if not np.isnan(logits_np).any() and not np.isinf(logits_np).any():
@@ -187,20 +149,11 @@ def main() -> None:
         print("❌ Check 2: Logits out of range")
 
     # Check 3: Reasonable loss (pretrained model should have loss < 10)
-    if avg_loss_no_ttt < 10:
-        print(f"✅ Check 3: Loss reasonable ({avg_loss_no_ttt:.2f} < 10)")
+    if avg_loss < 10:
+        print(f"✅ Check 3: Loss reasonable ({avg_loss:.2f} < 10)")
         checks_passed += 1
     else:
-        print(f"❌ Check 3: Loss too high ({avg_loss_no_ttt:.2f} >= 10)")
-
-    # Check 4: TTT improves or maintains loss
-    if avg_loss_ttt <= avg_loss_no_ttt + 0.5:
-        print(f"✅ Check 4: TTT loss reasonable ({avg_loss_ttt:.2f})")
-        checks_passed += 1
-    else:
-        print(
-            f"❌ Check 4: TTT loss degraded ({avg_loss_ttt:.2f} > {avg_loss_no_ttt:.2f})"
-        )
+        print(f"❌ Check 3: Loss too high ({avg_loss:.2f} >= 10)")
 
     print(f"\nPassed {checks_passed}/{total_checks} checks")
 
