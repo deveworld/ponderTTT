@@ -346,16 +346,51 @@ def get_base_model_checksum(model: TTTModel) -> float:
     return float(sum(float(jnp.sum(x)) for x in leaves))
 
 
+class TrainableParamsWrapper(nnx.Module):
+    """Wrapper containing only trainable submodules for optimizer targeting.
+
+    In NNX, nnx.Optimizer applies updates to all nnx.Param in the target module.
+    By wrapping only the trainable submodules (TTT layer, fast_norm, projections),
+    we ensure the optimizer only updates those parameters while the base model
+    remains frozen.
+
+    IMPORTANT: This wrapper shares the actual submodule objects with the model,
+    so updates to the wrapper's parameters update the model's parameters.
+    """
+
+    def __init__(self, model: TTTModel):
+        """Extract trainable submodules from model.
+
+        Args:
+            model: TTT model (Gemma3TTTModel, GPT2TTTModel, etc.)
+        """
+        # These are references to the actual submodules, not copies
+        self.fast_layer = model.fast_layer
+        self.fast_norm = model.fast_norm
+
+        # Handle projection layers if present (Gemma3TTTModel)
+        self.has_projections = getattr(model, "_needs_projection", False)
+        if self.has_projections:
+            self.ttt_proj_in = model.ttt_proj_in
+            self.ttt_proj_out = model.ttt_proj_out
+
+
 # =============================================================================
 # Training Step Factories
 # =============================================================================
 
 
 def make_train_step(ssl_weight: float) -> Callable:
-    """Create training step function."""
+    """Create training step function.
+
+    The gradient is computed w.r.t. trainable_wrapper, but the forward pass
+    uses the full model. Since trainable_wrapper shares submodules with model,
+    the gradients flow correctly through the trainable parameters.
+    """
 
     def train_step(
         model: TTTModel,
+        trainable_wrapper: TrainableParamsWrapper,
         optimizer: nnx.Optimizer,
         input_ids: jax.Array,
         attention_mask: jax.Array,
@@ -363,9 +398,10 @@ def make_train_step(ssl_weight: float) -> Callable:
         use_ttt: bool,
     ) -> tuple[dict[str, jax.Array], dict[str, Any]]:
         def loss_fn(
-            mdl: TTTModel,
+            wrapper: TrainableParamsWrapper,
         ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
-            outputs = mdl(
+            # Forward pass through full model (wrapper shares submodules with model)
+            outputs = model(
                 input_ids,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -400,10 +436,13 @@ def make_train_step(ssl_weight: float) -> Callable:
             total_loss = ce_loss + aux_loss
             return total_loss, (ce_loss, aux_loss, ttt_stats)
 
+        # Compute gradient w.r.t. trainable wrapper only
         (loss, (ce_loss, aux_loss, ttt_stats)), grads = nnx.value_and_grad(
             loss_fn, has_aux=True
-        )(model)
-        optimizer.update(model, grads)
+        )(trainable_wrapper)
+
+        # Update only trainable params via optimizer (targets wrapper)
+        optimizer.update(trainable_wrapper, grads)
 
         metrics = {
             "loss_total": loss,
@@ -455,6 +494,7 @@ def make_adaptive_train_step(ssl_weight: float, threshold: float) -> Callable:
 
     def adaptive_step(
         model: TTTModel,
+        trainable_wrapper: TrainableParamsWrapper,
         optimizer: nnx.Optimizer,
         input_ids: jax.Array,
         attention_mask: jax.Array,
@@ -480,7 +520,13 @@ def make_adaptive_train_step(ssl_weight: float, threshold: float) -> Callable:
 
         if should_update:
             metrics, ttt_stats = base_train_step(
-                model, optimizer, input_ids, attention_mask, position_ids, True
+                model,
+                trainable_wrapper,
+                optimizer,
+                input_ids,
+                attention_mask,
+                position_ids,
+                True,
             )
             metrics["updated"] = jnp.array(1.0)
         else:
@@ -672,17 +718,17 @@ def main() -> None:
     action_steps = action_to_steps(args.action)
     effective_lr = args.learning_rate / max(action_steps, 1)
 
-    def create_optimizer(mdl: TTTModel) -> nnx.Optimizer:
+    def create_optimizer(wrapper: TrainableParamsWrapper) -> nnx.Optimizer:
         return nnx.Optimizer(
-            mdl,
+            wrapper,
             optax.chain(
                 optax.clip_by_global_norm(1.0),
                 optax.adam(effective_lr),
             ),
-            wrt=nnx.All(nnx.Param),
         )
 
     logger.info(f"\nOptimizer: Adam (lr={effective_lr:.2e})")
+    logger.info("Optimizer targets: TTT layer + fast_norm + projections only")
 
     # Training loop
     logger.info("\nStarting training...")
@@ -697,7 +743,10 @@ def main() -> None:
         else:
             model.eval()
 
-        optimizer = create_optimizer(model)
+        # Create trainable wrapper for optimizer (freezes base model)
+        trainable_wrapper = TrainableParamsWrapper(model)
+
+        optimizer = create_optimizer(trainable_wrapper)
         start_chunk = 0
 
         # Resume logic
@@ -792,6 +841,7 @@ def main() -> None:
                         for _ in range(action_steps):
                             metrics, _ = jit_train_step(
                                 model,
+                                trainable_wrapper,
                                 optimizer,
                                 chunk_input_ids,
                                 chunk_mask,

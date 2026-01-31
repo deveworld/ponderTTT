@@ -3,14 +3,14 @@
 Train Gemma 3 TTT models with frozen backbone.
 
 This script is specifically designed for Gemma 3 models (1B, 4B, 12B, 27B)
-with TPU v6e-16 optimized sharding and frozen base model training.
+with frozen base model training - only TTT layer parameters are updated.
 
 Usage:
     python scripts/train_gemma3_ttt.py --model_scale 4b --action UPDATE_1
     python scripts/train_gemma3_ttt.py --model_scale 12b --action UPDATE_2 --enable_sharding
 
 Requirements:
-    - TPU v6e-16 or similar (16 chips, 512 GB HBM)
+    - NVIDIA GPU with sufficient VRAM or TPU
     - Gemma 3 checkpoint (HuggingFace or Orbax format)
 """
 
@@ -270,15 +270,55 @@ def get_base_model_checksum(model: TTTModel) -> float:
 
 
 # =============================================================================
+# Trainable Parameters Wrapper
+# =============================================================================
+
+
+class TrainableParamsWrapper(nnx.Module):
+    """Wrapper containing only trainable submodules for optimizer targeting.
+
+    In NNX, nnx.Optimizer applies updates to all nnx.Param in the target module.
+    By wrapping only the trainable submodules (TTT layer, fast_norm, projections),
+    we ensure the optimizer only updates those parameters while the base model
+    remains frozen.
+
+    IMPORTANT: This wrapper shares the actual submodule objects with the model,
+    so updates to the wrapper's parameters update the model's parameters.
+    """
+
+    def __init__(self, model: TTTModel):
+        """Extract trainable submodules from model.
+
+        Args:
+            model: TTT model (Gemma3TTTModel or similar)
+        """
+        # These are references to the actual submodules, not copies
+        self.fast_layer = model.fast_layer
+        self.fast_norm = model.fast_norm
+
+        # Handle projection layers if present (Gemma3TTTModel)
+        self.has_projections = getattr(model, "_needs_projection", False)
+        if self.has_projections:
+            self.ttt_proj_in = model.ttt_proj_in
+            self.ttt_proj_out = model.ttt_proj_out
+
+
+# =============================================================================
 # Training Step Functions
 # =============================================================================
 
 
 def make_train_step(ssl_weight: float) -> Callable:
-    """Create training step function for Gemma 3."""
+    """Create training step function for Gemma 3.
+
+    The gradient is computed w.r.t. trainable_wrapper, but the forward pass
+    uses the full model. Since trainable_wrapper shares submodules with model,
+    the gradients flow correctly through the trainable parameters.
+    """
 
     def train_step(
         model: TTTModel,
+        trainable_wrapper: TrainableParamsWrapper,
         optimizer: nnx.Optimizer,
         input_ids: jax.Array,
         attention_mask: jax.Array,
@@ -286,10 +326,11 @@ def make_train_step(ssl_weight: float) -> Callable:
         use_ttt: bool,
     ) -> tuple[dict[str, jax.Array], dict[str, Any]]:
         def loss_fn(
-            mdl: TTTModel,
+            wrapper: TrainableParamsWrapper,
         ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
+            # Forward pass through full model (wrapper shares submodules with model)
             # Gemma3TTTModel returns (outputs_dict, cache)
-            outputs, _ = mdl(
+            outputs, _ = model(
                 input_ids,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -324,10 +365,13 @@ def make_train_step(ssl_weight: float) -> Callable:
             total_loss = ce_loss + aux_loss
             return total_loss, (ce_loss, aux_loss, ttt_stats)
 
+        # Compute gradient w.r.t. trainable wrapper only
         (loss, (ce_loss, aux_loss, ttt_stats)), grads = nnx.value_and_grad(
             loss_fn, has_aux=True
-        )(model)
-        optimizer.update(model, grads)
+        )(trainable_wrapper)
+
+        # Update only trainable params via optimizer (targets wrapper)
+        optimizer.update(trainable_wrapper, grads)
 
         metrics = {
             "loss_total": loss,
@@ -485,24 +529,27 @@ def main() -> None:
     initial_checksum = get_base_model_checksum(model)
     logger.info(f"Base model checksum: {initial_checksum:.4f}")
 
-    # JIT compile step functions
-    jit_train_step = nnx.jit(train_step_fn, static_argnames=["use_ttt"])
-    jit_eval_step = nnx.jit(eval_step_fn, static_argnames=["use_ttt"])
+    # Create trainable wrapper for optimizer (freezes base model)
+    trainable_wrapper = TrainableParamsWrapper(model)
 
-    # Optimizer (only for trainable parameters)
+    # Optimizer (targets only trainable wrapper)
     action_steps = action_to_steps(args.action)
     effective_lr = args.learning_rate / max(action_steps, 1)
 
     optimizer = nnx.Optimizer(
-        model,
+        trainable_wrapper,
         optax.chain(
             optax.clip_by_global_norm(1.0),
             optax.adam(effective_lr),
         ),
-        wrt=nnx.All(nnx.Param),
     )
 
     logger.info(f"\nOptimizer: Adam (lr={effective_lr:.2e})")
+    logger.info("Optimizer targets: TTT layer + fast_norm + projections only")
+
+    # JIT compile step functions
+    jit_train_step = nnx.jit(train_step_fn, static_argnames=["use_ttt"])
+    jit_eval_step = nnx.jit(eval_step_fn, static_argnames=["use_ttt"])
 
     # Set training mode
     if action_steps > 0:
@@ -599,6 +646,7 @@ def main() -> None:
                     for _ in range(action_steps):
                         metrics, _ = jit_train_step(
                             model,
+                            trainable_wrapper,
                             optimizer,
                             chunk_input_ids,
                             chunk_mask,
