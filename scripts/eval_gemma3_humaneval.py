@@ -113,14 +113,14 @@ def create_generate_fn(
 ):
     """Create generation function for HumanEval."""
 
-    # Get EOS token ID from tokenizer
-    eos_id = getattr(tokenizer, "eos_token_id", 1)
+    # Get EOS token ID from tokenizer (tokenizers library uses token_to_id)
+    eos_id = tokenizer.token_to_id("<eos>") or tokenizer.token_to_id("</s>") or 1
 
     def generate(prompt: str) -> list[str]:
         """Generate completions for a prompt."""
-        # Tokenize using HuggingFace tokenizer
+        # Tokenize using tokenizers library (returns Encoding object)
         encoded = tokenizer.encode(prompt, add_special_tokens=False)
-        input_ids = jnp.array(encoded)[None, :]  # [1, seq_len]
+        input_ids = jnp.array(encoded.ids)[None, :]  # [1, seq_len]
 
         # Generate
         completions = []
@@ -167,9 +167,9 @@ def create_generate_fn(
                 if int(next_token[0, 0]) == eos_id:
                     break
 
-            # Decode only the new tokens
+            # Decode only the new tokens (tokenizers library decode doesn't have skip_special_tokens)
             new_ids = generated_ids[0, input_ids.shape[1] :].tolist()
-            completion = tokenizer.decode(new_ids, skip_special_tokens=True)
+            completion = tokenizer.decode(new_ids)
 
             # Stop at first double newline (HumanEval convention for end of function)
             if "\n\n" in completion:
