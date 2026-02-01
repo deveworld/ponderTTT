@@ -401,12 +401,14 @@ def make_train_step(ssl_weight: float) -> Callable:
             wrapper: TrainableParamsWrapper,
         ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
             # Forward pass through full model (wrapper shares submodules with model)
-            outputs = model(
+            result = model(
                 input_ids,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 use_ttt=use_ttt,
             )
+            # Handle both GPT-2 (dict) and Gemma3 (tuple: outputs_dict, cache) formats
+            outputs = result[0] if isinstance(result, tuple) else result
             logits = outputs["logits"]
             ttt_stats = outputs.get("ttt_stats", {})
 
@@ -465,12 +467,14 @@ def make_eval_step() -> Callable:
         position_ids: jax.Array,
         use_ttt: bool,
     ) -> dict[str, jax.Array]:
-        outputs = model(
+        result = model(
             input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
             use_ttt=use_ttt,
         )
+        # Handle both GPT-2 (dict) and Gemma3 (tuple: outputs_dict, cache) formats
+        outputs = result[0] if isinstance(result, tuple) else result
         logits = outputs["logits"]
 
         logits_for_loss = logits[:, :-1]
