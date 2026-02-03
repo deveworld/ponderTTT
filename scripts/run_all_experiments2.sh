@@ -57,7 +57,7 @@ CHECKPOINT_4B="hf:google/gemma-3-4b-it"
 
 # Configuration - Gemma 3 12B
 # ~24GB model, moderate batch size
-BATCH_SIZE_12B=4
+BATCH_SIZE_12B=2
 MAX_CHUNKS_12B=160000
 NUM_EVAL_BATCHES_12B=1000
 NUM_EVAL_BATCHES_OOD_12B=500
