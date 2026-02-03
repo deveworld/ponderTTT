@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint_path",
         type=str,
         default=None,
-        help="Override checkpoint path (default: hf:google/gemma-3-{scale}-pt)",
+        help="Override checkpoint path (default: hf:google/gemma-3-{scale}-it)",
     )
     return parser.parse_args()
 
@@ -55,7 +55,7 @@ def main() -> None:
         return
 
     # Model names
-    hf_model_name = f"google/gemma-3-{args.model_scale}-pt"
+    hf_model_name = f"google/gemma-3-{args.model_scale}-it"
     checkpoint_path = args.checkpoint_path or f"hf:{hf_model_name}"
 
     print("=" * 60)
@@ -63,14 +63,14 @@ def main() -> None:
     print("=" * 60)
 
     # Tokenizer
-    tokenizer_name = f"google/gemma-3-{args.model_scale}-pt"
+    tokenizer_name = f"google/gemma-3-{args.model_scale}-it"
     try:
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     except Exception:
         print(
-            f"Warning: Could not load {tokenizer_name}, falling back to google/gemma-3-4b-pt"
+            f"Warning: Could not load {tokenizer_name}, falling back to google/gemma-3-4b-it"
         )
-        tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-4b-pt")
+        tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-4b-it")
 
     print(f"Tokenizer: {tokenizer_name}")
     print(f"Vocab size: {tokenizer.vocab_size}")

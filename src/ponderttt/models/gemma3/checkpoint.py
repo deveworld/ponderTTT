@@ -191,7 +191,7 @@ def _download_safetensors(
     """Download and load safetensors from HuggingFace.
 
     Args:
-        model_id: HuggingFace model ID (e.g., "google/gemma-3-1b-pt")
+        model_id: HuggingFace model ID (e.g., "google/gemma-3-1b-it")
         cache_dir: Optional cache directory
 
     Returns:
@@ -257,7 +257,7 @@ def load_gemma3_from_huggingface(
 
     Args:
         model: Initialized NNX Gemma 3 model
-        model_id: HuggingFace model ID (e.g., "google/gemma-3-1b-pt")
+        model_id: HuggingFace model ID (e.g., "google/gemma-3-1b-it")
         cache_dir: Optional cache directory for downloaded weights
 
     Returns:

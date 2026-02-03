@@ -48,20 +48,20 @@ def main() -> None:
     # Load tokenizer
     from ponderttt.data import get_tokenizer
 
-    tokenizer_name = f"google/gemma-3-{args.model_scale}-pt"
+    tokenizer_name = f"google/gemma-3-{args.model_scale}-it"
     try:
         tokenizer = get_tokenizer(tokenizer_name)
     except Exception:
         print(
-            f"Warning: Could not load {tokenizer_name}, falling back to google/gemma-3-4b-pt"
+            f"Warning: Could not load {tokenizer_name}, falling back to google/gemma-3-4b-it"
         )
-        tokenizer = get_tokenizer("google/gemma-3-4b-pt")
+        tokenizer = get_tokenizer("google/gemma-3-4b-it")
 
     print(f"Tokenizer: {tokenizer_name}")
     print(f"Tokenizer vocab size: {tokenizer.get_vocab_size()}")
 
     # Load model
-    checkpoint_path = args.checkpoint_path or f"hf:google/gemma-3-{args.model_scale}-pt"
+    checkpoint_path = args.checkpoint_path or f"hf:google/gemma-3-{args.model_scale}-it"
     print(f"\nLoading model from: {checkpoint_path}")
 
     from ponderttt.models import load_ttt_model

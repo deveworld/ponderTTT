@@ -45,7 +45,7 @@ BATCH_SIZE_1B=32
 MAX_CHUNKS_1B=80000
 NUM_EVAL_BATCHES_1B=500
 NUM_EVAL_BATCHES_OOD_1B=250
-CHECKPOINT_1B="hf:google/gemma-3-1b-pt"
+CHECKPOINT_1B="hf:google/gemma-3-1b-it"
 
 # Configuration - Gemma 3 4B
 # ~8GB model, 96GB VRAM allows larger batch
@@ -53,7 +53,7 @@ BATCH_SIZE_4B=16
 MAX_CHUNKS_4B=160000
 NUM_EVAL_BATCHES_4B=1000
 NUM_EVAL_BATCHES_OOD_4B=500
-CHECKPOINT_4B="hf:google/gemma-3-4b-pt"
+CHECKPOINT_4B="hf:google/gemma-3-4b-it"
 
 # Configuration - Gemma 3 12B
 # ~24GB model, moderate batch size
@@ -61,7 +61,7 @@ BATCH_SIZE_12B=8
 MAX_CHUNKS_12B=160000
 NUM_EVAL_BATCHES_12B=1000
 NUM_EVAL_BATCHES_OOD_12B=500
-CHECKPOINT_12B="hf:google/gemma-3-12b-pt"
+CHECKPOINT_12B="hf:google/gemma-3-12b-it"
 
 # Configuration - Gemma 3 27B
 # ~54GB model, limited batch size on 96GB
@@ -69,7 +69,7 @@ BATCH_SIZE_27B=2
 MAX_CHUNKS_27B=80000
 NUM_EVAL_BATCHES_27B=500
 NUM_EVAL_BATCHES_OOD_27B=250
-CHECKPOINT_27B="hf:google/gemma-3-27b-pt"
+CHECKPOINT_27B="hf:google/gemma-3-27b-it"
 
 # Save frequency
 SAVE_EVERY_1B=$((MAX_CHUNKS_1B / 2))
@@ -158,7 +158,7 @@ phase1_baselines() {
 
     # Gemma 3 1B Baselines (for testing)
     if [ "$RUN_1B" = true ]; then
-        log_info "Training Gemma 3 1B baselines..."
+        log_info "Training Gemma 3 1B baseline..."
         
         run_experiment "Gemma 3 1B UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
@@ -167,19 +167,11 @@ phase1_baselines() {
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_1B \
                 --wandb_project ponderttt-gemma3-1b --save_every $SAVE_EVERY_1B \
                 --checkpoint_path "$CHECKPOINT_1B"
-
-        run_experiment "Gemma 3 1B UPDATE_2" \
-            python -m ponderttt.experiments.train_baseline \
-                --model_scale 1b --action UPDATE_2 --max_chunks $MAX_CHUNKS_1B \
-                --output_dir outputs/gemma3/baselines/1b_update2 \
-                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_1B \
-                --wandb_project ponderttt-gemma3-1b --save_every $SAVE_EVERY_1B \
-                --checkpoint_path "$CHECKPOINT_1B"
     fi
 
     # Gemma 3 4B Baselines
     if [ "$RUN_4B" = true ]; then
-        log_info "Training Gemma 3 4B baselines..."
+        log_info "Training Gemma 3 4B baseline..."
         
         run_experiment "Gemma 3 4B UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
@@ -188,40 +180,16 @@ phase1_baselines() {
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_4B \
                 --wandb_project ponderttt-gemma3-4b --save_every $SAVE_EVERY_4B \
                 --checkpoint_path "$CHECKPOINT_4B"
-
-        run_experiment "Gemma 3 4B UPDATE_2" \
-            python -m ponderttt.experiments.train_baseline \
-                --model_scale 4b --action UPDATE_2 --max_chunks $MAX_CHUNKS_4B \
-                --output_dir outputs/gemma3/baselines/4b_update2 \
-                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_4B \
-                --wandb_project ponderttt-gemma3-4b --save_every $SAVE_EVERY_4B \
-                --checkpoint_path "$CHECKPOINT_4B"
-
-        run_experiment "Gemma 3 4B UPDATE_4" \
-            python -m ponderttt.experiments.train_baseline \
-                --model_scale 4b --action UPDATE_4 --max_chunks $MAX_CHUNKS_4B \
-                --output_dir outputs/gemma3/baselines/4b_update4 \
-                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_4B \
-                --wandb_project ponderttt-gemma3-4b --save_every $SAVE_EVERY_4B \
-                --checkpoint_path "$CHECKPOINT_4B"
     fi
 
     # Gemma 3 12B Baselines
     if [ "$RUN_12B" = true ]; then
-        log_info "Training Gemma 3 12B baselines..."
+        log_info "Training Gemma 3 12B baseline..."
         
         run_experiment "Gemma 3 12B UPDATE_1" \
             python -m ponderttt.experiments.train_baseline \
                 --model_scale 12b --action UPDATE_1 --max_chunks $MAX_CHUNKS_12B \
                 --output_dir outputs/gemma3/baselines/12b_update1 \
-                --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_12B \
-                --wandb_project ponderttt-gemma3-12b --save_every $SAVE_EVERY_12B \
-                --checkpoint_path "$CHECKPOINT_12B"
-
-        run_experiment "Gemma 3 12B UPDATE_2" \
-            python -m ponderttt.experiments.train_baseline \
-                --model_scale 12b --action UPDATE_2 --max_chunks $MAX_CHUNKS_12B \
-                --output_dir outputs/gemma3/baselines/12b_update2 \
                 --num_workers $NUM_WORKERS --batch_size $BATCH_SIZE_12B \
                 --wandb_project ponderttt-gemma3-12b --save_every $SAVE_EVERY_12B \
                 --checkpoint_path "$CHECKPOINT_12B"

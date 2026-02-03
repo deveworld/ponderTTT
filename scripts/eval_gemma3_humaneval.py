@@ -39,7 +39,7 @@ def get_model_name(scale: str) -> str:
 
 def get_default_tokenizer(model_scale: str) -> str:
     """Get default tokenizer for model scale."""
-    return f"google/gemma-3-{model_scale}-pt"
+    return f"google/gemma-3-{model_scale}-it"
 
 
 def parse_args() -> argparse.Namespace:
@@ -268,7 +268,7 @@ def main():
     # Load model
     logger.info("\nLoading model...")
     model_name = get_model_name(args.model_scale)
-    checkpoint_path = args.checkpoint_path or f"hf:google/gemma-3-{args.model_scale}-pt"
+    checkpoint_path = args.checkpoint_path or f"hf:google/gemma-3-{args.model_scale}-it"
 
     model, config = load_ttt_model(
         model_name=model_name,

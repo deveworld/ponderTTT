@@ -309,7 +309,7 @@ def load_ttt_model(
         vocab_size: Optional override for tokenizer vocab size (GPT-2 only)
         pad_token_id: Optional pad token id to explicitly mask in logits (GPT-2 only)
         checkpoint_path: Path to checkpoint (for Gemma 3 Orbax checkpoints)
-            For HuggingFace Gemma 3, use format "hf:google/gemma-3-4b-pt"
+            For HuggingFace Gemma 3, use format "hf:google/gemma-3-4b-it"
 
     Returns:
         (model, config) tuple
@@ -562,7 +562,7 @@ def _load_gemma3_ttt_model(
         load_pretrained: Whether to load pretrained weights
         checkpoint_path: Path to checkpoint
             - Orbax: "/path/to/checkpoint"
-            - HuggingFace: "hf:google/gemma-3-4b-pt"
+            - HuggingFace: "hf:google/gemma-3-4b-it"
 
     Returns:
         (model, config) tuple
@@ -626,7 +626,7 @@ def _load_gemma3_ttt_model(
     # Load pretrained weights
     if load_pretrained and checkpoint_path:
         if checkpoint_path.startswith("hf:"):
-            # HuggingFace format: "hf:google/gemma-3-4b-pt"
+            # HuggingFace format: "hf:google/gemma-3-4b-it"
             hf_model_id = checkpoint_path[3:]  # Remove "hf:" prefix
             model = load_gemma3_from_huggingface(model, hf_model_id)
         else:
