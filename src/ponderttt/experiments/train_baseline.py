@@ -739,8 +739,10 @@ def main() -> None:
     logger.info("\nStarting training...")
     seed_results = []
 
-    for seed in seeds:
-        model, config = init_model(seed)
+    for i, seed in enumerate(seeds):
+        # Reuse first model if same seed, otherwise reinitialize
+        if i > 0 or seed != seeds[0]:
+            model, config = init_model(seed)
         initial_checksum = get_base_model_checksum(model)
 
         if action_steps > 0:
@@ -886,7 +888,7 @@ def main() -> None:
                             }
                         )
 
-                    # Periodic checkpoint
+                    # Periodic checkpoint (synchronous to avoid OOM from concurrent save + train)
                     if (
                         chunks_processed % args.save_every == 0
                         and chunks_processed < args.max_chunks
@@ -900,6 +902,7 @@ def main() -> None:
                             },
                             metadata={"chunks": chunks_processed},
                         )
+                        wait_for_checkpoints()
 
                 first_batch = False
 
