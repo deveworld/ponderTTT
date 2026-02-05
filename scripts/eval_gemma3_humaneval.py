@@ -204,8 +204,10 @@ def create_generate_fn(
     # Warmup JIT with prefill (full prompt) and decode (single token) shapes
     logger.info(f"Warming up JIT with cache_size={cache_size}...")
 
-    # Warmup prefill (variable prompt length, we'll use half chunk)
-    dummy_prefill_len = chunk_size // 2
+    # Warmup prefill (length must be multiple of 16 for TTT)
+    dummy_prefill_len = (chunk_size // 2 // 16) * 16  # Round down to multiple of 16
+    if dummy_prefill_len == 0:
+        dummy_prefill_len = 16
     dummy_prefill_ids = jnp.ones((1, dummy_prefill_len), dtype=jnp.int32)
     dummy_prefill_pos = jnp.arange(dummy_prefill_len, dtype=jnp.int32)[None, :]
     cache = model.init_cache(cache_size=cache_size, batch_size=1)
@@ -234,22 +236,39 @@ def create_generate_fn(
 
         prompt_len = len(prompt_ids)
 
+        # TTT requires sequence length divisible by mini_batch_size (16)
+        # Pad prompt to nearest multiple of 16 for prefill
+        mini_batch_size = 16
+        padded_prompt_len = (
+            (prompt_len + mini_batch_size - 1) // mini_batch_size
+        ) * mini_batch_size
+        pad_len = padded_prompt_len - prompt_len
+
+        # Get pad token (use 0 if not available)
+        pad_id = tokenizer.token_to_id("<pad>") or tokenizer.token_to_id("<|pad|>") or 0
+
         completions = []
         for sample_idx in range(num_samples):
             # Initialize fresh cache for each sample
             cache = model.init_cache(cache_size=cache_size, batch_size=1)
 
-            # Prefill: process entire prompt at once
-            input_ids = jnp.array(prompt_ids, dtype=jnp.int32)[
+            # Prefill: process entire prompt with left padding for TTT compatibility
+            # Left-pad to make length divisible by 16
+            padded_ids = [pad_id] * pad_len + prompt_ids
+            input_ids = jnp.array(padded_ids, dtype=jnp.int32)[
                 None, :
-            ]  # [1, prompt_len]
-            position_ids = jnp.arange(prompt_len, dtype=jnp.int32)[
-                None, :
-            ]  # [1, prompt_len]
+            ]  # [1, padded_prompt_len]
+            # Position IDs: 0 for pad tokens, then 0..prompt_len-1 for actual tokens
+            position_ids = jnp.concatenate(
+                [
+                    jnp.zeros(pad_len, dtype=jnp.int32),
+                    jnp.arange(prompt_len, dtype=jnp.int32),
+                ]
+            )[None, :]  # [1, padded_prompt_len]
 
             logits, cache = jit_prefill(model, input_ids, position_ids, cache)
 
-            # Get logits for last prompt token
+            # Get logits for last actual token (not padding)
             next_token_logits = logits[0, -1, :]
 
             # Sample first token
