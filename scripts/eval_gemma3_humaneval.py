@@ -42,6 +42,15 @@ def get_default_tokenizer(model_scale: str) -> str:
     return f"google/gemma-3-{model_scale}-it"
 
 
+def format_prompt_for_it_model(prompt: str) -> str:
+    """Format HumanEval prompt for instruction-tuned model.
+
+    Gemma 3 IT expects: <start_of_turn>user\n{instruction}<end_of_turn>\n<start_of_turn>model
+    """
+    instruction = f"Complete the following Python function. Only output the function body, no explanations.\n\n```python\n{prompt}```"
+    return f"<start_of_turn>user\n{instruction}<end_of_turn>\n<start_of_turn>model\n```python\n{prompt}"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate Gemma 3 on HumanEval")
     parser.add_argument(
@@ -175,8 +184,11 @@ def create_generate_fn(
 
     def generate(prompt: str) -> list[str]:
         """Generate completions using fixed-size chunked inference."""
-        # Tokenize
-        encoded = tokenizer.encode(prompt, add_special_tokens=False)
+        # Apply chat template for IT models
+        formatted_prompt = format_prompt_for_it_model(prompt)
+
+        # Tokenize the formatted prompt
+        encoded = tokenizer.encode(formatted_prompt, add_special_tokens=False)
         prompt_ids = list(encoded.ids)
 
         # Truncate if necessary
@@ -233,9 +245,39 @@ def create_generate_fn(
             new_ids = generated[len(prompt_ids) :]
             completion = tokenizer.decode(new_ids)
 
-            # Stop at first double newline (end of function)
-            if "\n\n" in completion:
-                completion = completion.split("\n\n")[0]
+            # Clean up generation artifacts
+            # Remove markdown code blocks if present
+            if "```" in completion:
+                # Extract code from markdown
+                parts = completion.split("```")
+                if len(parts) >= 2:
+                    code_part = parts[0]  # Before first ``` or between ``` markers
+                    # If it starts with python, skip that line
+                    if code_part.strip().startswith("python"):
+                        code_part = "\n".join(code_part.split("\n")[1:])
+                    completion = code_part
+
+            # Remove any trailing explanation after function ends
+            # Look for return statement followed by double newline
+            lines = completion.split("\n")
+            clean_lines = []
+            for i, line in enumerate(lines):
+                clean_lines.append(line)
+                # Stop after a line that looks like a return or the function body ends
+                if line.strip().startswith("return ") and i > 0:
+                    # Check if next non-empty line is unindented (new function/text)
+                    remaining = lines[i + 1 :] if i + 1 < len(lines) else []
+                    for next_line in remaining:
+                        if next_line.strip() == "":
+                            continue
+                        # If unindented, we've left the function
+                        if not next_line.startswith(" ") and not next_line.startswith(
+                            "\t"
+                        ):
+                            break
+                        clean_lines.append(next_line)
+                    break
+            completion = "\n".join(clean_lines)
 
             completions.append(completion)
 
@@ -304,6 +346,7 @@ def main():
     if args.num_problems:
         problems = benchmark.problems[: args.num_problems]
         scores = []
+        all_samples = []  # Store samples for debugging
 
         for problem in tqdm(problems, desc="HumanEval"):
             samples = generate_fn(problem.prompt)
@@ -312,6 +355,16 @@ def main():
             passed = any(_check_solution(problem, s) for s in samples)
             scores.append(1.0 if passed else 0.0)
 
+            # Store sample for debugging
+            all_samples.append(
+                {
+                    "task_id": problem.task_id,
+                    "prompt": problem.prompt[:200] + "...",  # Truncate for readability
+                    "completion": samples[0] if samples else "",
+                    "passed": passed,
+                }
+            )
+
         results = {
             "pass@1": sum(scores) / len(scores),
             "num_problems": len(scores),
@@ -319,6 +372,7 @@ def main():
         }
     else:
         results = benchmark.evaluate(generate_fn, k=args.num_samples)
+        all_samples = []  # Not available in full eval mode
 
     # Save results
     output_dir = Path(args.output_dir)
@@ -340,6 +394,13 @@ def main():
 
     with open(output_file, "w") as f:
         json.dump(full_results, f, indent=2)
+
+    # Save samples for debugging (if available)
+    if all_samples:
+        samples_file = output_dir / f"samples_{args.model_scale}_{ttt_suffix}.json"
+        with open(samples_file, "w") as f:
+            json.dump(all_samples, f, indent=2)
+        logger.info(f"Samples saved to: {samples_file}")
 
     logger.info(f"\nResults saved to: {output_file}")
     logger.info("\n=== Results ===")

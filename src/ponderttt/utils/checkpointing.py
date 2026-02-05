@@ -188,13 +188,69 @@ def load_checkpoint(
     else:
         checkpoint_path = checkpoint_dir / f"checkpoint_{step}"
 
-    # Load
-    try:
+    # Load with fallback to CPU sharding for cross-device compatibility
+    def _try_restore():
         if target is not None:
-            checkpoint = checkpointer.restore(checkpoint_path, item=target)
+            return checkpointer.restore(checkpoint_path, item=target)
         else:
-            checkpoint = checkpointer.restore(checkpoint_path)
+            return checkpointer.restore(checkpoint_path)
+
+    try:
+        checkpoint = _try_restore()
+    except ValueError as e:
+        if "sharding" in str(e).lower():
+            # Checkpoint was saved on GPU but we're restoring on CPU
+            # Use ocp.args.Composite with CPU sharding for all arrays
+            print("Cross-device restore: falling back to CPU sharding...")
+
+            cpu_device = jax.devices("cpu")[0]
+            cpu_sharding = jax.sharding.SingleDeviceSharding(cpu_device)
+
+            # Read metadata to get the tree structure
+            metadata_path = checkpoint_path / "default" / "_METADATA"
+            if not metadata_path.exists():
+                # Try alternative metadata location
+                metadata_path = checkpoint_path / "_METADATA"
+
+            if metadata_path.exists():
+                import json
+
+                with open(metadata_path, "r") as f:
+                    ckpt_metadata = json.load(f)
+
+                # Build restore_args tree matching checkpoint structure
+                from orbax.checkpoint import ArrayRestoreArgs
+
+                def build_restore_args(tree):
+                    """Recursively build restore args with CPU sharding."""
+                    if isinstance(tree, dict):
+                        return {k: build_restore_args(v) for k, v in tree.items()}
+                    elif isinstance(tree, list):
+                        return [build_restore_args(v) for v in tree]
+                    else:
+                        # Leaf node - use CPU sharding
+                        return ArrayRestoreArgs(sharding=cpu_sharding)
+
+                # Extract tree structure from metadata
+                tree_metadata = ckpt_metadata.get("tree_metadata", ckpt_metadata)
+                restore_args_tree = build_restore_args(tree_metadata)
+
+                # Try with composite args
+                args = ocp.args.Composite(
+                    default=ocp.args.PyTreeRestore(restore_args=restore_args_tree)
+                )
+                checkpoint = checkpointer.restore(checkpoint_path, args=args)
+            else:
+                raise ValueError(f"Cannot find metadata at {metadata_path}: {e}")
+        else:
+            raise ValueError(f"Failed to load checkpoint from {checkpoint_path}: {e}")
     except Exception as e:
+        if "sharding" in str(e).lower():
+            raise ValueError(
+                f"Failed to load checkpoint from {checkpoint_path}: {e}\n"
+                "Hint: This checkpoint was saved on a different device (e.g., CUDA). "
+                "Try loading on the same device type or use export_checkpoint.py to convert it."
+            )
         raise ValueError(f"Failed to load checkpoint from {checkpoint_path}: {e}")
 
     return checkpoint
