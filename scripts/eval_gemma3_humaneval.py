@@ -125,6 +125,9 @@ def make_forward_fn(use_ttt: bool):
 
     This follows the pattern from compare_methods.py - create the function
     once with fixed signature, then JIT compile.
+
+    Note: TTT requires sequence length divisible by mini_batch_size (16).
+    For single-token decode, we must disable TTT.
     """
 
     def forward_fn(
@@ -132,14 +135,23 @@ def make_forward_fn(use_ttt: bool):
         input_ids: jax.Array,
         position_ids: jax.Array,
         cache: dict | None = None,
+        use_ttt_override: bool | None = None,
     ) -> tuple[jax.Array, dict | None]:
-        """Forward pass returning logits and updated cache."""
+        """Forward pass returning logits and updated cache.
+
+        Args:
+            use_ttt_override: If provided, overrides the default use_ttt setting.
+                             Use False for single-token decode to avoid mini_batch_size issues.
+        """
+        # Use override if provided, otherwise use default
+        effective_use_ttt = use_ttt if use_ttt_override is None else use_ttt_override
+
         result = model(
             input_ids,
             position_ids=position_ids,
             attention_mask=None,  # Let model create causal mask
             cache=cache,
-            use_ttt=use_ttt,
+            use_ttt=effective_use_ttt,
         )
         # Handle tuple return (Gemma3) vs dict return
         if isinstance(result, tuple):
@@ -188,10 +200,12 @@ def create_generate_fn(
     cache = model.init_cache(cache_size=cache_size, batch_size=1)
     _, cache = jit_forward(model, dummy_prefill_ids, dummy_prefill_pos, cache)
 
-    # Warmup decode (single token)
+    # Warmup decode (single token) - TTT disabled for single tokens
     dummy_decode_ids = jnp.ones((1, 1), dtype=jnp.int32)
     dummy_decode_pos = jnp.array([[dummy_prefill_len]], dtype=jnp.int32)
-    _ = jit_forward(model, dummy_decode_ids, dummy_decode_pos, cache)
+    _ = jit_forward(
+        model, dummy_decode_ids, dummy_decode_pos, cache, False
+    )  # use_ttt=False
 
     logger.info("JIT warmup complete (prefill + decode).")
 
@@ -255,7 +269,13 @@ def create_generate_fn(
                     input_ids = jnp.array([[next_token]], dtype=jnp.int32)  # [1, 1]
                     position_ids = jnp.array([[current_pos]], dtype=jnp.int32)  # [1, 1]
 
-                    logits, cache = jit_forward(model, input_ids, position_ids, cache)
+                    logits, cache = jit_forward(
+                        model,
+                        input_ids,
+                        position_ids,
+                        cache,
+                        False,  # TTT disabled for single token
+                    )
                     next_token_logits = logits[0, 0, :]
 
                     # Sample next token
