@@ -204,10 +204,11 @@ def create_generate_fn(
     # Warmup JIT with prefill (full prompt) and decode (single token) shapes
     logger.info(f"Warming up JIT with cache_size={cache_size}...")
 
-    # Warmup prefill (length must be multiple of 16 for TTT)
-    dummy_prefill_len = (chunk_size // 2 // 16) * 16  # Round down to multiple of 16
+    # Warmup prefill (length must be multiple of 64 for TTT: 16 mini-batch × 4 remat)
+    ttt_alignment = 64  # mini_batch_size(16) × remat_every_n(4)
+    dummy_prefill_len = (chunk_size // 2 // ttt_alignment) * ttt_alignment
     if dummy_prefill_len == 0:
-        dummy_prefill_len = 16
+        dummy_prefill_len = ttt_alignment
     dummy_prefill_ids = jnp.ones((1, dummy_prefill_len), dtype=jnp.int32)
     dummy_prefill_pos = jnp.arange(dummy_prefill_len, dtype=jnp.int32)[None, :]
     cache = model.init_cache(cache_size=cache_size, batch_size=1)
@@ -236,12 +237,12 @@ def create_generate_fn(
 
         prompt_len = len(prompt_ids)
 
-        # TTT requires sequence length divisible by mini_batch_size (16)
-        # Pad prompt to nearest multiple of 16 for prefill
-        mini_batch_size = 16
+        # TTT requires sequence length divisible by 64 (16 mini-batch × 4 remat)
+        # Pad prompt to nearest multiple of 64 for prefill
+        ttt_alignment = 64  # mini_batch_size(16) × remat_every_n(4)
         padded_prompt_len = (
-            (prompt_len + mini_batch_size - 1) // mini_batch_size
-        ) * mini_batch_size
+            (prompt_len + ttt_alignment - 1) // ttt_alignment
+        ) * ttt_alignment
         pad_len = padded_prompt_len - prompt_len
 
         # Get pad token (use 0 if not available)
