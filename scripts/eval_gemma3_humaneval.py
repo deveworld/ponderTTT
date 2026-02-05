@@ -114,64 +114,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk_size",
         type=int,
-        default=2048,
-        help="Cache size for KV cache (prompt + max_new_tokens)",
+        default=512,
+        help="Fixed chunk size for JIT compilation (must match training)",
     )
     return parser.parse_args()
 
 
-def make_forward_fns(use_ttt: bool):
-    """Create separate forward functions for prefill and decode.
+def make_forward_fn(use_ttt: bool):
+    """Create forward function for JIT compilation.
 
-    TTT requires sequence length divisible by mini_batch_size (16).
-    For single-token decode, we must disable TTT.
-
-    Returns two functions (to be JIT compiled separately):
-    - prefill_fn: Uses TTT if enabled (for full prompt processing)
-    - decode_fn: Always disables TTT (for single-token generation)
+    This follows the pattern from compare_methods.py - create the function
+    once with fixed signature, then JIT compile.
     """
 
-    def prefill_fn(
+    def forward_fn(
         model: Any,
         input_ids: jax.Array,
+        attention_mask: jax.Array,
         position_ids: jax.Array,
-        cache: dict | None = None,
-    ) -> tuple[jax.Array, dict | None]:
-        """Forward pass for prefill with TTT enabled."""
+    ) -> jax.Array:
+        """Forward pass returning logits."""
         result = model(
             input_ids,
             position_ids=position_ids,
-            attention_mask=None,
-            cache=cache,
-            use_ttt=use_ttt,  # Use TTT for prefill
+            attention_mask=attention_mask,
+            use_ttt=use_ttt,
         )
+        # Handle tuple return (Gemma3) vs dict return
         if isinstance(result, tuple):
-            outputs, new_cache = result
+            outputs = result[0]
         else:
-            outputs, new_cache = result, None
-        return outputs["logits"], new_cache
+            outputs = result
+        return outputs["logits"]
 
-    def decode_fn(
-        model: Any,
-        input_ids: jax.Array,
-        position_ids: jax.Array,
-        cache: dict | None = None,
-    ) -> tuple[jax.Array, dict | None]:
-        """Forward pass for decode without TTT (single tokens)."""
-        result = model(
-            input_ids,
-            position_ids=position_ids,
-            attention_mask=None,
-            cache=cache,
-            use_ttt=False,  # Always disable TTT for single-token decode
-        )
-        if isinstance(result, tuple):
-            outputs, new_cache = result
-        else:
-            outputs, new_cache = result, None
-        return outputs["logits"], new_cache
-
-    return prefill_fn, decode_fn
+    return forward_fn
 
 
 def create_generate_fn(
@@ -183,7 +159,7 @@ def create_generate_fn(
     num_samples: int,
     chunk_size: int,
 ):
-    """Create generation function for HumanEval with KV cache for efficiency."""
+    """Create generation function for HumanEval with fixed chunk sizes."""
 
     # Get EOS token ID
     eos_id = (
@@ -192,37 +168,22 @@ def create_generate_fn(
         or tokenizer.token_to_id("<end_of_turn>")
         or 1
     )
+    pad_id = tokenizer.token_to_id("<|pad|>") or 0
 
-    # Create and JIT compile separate forward functions for prefill and decode
-    prefill_fn, decode_fn = make_forward_fns(use_ttt)
-    jit_prefill = nnx.jit(prefill_fn)
-    jit_decode = nnx.jit(decode_fn)
+    # Create and JIT compile the forward function (same pattern as compare_methods.py)
+    forward_fn = make_forward_fn(use_ttt)
+    jit_forward = nnx.jit(forward_fn)
 
-    # Calculate cache size (prompt + max_new_tokens)
-    cache_size = chunk_size
-
-    # Warmup JIT with prefill (full prompt) and decode (single token) shapes
-    logger.info(f"Warming up JIT with cache_size={cache_size}...")
-
-    # Warmup prefill (length must be multiple of 64 for TTT: 16 mini-batch × 4 remat)
-    ttt_alignment = 64  # mini_batch_size(16) × remat_every_n(4)
-    dummy_prefill_len = (chunk_size // 2 // ttt_alignment) * ttt_alignment
-    if dummy_prefill_len == 0:
-        dummy_prefill_len = ttt_alignment
-    dummy_prefill_ids = jnp.ones((1, dummy_prefill_len), dtype=jnp.int32)
-    dummy_prefill_pos = jnp.arange(dummy_prefill_len, dtype=jnp.int32)[None, :]
-    cache = model.init_cache(cache_size=cache_size, batch_size=1)
-    _, cache = jit_prefill(model, dummy_prefill_ids, dummy_prefill_pos, cache)
-
-    # Warmup decode (single token)
-    dummy_decode_ids = jnp.ones((1, 1), dtype=jnp.int32)
-    dummy_decode_pos = jnp.array([[dummy_prefill_len]], dtype=jnp.int32)
-    _ = jit_decode(model, dummy_decode_ids, dummy_decode_pos, cache)
-
-    logger.info("JIT warmup complete (prefill + decode).")
+    # Warmup with fixed chunk size
+    logger.info(f"Warming up JIT with chunk_size={chunk_size}...")
+    dummy_ids = jnp.ones((1, chunk_size), dtype=jnp.int32)
+    dummy_mask = jnp.ones((1, chunk_size), dtype=jnp.int32)
+    dummy_pos = jnp.arange(chunk_size, dtype=jnp.int32)[None, :]
+    _ = jit_forward(model, dummy_ids, dummy_mask, dummy_pos)
+    logger.info("JIT warmup complete.")
 
     def generate(prompt: str) -> list[str]:
-        """Generate completions using KV cache for efficiency."""
+        """Generate completions using fixed-size chunked inference."""
         # Apply chat template for IT models
         formatted_prompt = format_prompt_for_it_model(prompt)
 
@@ -230,95 +191,59 @@ def create_generate_fn(
         encoded = tokenizer.encode(formatted_prompt, add_special_tokens=False)
         prompt_ids = list(encoded.ids)
 
-        # Truncate if necessary (leave room for generation)
-        max_prompt_len = cache_size - max_new_tokens
+        # Truncate if necessary
+        max_prompt_len = chunk_size - max_new_tokens
         if len(prompt_ids) > max_prompt_len:
             prompt_ids = prompt_ids[-max_prompt_len:]
 
-        prompt_len = len(prompt_ids)
-
-        # TTT requires sequence length divisible by 64 (16 mini-batch × 4 remat)
-        # Pad prompt to nearest multiple of 64 for prefill
-        ttt_alignment = 64  # mini_batch_size(16) × remat_every_n(4)
-        padded_prompt_len = (
-            (prompt_len + ttt_alignment - 1) // ttt_alignment
-        ) * ttt_alignment
-        pad_len = padded_prompt_len - prompt_len
-
-        # Get pad token (use 0 if not available)
-        pad_id = tokenizer.token_to_id("<pad>") or tokenizer.token_to_id("<|pad|>") or 0
-
         completions = []
         for sample_idx in range(num_samples):
-            # Initialize fresh cache for each sample
-            cache = model.init_cache(cache_size=cache_size, batch_size=1)
+            generated = list(prompt_ids)
 
-            # Prefill: process entire prompt with left padding for TTT compatibility
-            # Left-pad to make length divisible by 16
-            padded_ids = [pad_id] * pad_len + prompt_ids
-            input_ids = jnp.array(padded_ids, dtype=jnp.int32)[
-                None, :
-            ]  # [1, padded_prompt_len]
-            # Position IDs: 0 for pad tokens, then 0..prompt_len-1 for actual tokens
-            position_ids = jnp.concatenate(
-                [
-                    jnp.zeros(pad_len, dtype=jnp.int32),
-                    jnp.arange(prompt_len, dtype=jnp.int32),
-                ]
-            )[None, :]  # [1, padded_prompt_len]
+            for step in range(max_new_tokens):
+                # Prepare fixed-size input with left padding
+                seq_len = len(generated)
+                if seq_len < chunk_size:
+                    # Pad to chunk_size
+                    pad_len = chunk_size - seq_len
+                    padded_ids = [pad_id] * pad_len + generated
+                    mask = [0] * pad_len + [1] * seq_len
+                else:
+                    # Truncate from left (keep last chunk_size tokens)
+                    padded_ids = generated[-chunk_size:]
+                    mask = [1] * chunk_size
 
-            logits, cache = jit_prefill(model, input_ids, position_ids, cache)
+                # Convert to JAX arrays with fixed shape
+                input_ids = jnp.array(padded_ids, dtype=jnp.int32)[None, :]
+                attention_mask = jnp.array(mask, dtype=jnp.int32)[None, :]
+                position_ids = jnp.arange(chunk_size, dtype=jnp.int32)[None, :]
 
-            # Get logits for last actual token (not padding)
-            next_token_logits = logits[0, -1, :]
+                # Forward pass (JIT compiled, fixed shape = no recompilation)
+                logits = jit_forward(model, input_ids, attention_mask, position_ids)
 
-            # Sample first token
-            if temperature > 0:
-                probs = jax.nn.softmax(next_token_logits / temperature, axis=-1)
-                key = jax.random.PRNGKey((hash(prompt) + sample_idx * 1000) % (2**31))
-                next_token = int(jax.random.categorical(key, jnp.log(probs)))
-            else:
-                next_token = int(jnp.argmax(next_token_logits))
+                # Get logits for last actual token position
+                last_pos = chunk_size - 1  # Always last position with left padding
+                next_token_logits = logits[0, last_pos, :]
 
-            generated_tokens = []
+                # Sample or greedy
+                if temperature > 0:
+                    probs = jax.nn.softmax(next_token_logits / temperature, axis=-1)
+                    key = jax.random.PRNGKey(
+                        (hash(prompt) + sample_idx * 1000 + step) % (2**31)
+                    )
+                    next_token = int(jax.random.categorical(key, jnp.log(probs)))
+                else:
+                    next_token = int(jnp.argmax(next_token_logits))
 
-            if next_token == eos_id:
-                # Empty completion
-                pass
-            else:
-                generated_tokens.append(next_token)
-                current_pos = prompt_len
+                # Check for EOS
+                if next_token == eos_id:
+                    break
 
-                # Decode: generate tokens one at a time using cache
-                for step in range(1, max_new_tokens):
-                    if current_pos >= cache_size:
-                        break  # Cache full
+                generated.append(next_token)
 
-                    # Single token input
-                    input_ids = jnp.array([[next_token]], dtype=jnp.int32)  # [1, 1]
-                    position_ids = jnp.array([[current_pos]], dtype=jnp.int32)  # [1, 1]
-
-                    logits, cache = jit_decode(model, input_ids, position_ids, cache)
-                    next_token_logits = logits[0, 0, :]
-
-                    # Sample next token
-                    if temperature > 0:
-                        probs = jax.nn.softmax(next_token_logits / temperature, axis=-1)
-                        key = jax.random.PRNGKey(
-                            (hash(prompt) + sample_idx * 1000 + step) % (2**31)
-                        )
-                        next_token = int(jax.random.categorical(key, jnp.log(probs)))
-                    else:
-                        next_token = int(jnp.argmax(next_token_logits))
-
-                    if next_token == eos_id:
-                        break
-
-                    generated_tokens.append(next_token)
-                    current_pos += 1
-
-            # Decode tokens to text
-            completion = tokenizer.decode(generated_tokens)
+            # Decode only the new tokens
+            new_ids = generated[len(prompt_ids) :]
+            completion = tokenizer.decode(new_ids)
 
             # Clean up generation artifacts
             # Remove markdown code blocks if present
