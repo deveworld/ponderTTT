@@ -114,8 +114,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk_size",
         type=int,
-        default=512,
-        help="Fixed chunk size for JIT compilation (must match training)",
+        default=2048,
+        help="Fixed chunk size for JIT compilation (must be > max_new_tokens)",
     )
     return parser.parse_args()
 
